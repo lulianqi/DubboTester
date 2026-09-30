@@ -101,6 +101,45 @@ public sealed class DubboTypeStructureBuilderTests
     }
 
     [Fact]
+    public void GenerateExampleJson_GeneratesExamplesForMultipleScalarParameters()
+    {
+        var signature = new MethodSignatureItem
+        {
+            ServiceName = "com.foo.DemoService",
+            MethodName = "analyze",
+            ParameterTypes = ["java.lang.Long", "java.lang.String", "java.lang.Boolean"]
+        };
+
+        IReadOnlyList<MethodParameterStructure> parameters = DubboTypeStructureBuilder.Build(signature);
+        string json = DubboTypeStructureBuilder.GenerateExampleJson(parameters);
+
+        Assert.Equal("[0,\"string\",false]", JsonSerializer.Serialize(JsonSerializer.Deserialize<JsonElement>(json)));
+        Assert.Equal(3, JsonArgumentParser.ParseArguments(json).Length);
+    }
+
+    [Theory]
+    [InlineData("java.lang.Integer", "0")]
+    [InlineData("java.lang.String", "\"string\"")]
+    [InlineData("boolean", "false")]
+    public void GenerateExampleJson_GeneratesExampleForSingleScalarParameter(
+        string javaType,
+        string expectedJson)
+    {
+        var signature = new MethodSignatureItem
+        {
+            ServiceName = "com.foo.DemoService",
+            MethodName = "find",
+            ParameterTypes = [javaType]
+        };
+
+        IReadOnlyList<MethodParameterStructure> parameters = DubboTypeStructureBuilder.Build(signature);
+        string json = DubboTypeStructureBuilder.GenerateExampleJson(parameters);
+
+        Assert.Equal(expectedJson, json.Trim());
+        Assert.Single(JsonArgumentParser.ParseArguments(json));
+    }
+
+    [Fact]
     public void GenerateExampleJson_DoesNotEmitJavaWrapperImplementationFields()
     {
         var signature = new MethodSignatureItem

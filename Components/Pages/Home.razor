@@ -205,7 +205,10 @@
                         @if (HasParameterStructure)
                         {
                             <button class="text-button" @onclick="OpenTypeStructure">参数结构</button>
-                            <button class="text-button" title="用元数据结构生成示例并替换当前请求内容" @onclick="GenerateRequestExample">按结构生成示例</button>
+                        }
+                        @if (CanGenerateRequestExample)
+                        {
+                            <button class="text-button" title="根据 Java 参数类型和元数据结构生成示例并替换当前请求内容" @onclick="GenerateRequestExample">按结构生成示例</button>
                         }
                         <button class="text-button" @onclick="FormatRequest">格式化</button>
                     </div>
@@ -467,6 +470,16 @@
                         <small>仅包内部在元数据中心不可用时使用</small>
                     </label>
                 </div>
+                <div class="settings-grid">
+                    <label>
+                        <span>历史记录上限</span>
+                        <input type="number"
+                               min="@HistoryRetentionPolicy.MinimumLimit"
+                               max="@HistoryRetentionPolicy.MaximumLimit"
+                               @bind="SettingsDraft.HistoryLimit" />
+                        <small>默认 500，最高 2000；自动清理时优先保留收藏记录</small>
+                    </label>
+                </div>
                 <div class="setting-checks">
                     <label title="加载目录时一次性读取全部服务的 Provider 和方法，服务节点仍保持收起">
                         <input type="checkbox" @bind="SettingsDraft.PreloadAllServiceMethods" />加载目录时预取全部服务方法
@@ -532,6 +545,7 @@
             : null;
     private bool HasParameterStructure =>
         DubboTypeStructureBuilder.HasDetailedStructure(ParameterStructures);
+    private bool CanGenerateRequestExample => ParameterStructures.Count > 0;
     private bool IsCatalogPreloading =>
         PreloadStatus?.State == CatalogPreloadState.Running;
     private bool IsCatalogActive => IsCatalogBusy || IsCatalogPreloading;
@@ -597,8 +611,16 @@
                 : DeserializeOrDefault(settingsJson, new TesterSettings());
             if (hasPressureDraft) Input = pressureInvocation;
             History = DeserializeOrDefault(historyJson, new List<InvocationHistory>());
+            Settings.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(Settings.HistoryLimit);
+            bool historyTrimmed = HistoryRetentionPolicy.TrimToLimit(
+                History,
+                Settings.HistoryLimit);
             SettingsDraft = Settings.Clone();
             StateHasChanged();
+            if (historyTrimmed)
+            {
+                await PersistHistoryAsync();
+            }
 
             if (!string.IsNullOrWhiteSpace(Settings.ZooKeeperAddress))
             {
@@ -695,6 +717,14 @@
                 CatalogLoadCancellation = null;
             }
             cancellation.Dispose();
+
+            // 首次目录加载由 OnAfterRenderAsync 发起。该生命周期方法完成后 Blazor
+            // 不会自动再次渲染，因此必须在提示文案和忙碌状态都提交后显式刷新，
+            // 否则页面会一直停留在“正在加载”，直到下一次用户交互。
+            if (!IsDisposed)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
         }
     }
 
@@ -927,10 +957,10 @@
 
     private void GenerateRequestExample()
     {
-        if (!HasParameterStructure) return;
+        if (!CanGenerateRequestExample) return;
         Input.RequestJson = DubboTypeStructureBuilder.GenerateExampleJson(ParameterStructures);
         TypeStructureVisible = false;
-        SetNotice("已根据元数据结构生成请求 JSON 示例，请按实际业务含义修改字段值");
+        SetNotice("已根据 Java 参数类型和元数据结构生成请求 JSON 示例，请按实际业务含义修改字段值");
     }
 
     private async Task TestProviderAsync()
@@ -1007,7 +1037,7 @@
             Response = Settings.SaveResponseInHistory ? ResultText : string.Empty,
             ElapsedMs = output.RequestElapsed
         });
-        if (History.Count > 100) History.RemoveRange(100, History.Count - 100);
+        HistoryRetentionPolicy.TrimToLimit(History, Settings.HistoryLimit);
     }
 
     private void LoadHistory(InvocationHistory item)
@@ -1064,9 +1094,15 @@
     {
         if (string.IsNullOrWhiteSpace(SettingsDraft.RegistryRootPath)) SettingsDraft.RegistryRootPath = "/dubbo";
         if (string.IsNullOrWhiteSpace(SettingsDraft.MetadataRootPath)) SettingsDraft.MetadataRootPath = SettingsDraft.RegistryRootPath;
+        SettingsDraft.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(SettingsDraft.HistoryLimit);
         Settings = SettingsDraft.Clone();
         SettingsVisible = false;
+        bool historyTrimmed = HistoryRetentionPolicy.TrimToLimit(History, Settings.HistoryLimit);
         await PersistSettingsAsync();
+        if (historyTrimmed)
+        {
+            await PersistHistoryAsync();
+        }
         await RefreshCatalogAsync(false);
     }
 
