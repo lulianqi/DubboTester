@@ -1,0 +1,720 @@
+@page "/pressure-test"
+@using System.Globalization
+@using System.Text.Json
+@implements IDisposable
+@inject DubboPressureTestRunner Runner
+@inject PressureTestDraftStore DraftStore
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Dubbo 压力测试</PageTitle>
+
+<div class="pressure-shell">
+    <header class="pressure-header">
+        <button class="back-button" disabled="@IsRunning" @onclick="BackToHome">← 返回请求页</button>
+        <div class="pressure-brand">
+            <span class="pressure-mark">D</span>
+            <div><h1>Dubbo 压力测试</h1><p>单客户端并发 · 结果仅保存在当前页面</p></div>
+        </div>
+        <div class="run-state @(NoticeIsError ? "error" : null)"><span></span>@Notice</div>
+    </header>
+
+    <main class="pressure-content">
+        <section class="pressure-card setup-card">
+            <div class="card-heading">
+                <div><h2>目标请求</h2><p>从请求页带入，可在开始前继续调整</p></div>
+                <span class="route-badge">@(Input.Route == InvocationRoute.Registry ? "注册中心" : "直连 Provider")</span>
+            </div>
+
+            <div class="target-grid">
+                <label>调用方式
+                    <select @bind="Input.Route" disabled="@IsRunning">
+                        <option value="@InvocationRoute.Registry">注册中心</option>
+                        <option value="@InvocationRoute.DirectProvider">直连 Provider</option>
+                    </select>
+                </label>
+                @if (Input.Route == InvocationRoute.Registry)
+                {
+                    <label class="span-two">ZooKeeper
+                        <input @bind="Settings.ZooKeeperAddress" disabled="@IsRunning" placeholder="127.0.0.1:2181" />
+                    </label>
+                }
+                else
+                {
+                    <label>Provider 地址
+                        <input @bind="Input.Host" disabled="@IsRunning" placeholder="10.0.0.10" />
+                    </label>
+                    <label>端口
+                        <input type="number" min="1" max="65535" @bind="Input.Port" disabled="@IsRunning" />
+                    </label>
+                }
+                <label class="span-two">服务
+                    <input @bind="Input.ServiceName" disabled="@IsRunning" placeholder="com.foo.DemoService" />
+                </label>
+                <label>方法
+                    <input @bind="Input.MethodName" disabled="@IsRunning" placeholder="methodName" />
+                </label>
+                <label>Java 参数类型
+                    <input @bind="Input.JavaParameterTypes" disabled="@IsRunning" placeholder="java.lang.String, java.lang.Integer" />
+                </label>
+                <label>服务版本
+                    <input @bind="Input.Version" disabled="@IsRunning" placeholder="可选" />
+                </label>
+                <label>服务分组
+                    <input @bind="Input.Group" disabled="@IsRunning" placeholder="可选" />
+                </label>
+                <label class="span-three">Attachments JSON
+                    <input @bind="Input.AttachmentsJson" disabled="@IsRunning" placeholder='{"traceId":"..."}' />
+                </label>
+            </div>
+        </section>
+
+        <section class="pressure-card load-card">
+            <div class="card-heading">
+                <div><h2>负载配置</h2><p>N 个并发用户，每个用户顺序发送 M 次</p></div>
+                <strong>@TotalRequests.ToString("N0") 次请求</strong>
+            </div>
+            <div class="load-fields">
+                <label class="users-field">并发用户数 N
+                    <input type="number" min="1" max="500" @bind="UserCount" disabled="@IsRunning" />
+                    <small>每个用户对应一个并发任务</small>
+                </label>
+                <span class="multiply">×</span>
+                <label class="iterations-field">每用户发送 M 次
+                    <input type="number" min="1" max="100000" @bind="IterationsPerUser" disabled="@IsRunning" />
+                    <small>同一用户内按顺序发送</small>
+                </label>
+                <div class="load-summary"><b>@TotalRequests.ToString("N0")</b><span>计划请求总数</span></div>
+                <label class="ramp-field">阶梯启动间隔（ms）
+                    <input type="number" min="0" max="3600000" @bind="RampUpIntervalMs" disabled="@IsRunning" />
+                    <small>相邻用户启动间隔；0 表示同时启动</small>
+                </label>
+                <label class="request-interval-field">请求间隔（ms）
+                    <input type="number" min="0" max="3600000" @bind="RequestIntervalMs" disabled="@IsRunning" />
+                    <small>同一用户相邻请求之间等待</small>
+                </label>
+            </div>
+        </section>
+
+        <section class="pressure-card template-card">
+            <div class="card-heading template-heading">
+                <div><h2>请求参数模板</h2><p>保持合法 JSON；变量会在每次请求前替换</p></div>
+                <button class="text-button" disabled="@IsRunning" @onclick="FormatTemplate">格式化</button>
+            </div>
+            <div class="variable-help">
+                <code>@UserToken</code><span>用户序号</span>
+                <code>@IterationToken</code><span>发送序号</span>
+                <code>@RandomIntToken</code><span>范围内随机整数</span>
+                <code>@RandomStringToken</code><span>随机字符串</span>
+                <code>@GuidToken</code><span>随机 GUID</span>
+                <code>@TimestampToken</code><span>当前时间</span>
+            </div>
+            <textarea @bind="Input.RequestJson" disabled="@IsRunning" spellcheck="false"></textarea>
+            <div class="template-note">序号从 1 开始。字符串变量请放在 JSON 引号内，例如 <code>@($"\"user-{UserToken}-{IterationToken}\"")</code>。</div>
+            <section class="assertion-editor">
+                <div class="assertion-heading">
+                    <div><h3>业务断言 <small>选填</small></h3><p>Dubbo 调用成功后，再根据响应正文判断业务是否成功</p></div>
+                    <div class="assertion-actions">
+                        @if (BusinessAssertion.Conditions.Count > 1)
+                        {
+                            <select aria-label="断言组合方式" @bind="BusinessAssertion.Join" disabled="@IsRunning">
+                                <option value="@BusinessAssertionJoin.And">全部满足（AND）</option>
+                                <option value="@BusinessAssertionJoin.Or">任一满足（OR）</option>
+                            </select>
+                        }
+                        <button class="assertion-add" disabled="@IsRunning" @onclick="AddAssertion">＋ 添加条件</button>
+                    </div>
+                </div>
+                @if (BusinessAssertion.Conditions.Count == 0)
+                {
+                    <div class="assertion-empty">未配置业务断言，将以 Dubbo 调用结果作为成功标准</div>
+                }
+                else
+                {
+                    <div class="assertion-list">
+                        @foreach (BusinessAssertionCondition condition in BusinessAssertion.Conditions)
+                        {
+                            <div class="assertion-row" @key="condition">
+                                <select aria-label="断言类型" @bind="condition.Type" disabled="@IsRunning">
+                                    <option value="@BusinessAssertionType.ResponseContains">响应包含内容</option>
+                                    <option value="@BusinessAssertionType.JsonPath">JSONPath 条件</option>
+                                </select>
+                                @if (condition.Type == BusinessAssertionType.ResponseContains)
+                                {
+                                    <input class="assertion-value-wide" aria-label="期望包含内容" @bind="condition.ExpectedValue" disabled="@IsRunning" placeholder="例如 success" />
+                                }
+                                else
+                                {
+                                    <input aria-label="JSONPath" @bind="condition.JsonPath" disabled="@IsRunning" placeholder="$.data.code 或 $.items[0].id" />
+                                    <select aria-label="比较条件" @bind="condition.Operator" disabled="@IsRunning">
+                                        <option value="@BusinessAssertionOperator.Exists">存在</option>
+                                        <option value="@BusinessAssertionOperator.NotExists">不存在</option>
+                                        <option value="@BusinessAssertionOperator.Equals">等于</option>
+                                        <option value="@BusinessAssertionOperator.NotEquals">不等于</option>
+                                        <option value="@BusinessAssertionOperator.Contains">包含</option>
+                                        <option value="@BusinessAssertionOperator.NotContains">不包含</option>
+                                        <option value="@BusinessAssertionOperator.GreaterThan">大于</option>
+                                        <option value="@BusinessAssertionOperator.GreaterThanOrEqual">大于等于</option>
+                                        <option value="@BusinessAssertionOperator.LessThan">小于</option>
+                                        <option value="@BusinessAssertionOperator.LessThanOrEqual">小于等于</option>
+                                    </select>
+                                    @if (PressureTestBusinessAssertionEvaluator.RequiresExpectedValue(condition.Operator))
+                                    {
+                                        <input aria-label="期望值" @bind="condition.ExpectedValue" disabled="@IsRunning" placeholder="期望值" />
+                                    }
+                                }
+                                <button class="assertion-remove" title="删除条件" disabled="@IsRunning" @onclick="() => RemoveAssertion(condition)">×</button>
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+        </section>
+
+        <section class="pressure-card control-card">
+            <div class="progress-block">
+                <div><span>完成进度</span><b>@Snapshot.CompletedRequests.ToString("N0") / @DisplayedTotalRequests.ToString("N0")</b></div>
+                <div class="progress-track"><span style="width: @($"{Snapshot.ProgressPercent:F2}%")"></span></div>
+            </div>
+            <div class="control-actions">
+                <button class="export-button" disabled="@(IsRunning || Snapshot.CompletedRequests == 0)" @onclick="ExportReportAsync">⇩ 导出报告</button>
+                @if (IsRunning)
+                {
+                    <button class="stop-button" @onclick="Stop">停止压测</button>
+                }
+                else
+                {
+                    <button class="primary start-button" @onclick="StartAsync">▷ 开始压测</button>
+                }
+            </div>
+        </section>
+
+        <section class="metric-grid">
+            <article><span>平均响应</span><b>@FormatMilliseconds(Snapshot.AverageMilliseconds)</b><small>所有已完成请求</small></article>
+            <article><span>TPS</span><b>@Snapshot.Tps.ToString("F2")</b><small>完成数 / 实际墙钟时间</small></article>
+            <article><span>成功率</span><b class="@(Snapshot.FailureCount > 0 ? "metric-warn" : null)">@Snapshot.SuccessRate.ToString("F2")%</b><small>@Snapshot.SuccessCount.ToString("N0") 成功 / @Snapshot.FailureCount.ToString("N0") 失败</small></article>
+            <article><span>P95</span><b>@FormatMilliseconds(Snapshot.P95Milliseconds)</b><small>@(Snapshot.PercentilesAreSampled ? "实时随机样本；结束后精确" : "95% 请求不超过此值")</small></article>
+            <article><span>P99</span><b>@FormatMilliseconds(Snapshot.P99Milliseconds)</b><small>@(Snapshot.PercentilesAreSampled ? "实时随机样本；结束后精确" : "99% 请求不超过此值")</small></article>
+            <article><span>运行时间</span><b>@Snapshot.ElapsedSeconds.ToString("F2") s</b><small>@Snapshot.ActiveUsers 个活跃用户</small></article>
+        </section>
+
+        <section class="chart-grid">
+            <article class="pressure-card chart-card">
+                <div class="card-heading"><div><h2>吞吐趋势</h2><p>最近采样区间的即时 TPS</p></div></div>
+                @if (Snapshot.Timeline.Count < 2)
+                {
+                    <div class="chart-empty">开始压测后显示趋势</div>
+                }
+                else
+                {
+                    <div class="chart-plot" @onmouseleave="() => ThroughputHoverIndex = null">
+                        <svg viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="TPS 趋势图">
+                            <path class="chart-grid-line" d="M0 45H720 M0 90H720 M0 135H720" />
+                            <polyline class="tps-line" points="@BuildPolyline(point => point.InstantTps)" />
+                            @for (int index = 0; index < Snapshot.Timeline.Count; index++)
+                            {
+                                int pointIndex = index;
+                                <rect class="chart-hit-zone"
+                                      x="@SvgNumber(ChartHitStart(index, Snapshot.Timeline.Count))"
+                                      y="0"
+                                      width="@SvgNumber(ChartHitWidth(index, Snapshot.Timeline.Count))"
+                                      height="180"
+                                      @onmouseenter="() => ThroughputHoverIndex = pointIndex" />
+                            }
+                            @if (ThroughputHoverIndex is int throughputIndex && throughputIndex < Snapshot.Timeline.Count)
+                            {
+                                PressureTestPoint point = Snapshot.Timeline[throughputIndex];
+                                double x = ChartX(throughputIndex, Snapshot.Timeline.Count);
+                                <line class="chart-hover-line" x1="@SvgNumber(x)" y1="0" x2="@SvgNumber(x)" y2="180" />
+                                <circle class="hover-point tps-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(point.InstantTps, ThroughputScaleMaximum))" r="4" />
+                            }
+                        </svg>
+                        @if (ThroughputHoverIndex is int throughputTooltipIndex && throughputTooltipIndex < Snapshot.Timeline.Count)
+                        {
+                            PressureTestPoint point = Snapshot.Timeline[throughputTooltipIndex];
+                            <div class="chart-tooltip @TooltipAlignmentClass(throughputTooltipIndex)" style="@TooltipStyle(throughputTooltipIndex)">
+                                <b>@point.ElapsedSeconds.ToString("F2") s</b>
+                                <span>即时 TPS <strong>@point.InstantTps.ToString("F2")</strong></span>
+                            </div>
+                        }
+                    </div>
+                }
+            </article>
+            <article class="pressure-card chart-card">
+                <div class="card-heading"><div><h2>响应时间趋势</h2><p><i class="legend average"></i>平均 <i class="legend p95"></i>P95 <i class="legend p99"></i>P99</p></div></div>
+                @if (Snapshot.Timeline.Count < 2)
+                {
+                    <div class="chart-empty">开始压测后显示趋势</div>
+                }
+                else
+                {
+                    <div class="chart-plot" @onmouseleave="() => LatencyHoverIndex = null">
+                        <svg viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="响应时间趋势图">
+                            <path class="chart-grid-line" d="M0 45H720 M0 90H720 M0 135H720" />
+                            <polyline class="average-line" points="@BuildPolyline(point => point.AverageMilliseconds, true)" />
+                            <polyline class="p95-line" points="@BuildPolyline(point => point.P95Milliseconds, true)" />
+                            <polyline class="p99-line" points="@BuildPolyline(point => point.P99Milliseconds, true)" />
+                            @for (int index = 0; index < Snapshot.Timeline.Count; index++)
+                            {
+                                int pointIndex = index;
+                                <rect class="chart-hit-zone"
+                                      x="@SvgNumber(ChartHitStart(index, Snapshot.Timeline.Count))"
+                                      y="0"
+                                      width="@SvgNumber(ChartHitWidth(index, Snapshot.Timeline.Count))"
+                                      height="180"
+                                      @onmouseenter="() => LatencyHoverIndex = pointIndex" />
+                            }
+                            @if (LatencyHoverIndex is int latencyIndex && latencyIndex < Snapshot.Timeline.Count)
+                            {
+                                PressureTestPoint point = Snapshot.Timeline[latencyIndex];
+                                double x = ChartX(latencyIndex, Snapshot.Timeline.Count);
+                                <line class="chart-hover-line" x1="@SvgNumber(x)" y1="0" x2="@SvgNumber(x)" y2="180" />
+                                <circle class="hover-point average-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(point.AverageMilliseconds, LatencyScaleMaximum))" r="4" />
+                                <circle class="hover-point p95-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(point.P95Milliseconds, LatencyScaleMaximum))" r="4" />
+                                <circle class="hover-point p99-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(point.P99Milliseconds, LatencyScaleMaximum))" r="4" />
+                            }
+                        </svg>
+                        @if (LatencyHoverIndex is int latencyTooltipIndex && latencyTooltipIndex < Snapshot.Timeline.Count)
+                        {
+                            PressureTestPoint point = Snapshot.Timeline[latencyTooltipIndex];
+                            <div class="chart-tooltip latency-tooltip @TooltipAlignmentClass(latencyTooltipIndex)" style="@TooltipStyle(latencyTooltipIndex)">
+                                <b>@point.ElapsedSeconds.ToString("F2") s</b>
+                                <span><i class="legend average"></i>平均 <strong>@FormatMilliseconds(point.AverageMilliseconds)</strong></span>
+                                <span><i class="legend p95"></i>P95 <strong>@FormatMilliseconds(point.P95Milliseconds)</strong></span>
+                                <span><i class="legend p99"></i>P99 <strong>@FormatMilliseconds(point.P99Milliseconds)</strong></span>
+                            </div>
+                        }
+                    </div>
+                }
+            </article>
+        </section>
+
+        <section class="pressure-card details-card">
+            <div class="card-heading">
+                <div><h2>运行明细</h2><p>@DetailsDescription</p></div>
+                <div class="details-heading-actions">
+                    <label class="result-toggle" title="开启后，本次压测会在页面内存中保存每次参数化后的请求和完整响应">
+                        <input type="checkbox" @bind="RecordRequestResponse" disabled="@IsRunning" />
+                        <span>记录请求&amp;响应</span>
+                    </label>
+                    <label class="result-toggle">
+                        <input type="checkbox" checked="@ShowAllRequests" @onchange="ToggleShowAllRequests" />
+                        <span>显示所有请求</span>
+                    </label>
+                    <span>Min @FormatMilliseconds(Snapshot.MinimumMilliseconds) · Max @FormatMilliseconds(Snapshot.MaximumMilliseconds)</span>
+                </div>
+            </div>
+            @if (DisplayedResults.Count == 0)
+            {
+                <div class="no-failures">@(ShowAllRequests ? "暂无请求结果" : "暂无失败请求")</div>
+            }
+            else
+            {
+                <div class="request-result-list">
+                    <div class="request-result-header @(Snapshot.RecordsRequestResponse ? "with-payload" : null)">
+                        <span>完成时刻</span><span>用户</span><span>发送序号</span><span>耗时</span><span>状态</span><span>错误信息</span>
+                        @if (Snapshot.RecordsRequestResponse)
+                        {
+                            <span>请求</span><span>响应</span><span>操作</span>
+                        }
+                    </div>
+                    @foreach (PressureTestRequestResult request in DisplayedResults)
+                    {
+                        <div class="request-result-item @(Snapshot.RecordsRequestResponse ? "with-payload" : null)" @key="ResultKey(request)">
+                            <div class="request-result-row @(request.Success ? "success" : "failed") @(Snapshot.RecordsRequestResponse ? "with-payload" : null)">
+                                <span>@request.CompletedAtSeconds.ToString("F3") s</span>
+                                <span>@request.UserIndex</span>
+                                <span>@request.IterationIndex</span>
+                                <span>@request.ElapsedMilliseconds.ToString("F2") ms</span>
+                                <b>@(request.Success ? "成功" : "失败")</b>
+                                <p title="@request.Error">@(request.Error ?? "—")</p>
+                                @if (Snapshot.RecordsRequestResponse)
+                                {
+                                    <span class="payload-preview" title="@request.Request">@(request.Request ?? "—")</span>
+                                    <span class="payload-preview" title="@ResponseDetailText(request)">@ResponseDetailText(request)</span>
+                                    <button class="detail-link" @onclick="() => ToggleRequestDetail(request)">@(ExpandedResultKey == ResultKey(request) ? "收起" : "详情")</button>
+                                }
+                            </div>
+                            @if (Snapshot.RecordsRequestResponse && ExpandedResultKey == ResultKey(request))
+                            {
+                                <div class="request-result-detail">
+                                    <section><h3>请求内容</h3><pre>@(request.Request ?? "（本次压测未记录请求内容）")</pre></section>
+                                    <section><h3>响应内容</h3><pre>@ResponseDetailText(request)</pre></section>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+                <div class="result-pagination">
+                    <span>共 @FilteredResultCount.ToString("N0") 条，每页 @ResultsPerPage 条</span>
+                    <div>
+                        <button disabled="@(ResultsPage <= 1)" @onclick="FirstResultsPage">«</button>
+                        <button disabled="@(ResultsPage <= 1)" @onclick="PreviousResultsPage">‹</button>
+                        <b>第 @ResultsPage / @ResultsPageCount 页</b>
+                        <button disabled="@(ResultsPage >= ResultsPageCount)" @onclick="NextResultsPage">›</button>
+                        <button disabled="@(ResultsPage >= ResultsPageCount)" @onclick="LastResultsPage">»</button>
+                    </div>
+                </div>
+                @if (Snapshot.IsRunning && Snapshot.CompletedRequests > Snapshot.RequestResults.Count)
+                {
+                    <div class="live-results-note">运行中仅刷新最近 @Snapshot.RequestResults.Count 条；压测结束后可查看全部明细。</div>
+                }
+            }
+        </section>
+    </main>
+</div>
+
+@code {
+    private const string SettingsStorageKey = "dubbo-tester.settings.v1";
+    private const string UserToken = "{{user}}";
+    private const string IterationToken = "{{iteration}}";
+    private const string RandomIntToken = "{{randomInt:1:1000}}";
+    private const string RandomStringToken = "{{randomString:8}}";
+    private const string GuidToken = "{{guid}}";
+    private const string TimestampToken = "{{timestamp}}";
+    private const int ResultsPerPage = 100;
+    private static readonly JsonSerializerOptions StorageJsonOptions = new(JsonSerializerDefaults.Web);
+
+    private TesterSettings Settings { get; set; } = new();
+    private InvocationInput Input { get; set; } = new();
+    private PressureTestSnapshot Snapshot { get; set; } = new();
+    private int UserCount { get; set; } = 10;
+    private int IterationsPerUser { get; set; } = 10;
+    private int RampUpIntervalMs { get; set; }
+    private int RequestIntervalMs { get; set; }
+    private bool RecordRequestResponse { get; set; }
+    private bool ShowAllRequests { get; set; }
+    private BusinessAssertionConfiguration BusinessAssertion { get; set; } = new();
+    private IReadOnlyList<PressureTestRequestResult> DisplayedResults { get; set; } = [];
+    private int FilteredResultCount { get; set; }
+    private int ResultsPage { get; set; } = 1;
+    private string? ExpandedResultKey { get; set; }
+    private int? ThroughputHoverIndex { get; set; }
+    private int? LatencyHoverIndex { get; set; }
+    private string Notice { get; set; } = "配置负载与参数模板后开始压测";
+    private bool NoticeIsError { get; set; }
+    private bool IsRunning { get; set; }
+    private bool _hasDraft;
+    private CancellationTokenSource? _runCancellation;
+    private PressureTestConfiguration? _lastRunConfiguration;
+    private DateTimeOffset _runStartedAt;
+    private DateTimeOffset _runFinishedAt;
+
+    private long TotalRequests => UserCount <= 0 || IterationsPerUser <= 0
+        ? 0
+        : (long)UserCount * IterationsPerUser;
+    private long DisplayedTotalRequests => Snapshot.TotalRequests > 0
+        ? Snapshot.TotalRequests
+        : TotalRequests;
+    private int ResultsPageCount => Math.Max(1,
+        (int)Math.Ceiling(FilteredResultCount / (double)ResultsPerPage));
+    private string DetailsDescription => Snapshot.CompletedRequests > 0
+        ? Snapshot.RecordsRequestResponse
+            ? "本次压测已在当前页面内存中记录完整请求与响应，不写入历史记录或数据库"
+            : "本次压测未记录请求与响应正文，也不写入历史记录或数据库"
+        : RecordRequestResponse
+            ? "压测开始后将在当前页面内存中记录完整请求与响应"
+            : "默认不记录请求与响应正文，也不写入历史记录或数据库";
+
+    protected override void OnInitialized()
+    {
+        _hasDraft = DraftStore.TryGet(out TesterSettings settings, out InvocationInput invocation);
+        if (_hasDraft)
+        {
+            Settings = settings;
+            Input = invocation;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _hasDraft) return;
+        try
+        {
+            string? json = await JS.InvokeAsync<string?>("dubboTester.load", SettingsStorageKey);
+            if (!string.IsNullOrWhiteSpace(json))
+            {
+                Settings = JsonSerializer.Deserialize<TesterSettings>(json, StorageJsonOptions) ?? new TesterSettings();
+                StateHasChanged();
+            }
+        }
+        catch (Exception exception)
+        {
+            SetNotice($"读取本地设置失败：{GetErrorMessage(exception)}", true);
+            StateHasChanged();
+        }
+    }
+
+    private async Task StartAsync()
+    {
+        if (IsRunning) return;
+        IsRunning = true;
+        NoticeIsError = false;
+        Notice = "正在建立连接并启动并发任务…";
+        Snapshot = new PressureTestSnapshot
+        {
+            TotalRequests = (int)Math.Min(TotalRequests, int.MaxValue),
+            IsRunning = true,
+            RecordsRequestResponse = RecordRequestResponse
+        };
+        ResultsPage = 1;
+        ExpandedResultKey = null;
+        RebuildDisplayedResults();
+        ThroughputHoverIndex = null;
+        LatencyHoverIndex = null;
+        _runCancellation = new CancellationTokenSource();
+        var progress = new Progress<PressureTestSnapshot>(snapshot =>
+        {
+            ApplySnapshot(snapshot);
+            if (snapshot.IsRunning)
+            {
+                Notice = $"压测运行中：{snapshot.CompletedRequests:N0} / {snapshot.TotalRequests:N0}";
+            }
+            StateHasChanged();
+        });
+
+        try
+        {
+            var configuration = new PressureTestConfiguration
+            {
+                UserCount = UserCount,
+                IterationsPerUser = IterationsPerUser,
+                RampUpIntervalMs = RampUpIntervalMs,
+                RequestIntervalMs = RequestIntervalMs,
+                RecordRequestResponse = RecordRequestResponse,
+                BusinessAssertion = BusinessAssertion.Clone(),
+                Settings = Settings.Clone(),
+                Invocation = Input.Clone()
+            };
+            _lastRunConfiguration = configuration;
+            _runStartedAt = DateTimeOffset.Now;
+            _runFinishedAt = default;
+            ApplySnapshot(await Runner.RunAsync(configuration, progress, _runCancellation.Token));
+            Notice = Snapshot.IsCancelled
+                ? $"压测已停止，完成 {Snapshot.CompletedRequests:N0} 次请求"
+                : $"压测完成：{Snapshot.SuccessCount:N0} 成功，{Snapshot.FailureCount:N0} 失败";
+            NoticeIsError = Snapshot.FailureCount > 0;
+        }
+        catch (OperationCanceledException)
+        {
+            Notice = "压测已停止";
+        }
+        catch (Exception exception)
+        {
+            SetNotice($"压测启动失败：{GetErrorMessage(exception)}", true);
+        }
+        finally
+        {
+            _runFinishedAt = DateTimeOffset.Now;
+            IsRunning = false;
+            _runCancellation?.Dispose();
+            _runCancellation = null;
+        }
+    }
+
+    private void Stop()
+    {
+        Notice = "正在停止，等待已发出的请求结束…";
+        _runCancellation?.Cancel();
+    }
+
+    private async Task ExportReportAsync()
+    {
+        if (_lastRunConfiguration is null || Snapshot.CompletedRequests == 0) return;
+        DateTimeOffset finishedAt = _runFinishedAt == default ? DateTimeOffset.Now : _runFinishedAt;
+        string html = PressureTestHtmlReportBuilder.Build(
+            _lastRunConfiguration,
+            Snapshot,
+            _runStartedAt,
+            finishedAt,
+            ShowAllRequests);
+        string endpoint = SanitizeFileName(
+            $"{_lastRunConfiguration.Invocation.ServiceName}-{_lastRunConfiguration.Invocation.MethodName}");
+        string fileName = $"dubbo-pressure-{endpoint}-{DateTime.Now:yyyyMMdd-HHmmss}.html";
+        await JS.InvokeVoidAsync(
+            "dubboTester.download",
+            fileName,
+            html,
+            "text/html;charset=utf-8");
+        SetNotice($"压测报告已导出：{fileName}");
+    }
+
+    private void ToggleShowAllRequests(ChangeEventArgs args)
+    {
+        ShowAllRequests = args.Value is bool value && value;
+        ResultsPage = 1;
+        ExpandedResultKey = null;
+        RebuildDisplayedResults();
+    }
+
+    private void ToggleRequestDetail(PressureTestRequestResult result)
+    {
+        string key = ResultKey(result);
+        ExpandedResultKey = ExpandedResultKey == key ? null : key;
+    }
+
+    private static string ResultKey(PressureTestRequestResult result) =>
+        $"{result.UserIndex}:{result.IterationIndex}";
+
+    private static string ResponseDetailText(PressureTestRequestResult result) =>
+        !string.IsNullOrEmpty(result.Response)
+            ? result.Response
+            : result.Success
+                ? "（空响应）"
+                : result.Error ?? "（无响应内容）";
+
+    private void ApplySnapshot(PressureTestSnapshot snapshot)
+    {
+        Snapshot = snapshot;
+        RebuildDisplayedResults();
+        if (ThroughputHoverIndex is int throughputIndex && throughputIndex >= snapshot.Timeline.Count)
+            ThroughputHoverIndex = null;
+        if (LatencyHoverIndex is int latencyIndex && latencyIndex >= snapshot.Timeline.Count)
+            LatencyHoverIndex = null;
+    }
+
+    private void RebuildDisplayedResults()
+    {
+        IEnumerable<PressureTestRequestResult> filtered = ShowAllRequests
+            ? Snapshot.RequestResults
+            : Snapshot.RequestResults.Where(result => !result.Success);
+        PressureTestRequestResult[] materialized = filtered.ToArray();
+        FilteredResultCount = materialized.Length;
+        ResultsPage = Math.Clamp(ResultsPage, 1, ResultsPageCount);
+        DisplayedResults = materialized
+            .Skip((ResultsPage - 1) * ResultsPerPage)
+            .Take(ResultsPerPage)
+            .ToArray();
+        if (ExpandedResultKey is not null
+            && !DisplayedResults.Any(result => ResultKey(result) == ExpandedResultKey))
+        {
+            ExpandedResultKey = null;
+        }
+    }
+
+    private void FirstResultsPage() => ChangeResultsPage(1);
+    private void PreviousResultsPage() => ChangeResultsPage(ResultsPage - 1);
+    private void NextResultsPage() => ChangeResultsPage(ResultsPage + 1);
+    private void LastResultsPage() => ChangeResultsPage(ResultsPageCount);
+
+    private void ChangeResultsPage(int page)
+    {
+        ResultsPage = Math.Clamp(page, 1, ResultsPageCount);
+        ExpandedResultKey = null;
+        RebuildDisplayedResults();
+    }
+
+    private void AddAssertion() => BusinessAssertion.Conditions.Add(new BusinessAssertionCondition());
+
+    private void RemoveAssertion(BusinessAssertionCondition condition) =>
+        BusinessAssertion.Conditions.Remove(condition);
+
+    private void BackToHome()
+    {
+        DraftStore.Capture(Settings, Input);
+        Navigation.NavigateTo("/");
+    }
+
+    private void FormatTemplate()
+    {
+        try
+        {
+            Input.RequestJson = PressureTestTemplateResolver.FormatJsonTemplate(Input.RequestJson);
+            SetNotice("参数模板已格式化");
+        }
+        catch (Exception exception) { SetNotice($"模板格式错误：{GetErrorMessage(exception)}", true); }
+    }
+
+    private string BuildPolyline(Func<PressureTestPoint, double> selector, bool shareLatencyScale = false)
+    {
+        IReadOnlyList<PressureTestPoint> points = Snapshot.Timeline;
+        if (points.Count == 0) return string.Empty;
+        double maximum = shareLatencyScale
+            ? points.Max(point => Math.Max(point.AverageMilliseconds, Math.Max(point.P95Milliseconds, point.P99Milliseconds)))
+            : points.Max(selector);
+        maximum = Math.Max(maximum, 1);
+        return string.Join(' ', points.Select((point, index) =>
+        {
+            double x = ChartX(index, points.Count);
+            double y = ChartY(selector(point), maximum);
+            return $"{x.ToString("F1", CultureInfo.InvariantCulture)},{y.ToString("F1", CultureInfo.InvariantCulture)}";
+        }));
+    }
+
+    private double ThroughputScaleMaximum => Math.Max(
+        1,
+        Snapshot.Timeline.Count == 0 ? 0 : Snapshot.Timeline.Max(point => point.InstantTps));
+
+    private double LatencyScaleMaximum => Math.Max(
+        1,
+        Snapshot.Timeline.Count == 0
+            ? 0
+            : Snapshot.Timeline.Max(point => Math.Max(
+                point.AverageMilliseconds,
+                Math.Max(point.P95Milliseconds, point.P99Milliseconds))));
+
+    private static double ChartX(int index, int count) =>
+        count <= 1 ? 360 : index * 720d / (count - 1);
+
+    private static double ChartY(double value, double maximum) =>
+        170 - Math.Clamp(value / Math.Max(maximum, 1), 0, 1) * 160;
+
+    private static double ChartHitStart(int index, int count)
+    {
+        if (count <= 1) return 0;
+        double halfWidth = 360d / (count - 1);
+        return Math.Max(0, ChartX(index, count) - halfWidth);
+    }
+
+    private static double ChartHitWidth(int index, int count)
+    {
+        if (count <= 1) return 720;
+        double halfWidth = 360d / (count - 1);
+        double start = Math.Max(0, ChartX(index, count) - halfWidth);
+        double end = Math.Min(720, ChartX(index, count) + halfWidth);
+        return end - start;
+    }
+
+    private string TooltipStyle(int index)
+    {
+        double percentage = Snapshot.Timeline.Count <= 1
+            ? 50
+            : index * 100d / (Snapshot.Timeline.Count - 1);
+        return $"left:{percentage.ToString("F2", CultureInfo.InvariantCulture)}%";
+    }
+
+    private string TooltipAlignmentClass(int index)
+    {
+        if (Snapshot.Timeline.Count <= 1) return string.Empty;
+        double percentage = index * 100d / (Snapshot.Timeline.Count - 1);
+        return percentage < 18 ? "align-left" : percentage > 82 ? "align-right" : string.Empty;
+    }
+
+    private static string SvgNumber(double value) => value.ToString("F2", CultureInfo.InvariantCulture);
+
+    private static string SanitizeFileName(string value)
+    {
+        string sanitized = string.Concat(value.Select(character =>
+            char.IsLetterOrDigit(character) || character is '.' or '-' or '_'
+                ? character
+                : '-'));
+        sanitized = sanitized.Trim('-');
+        if (string.IsNullOrWhiteSpace(sanitized)) sanitized = "report";
+        return sanitized.Length <= 80 ? sanitized : sanitized[..80];
+    }
+
+    private static string FormatMilliseconds(double value) => $"{value:F2} ms";
+    private void SetNotice(string text, bool isError = false) { Notice = text; NoticeIsError = isError; }
+    private static string GetErrorMessage(Exception exception)
+    {
+        Exception current = exception;
+        while (current.InnerException is not null) current = current.InnerException;
+        return current.Message;
+    }
+
+    public void Dispose()
+    {
+        _runCancellation?.Cancel();
+        _runCancellation?.Dispose();
+    }
+}

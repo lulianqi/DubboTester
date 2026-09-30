@@ -1,0 +1,34 @@
+<li class="type-node type-node-@Node.Kind.ToString().ToLowerInvariant()">
+    <div class="type-node-line">
+        <span class="type-node-name">@Node.Name</span>
+        <code title="@Node.JavaType">@Node.JavaType</code>
+        <span class="type-kind">@Node.KindLabel</span>
+    </div>
+    @if (Node.EnumValues.Count > 0)
+    {
+        <div class="enum-values">
+            @foreach (string value in Node.EnumValues)
+            {
+                <code>@value</code>
+            }
+        </div>
+    }
+    @if (Node.Kind == JavaTypeKind.RecursiveReference)
+    {
+        <div class="type-note">为避免无限展开，此处显示为递归引用，示例值使用 null。</div>
+    }
+    @if (Node.Children.Count > 0)
+    {
+        <ul class="type-children">
+            @foreach (JavaTypeStructure child in Node.Children)
+            {
+                <TypeStructureNode Node="@child" />
+            }
+        </ul>
+    }
+</li>
+
+@code {
+    [Parameter, EditorRequired]
+    public JavaTypeStructure Node { get; set; } = default!;
+}

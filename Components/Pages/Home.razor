@@ -1,0 +1,1099 @@
+@page "/"
+@page "/dubbo"
+@page "/independent-pages/dubbo"
+@using System.Text.Json
+@implements IDisposable
+@inject DubboSession Session
+@inject DubboCatalogPreloadService CatalogPreloader
+@inject PressureTestDraftStore PressureDraft
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Dubbo Tester</PageTitle>
+
+<div class="tester-shell">
+    <header class="topbar">
+        <div class="brand-block">
+            <div class="brand-mark">D</div>
+            <div>
+                <div class="brand">Dubbo Tester</div>
+                <div class="brand-subtitle">Native Dubbo2 · Hessian2</div>
+            </div>
+        </div>
+        <div class="topbar-actions">
+            <span class="package-badge">DubboNet 1.3.2</span>
+            <button class="icon-button" title="设置" @onclick="OpenSettings">⚙</button>
+            <button class="icon-button" title="强制刷新注册中心" disabled="@IsCatalogActive" @onclick="() => RefreshCatalogAsync(true)">
+                <span class="@(IsCatalogBusy ? "spin" : null)">↻</span>
+            </button>
+        </div>
+        <div class="notice @(NoticeIsError ? "notice-error" : null)">
+            <span class="notice-dot"></span>
+            <span class="notice-message">@CatalogNotice</span>
+            @if (IsCatalogActive)
+            {
+                <button class="text-button notice-cancel" @onclick="StopCatalogLoad">结束加载</button>
+            }
+        </div>
+    </header>
+
+    <main class="workspace">
+        <aside class="catalog-panel panel">
+            <div class="panel-heading">
+                <div>
+                    <h2>服务目录</h2>
+                    <span>@Services.Count 个服务</span>
+                </div>
+                <button class="subtle-button" title="忽略缓存并刷新" disabled="@IsCatalogActive" @onclick="() => RefreshCatalogAsync(true)">刷新</button>
+            </div>
+
+            <div class="search-box">
+                <span>⌕</span>
+                <input placeholder="搜索服务或方法…" @bind="SearchText" @bind:event="oninput" />
+                @if (!string.IsNullOrWhiteSpace(SearchText))
+                {
+                    <button title="清除" @onclick="() => SearchText = string.Empty">×</button>
+                }
+            </div>
+
+            @if (Services.Count == 0)
+            {
+                <div class="empty-state">
+                    <div class="empty-icon">⌘</div>
+                    <strong>尚未加载服务</strong>
+                    <span>配置 ZooKeeper 后刷新注册中心</span>
+                    <button class="primary small" @onclick="OpenSettings">打开设置</button>
+                </div>
+            }
+            else
+            {
+                <div class="service-tree">
+                    <div class="tree-root"><span>▾</span><b>/</b></div>
+                    <div class="tree-root tree-indent"><span>▾</span><b>@RegistryDisplayName</b></div>
+                    @foreach (DubboServiceItem service in FilteredServices)
+                    {
+                        <div class="service-node @(ReferenceEquals(SelectedService, service) ? "active-service" : null)" @key="service.Name">
+                            <button class="service-row" @onclick="() => ToggleServiceAsync(service)">
+                                <span class="chevron">@(ReferenceEquals(ExpandedService, service) ? "▾" : "›")</span>
+                                <span class="service-icon">⬡</span>
+                                <span class="service-name" title="@service.Name">@service.Name</span>
+                                @if (service.IsLoaded)
+                                {
+                                    <span class="count-pill">@service.Methods.Count</span>
+                                }
+                            </button>
+
+                            @if (ReferenceEquals(ExpandedService, service))
+                            {
+                                <div class="service-children">
+                                    @if (IsServiceBusy)
+                                    {
+                                        <div class="loading-row"><span class="spinner"></span>加载 Provider…</div>
+                                    }
+                                    else if (service.IsLoaded)
+                                    {
+                                        @foreach (DubboProviderItem provider in service.Providers)
+                                        {
+                                            <button class="tree-item provider-item @(SelectedProvider?.RegistryUrl == provider.RegistryUrl ? "selected" : null)"
+                                                    title="@provider.RegistryUrl"
+                                                    @onclick="() => SelectProvider(provider)">
+                                                <span class="status-led @(provider.Disabled ? "disabled" : null)"></span>
+                                                <span>@provider.Address</span>
+                                                <small>@provider.Scheme</small>
+                                            </button>
+                                        }
+                                        @foreach (string method in FilterMethods(service.Methods))
+                                        {
+                                            <button class="tree-item method-item @(Input.ServiceName == service.Name && Input.MethodName == method ? "selected" : null)"
+                                                    @onclick="() => SelectMethodAsync(service, method)">
+                                                <span>↪</span><span title="@method">@method</span>
+                                            </button>
+                                        }
+                                        @if (service.Providers.Count == 0)
+                                        {
+                                            <div class="muted-row">没有可用 Provider</div>
+                                        }
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                    @if (!FilteredServices.Any())
+                    {
+                        <div class="muted-row centered">没有匹配项</div>
+                    }
+                </div>
+            }
+        </aside>
+
+        <section class="request-panel panel">
+            <div class="connection-bar">
+                <label class="route-switch">
+                    <select @bind="Input.Route">
+                        <option value="@InvocationRoute.Registry">注册中心</option>
+                        <option value="@InvocationRoute.DirectProvider">直连 Provider</option>
+                    </select>
+                </label>
+                <div class="address-field">
+                    <span>主机地址</span>
+                    <input placeholder="选择 Provider" @bind="Input.Host" />
+                </div>
+                <input class="port-field" type="number" min="1" max="65535" @bind="Input.Port" />
+                <button class="connect-button @ProviderTestClass" title="检测 TCP 连通性" disabled="@IsProviderTesting" @onclick="TestProviderAsync">
+                    @if (IsProviderTesting)
+                    {
+                        <span class="spinner"></span>
+                    }
+                    else
+                    {
+                        <span>⛓</span>
+                    }
+                </button>
+            </div>
+
+            <div class="endpoint-row">
+                <div class="endpoint-input service-endpoint">
+                    <span>服务</span>
+                    <input placeholder="com.foo.DemoService" @bind="Input.ServiceName" />
+                </div>
+                <div class="endpoint-separator">#</div>
+                <div class="endpoint-input method-endpoint">
+                    <span>方法</span>
+                    <input placeholder="methodName" @bind="Input.MethodName" />
+                </div>
+                <button class="subtle-button signature-load" disabled="@(IsSignatureBusy || string.IsNullOrWhiteSpace(Input.MethodName))" @onclick="() => LoadSignaturesAsync(true)">
+                    @(IsSignatureBusy ? "加载中…" : "读取签名")
+                </button>
+            </div>
+
+            <div class="signature-strip">
+                <span class="strip-label">Java 签名</span>
+                @if (Signatures.Count > 0)
+                {
+                    <span class="signature-display"
+                          title="@Signatures[SelectedSignatureIndex].Signature">
+                        @Signatures[SelectedSignatureIndex].Signature
+                    </span>
+                    @if (Signatures.Count > 1)
+                    {
+                        <select class="overload-picker"
+                                aria-label="选择重载签名"
+                                title="选择重载签名"
+                                value="@SelectedSignatureIndex"
+                                @onchange="SignatureChanged">
+                            @for (int index = 0; index < Signatures.Count; index++)
+                            {
+                                <option value="@index">重载 @(index + 1)</option>
+                            }
+                        </select>
+                    }
+                    <span class="source-badge">@Signatures[SelectedSignatureIndex].Source</span>
+                }
+                else
+                {
+                    <input placeholder="自动解析；也可填写 java.lang.String, java.lang.Long" @bind="Input.JavaParameterTypes" />
+                }
+            </div>
+
+            <section class="editor-card request-editor">
+                <div class="editor-toolbar">
+                    <div>
+                        <b>请求参数</b>
+                        <span>JSON 参数数组；单个对象可直接填写</span>
+                    </div>
+                    <div class="toolbar-actions">
+                        @if (HasParameterStructure)
+                        {
+                            <button class="text-button" @onclick="OpenTypeStructure">参数结构</button>
+                            <button class="text-button" title="用元数据结构生成示例并替换当前请求内容" @onclick="GenerateRequestExample">按结构生成示例</button>
+                        }
+                        <button class="text-button" @onclick="FormatRequest">格式化</button>
+                    </div>
+                </div>
+                <textarea spellcheck="false" @bind="Input.RequestJson"></textarea>
+            </section>
+
+            <div class="action-row">
+                <details class="advanced-options">
+                    <summary>高级选项</summary>
+                    <div class="advanced-popover">
+                        <label>服务版本<input @bind="Input.Version" placeholder="可选" /></label>
+                        <label>服务分组<input @bind="Input.Group" placeholder="可选" /></label>
+                        <label class="wide">Attachments JSON<textarea @bind="Input.AttachmentsJson" placeholder='{"traceId":"..."}'></textarea></label>
+                        @if (Signatures.Count > 0)
+                        {
+                            <label class="wide">Java 参数类型<input @bind="Input.JavaParameterTypes" /></label>
+                        }
+                    </div>
+                </details>
+                <div class="send-hint">
+                    @if (Input.Route == InvocationRoute.Registry)
+                    {
+                        <span>由注册中心发现并负载均衡</span>
+                    }
+                    else
+                    {
+                        <span>直连模式需要精确 Java 类型</span>
+                    }
+                </div>
+                <div class="split-send">
+                    <button class="primary send-button split-send-main" disabled="@IsInvoking" @onclick="InvokeAsync">
+                        @if (IsInvoking)
+                        {
+                            <span class="spinner light"></span><span>请求中</span>
+                        }
+                        else
+                        {
+                            <span>▷</span><span>发送</span>
+                        }
+                    </button>
+                    <details class="send-more">
+                        <summary title="更多发送方式" aria-label="更多发送方式">▾</summary>
+                        <div class="send-more-menu">
+                            <button @onclick="OpenPressureTest">
+                                <span class="menu-icon">◫</span>
+                                <span><b>压力测试</b><small>并发发送并查看性能指标</small></span>
+                            </button>
+                        </div>
+                    </details>
+                </div>
+            </div>
+
+            <section class="editor-card result-editor">
+                <div class="editor-toolbar result-toolbar">
+                    <div class="result-title">
+                        <b>响应结果</b>
+                        @if (LastOutput is not null)
+                        {
+                            <span class="result-state @(LastOutput.Success ? "success" : "failed")">
+                                @(LastOutput.Success ? "成功" : "失败")
+                            </span>
+                            <span>@LastOutput.RequestElapsed ms</span>
+                            @if (LastOutput.RequestId is not null)
+                            {
+                                <span>Request ID @LastOutput.RequestId</span>
+                            }
+                        }
+                    </div>
+                    <div class="toolbar-actions">
+                        <button class="text-button" disabled="@string.IsNullOrEmpty(ResultText)" @onclick="CopyResultAsync">复制</button>
+                        <button class="text-button" disabled="@string.IsNullOrEmpty(ResultText)" @onclick="DownloadResultAsync">下载</button>
+                        <button class="text-button" disabled="@string.IsNullOrEmpty(ResultText)" @onclick="() => ResultText = string.Empty">清空</button>
+                    </div>
+                </div>
+                <pre class="result-content @(LastOutput is { Success: false } ? "error-content" : null)">@ResultText</pre>
+            </section>
+        </section>
+
+        <aside class="history-panel panel">
+            <div class="panel-heading history-heading">
+                <div>
+                    <h2>历史记录</h2>
+                    <span>@VisibleHistory.Count() 条</span>
+                </div>
+                <div class="history-actions">
+                    <button class="heart-filter @(FavoritesOnly ? "active" : null)" title="只看收藏" @onclick="() => FavoritesOnly = !FavoritesOnly">♥</button>
+                    <button class="subtle-button danger" disabled="@(History.Count == 0)" @onclick="ClearHistoryAsync">清空</button>
+                </div>
+            </div>
+            <label class="save-response-setting">
+                <input type="checkbox" @bind="Settings.SaveResponseInHistory" @bind:after="PersistSettingsAsync" />
+                <span>历史中保存响应正文</span>
+            </label>
+            <div class="history-list">
+                @foreach (InvocationHistory item in VisibleHistory)
+                {
+                    <article class="history-card @(item.Success ? null : "failed")" @key="item.Id">
+                        <button class="history-main" @onclick="() => LoadHistory(item)">
+                            <div class="history-meta">
+                                <span class="history-id">#@HistoryNumber(item)</span>
+                                <span>@item.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</span>
+                                <span>@item.ElapsedMs ms</span>
+                            </div>
+                            <strong title="@item.Endpoint">@item.Endpoint</strong>
+                            <code title="@item.RequestJson">@OneLine(item.RequestJson)</code>
+                        </button>
+                        <div class="history-card-actions">
+                            <button class="favorite @(item.Favorite ? "active" : null)" title="收藏" @onclick="() => ToggleFavoriteAsync(item)">♥</button>
+                            <button title="删除" @onclick="() => DeleteHistoryAsync(item)">×</button>
+                        </div>
+                    </article>
+                }
+                @if (!VisibleHistory.Any())
+                {
+                    <div class="empty-state compact"><span>暂无历史记录</span></div>
+                }
+            </div>
+        </aside>
+    </main>
+</div>
+
+@if (SignatureInfoVisible)
+{
+    <div class="modal-backdrop" @onclick="CloseSignatureInfo">
+        <section class="type-structure-modal signature-info-modal" @onclick:stopPropagation="true">
+            <header>
+                <div>
+                    <h2>读取签名结果</h2>
+                    <p>@Input.ServiceName#@Input.MethodName · @Signatures.Count 个重载</p>
+                </div>
+                <button class="modal-close" @onclick="CloseSignatureInfo">×</button>
+            </header>
+            <div class="signature-info-content">
+                @for (int index = 0; index < Signatures.Count; index++)
+                {
+                    MethodSignatureItem signature = Signatures[index];
+                    <section class="signature-info-card">
+                        <div class="signature-info-title">
+                            <span>#@(index + 1)</span>
+                            <code>@signature.Signature</code>
+                        </div>
+                        <dl class="metadata-grid">
+                            <div><dt>服务</dt><dd>@DisplayMetadataValue(signature.ServiceName)</dd></div>
+                            <div><dt>方法</dt><dd>@DisplayMetadataValue(signature.MethodName)</dd></div>
+                            <div><dt>返回类型</dt><dd>@DisplayMetadataValue(signature.ReturnType)</dd></div>
+                            <div><dt>参数类型</dt><dd>@DisplayMetadataValue(string.Join(", ", signature.ParameterTypes))</dd></div>
+                            <div><dt>来源</dt><dd>@DisplayMetadataValue(signature.Source)</dd></div>
+                            <div><dt>Provider 应用</dt><dd>@DisplayMetadataValue(signature.Application)</dd></div>
+                            <div><dt>版本</dt><dd>@DisplayMetadataValue(signature.Version)</dd></div>
+                            <div><dt>分组</dt><dd>@DisplayMetadataValue(signature.Group)</dd></div>
+                            <div><dt>代码来源</dt><dd>@DisplayMetadataValue(signature.CodeSource)</dd></div>
+                            <div><dt>元数据版本</dt><dd>@signature.MetadataVersion</dd></div>
+                            <div class="metadata-wide"><dt>元数据路径</dt><dd title="@signature.MetadataPath">@DisplayMetadataValue(signature.MetadataPath)</dd></div>
+                            <div class="metadata-wide"><dt>读取时间</dt><dd>@FormatLoadedAt(signature.LoadedAt)</dd></div>
+                        </dl>
+                        <details class="metadata-details" open="@(index == 0)">
+                            <summary>服务参数（@signature.ServiceParameters.Count）</summary>
+                            @if (signature.ServiceParameters.Count > 0)
+                            {
+                                <div class="metadata-parameters">
+                                    @foreach (KeyValuePair<string, string> parameter in signature.ServiceParameters.OrderBy(item => item.Key, StringComparer.Ordinal))
+                                    {
+                                        <div><code>@parameter.Key</code><span>@parameter.Value</span></div>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <p class="metadata-empty">无</p>
+                            }
+                        </details>
+                        <details class="metadata-details">
+                            <summary>原始类型定义 types（@signature.TypeDefinitions.Count）</summary>
+                            <pre>@SerializeTypeDefinitions(signature)</pre>
+                        </details>
+                    </section>
+                }
+            </div>
+            <footer>
+                <span>以上为 DubboNet 1.3.2 本次读取到的完整方法与类型元数据。</span>
+                <div><button class="primary" @onclick="CloseSignatureInfo">关闭</button></div>
+            </footer>
+        </section>
+    </div>
+}
+
+@if (TypeStructureVisible)
+{
+    <div class="modal-backdrop" @onclick="CloseTypeStructure">
+        <section class="type-structure-modal" @onclick:stopPropagation="true">
+            <header>
+                <div>
+                    <h2>参数结构</h2>
+                    <p title="@SelectedSignature?.Signature">@SelectedSignature?.Signature</p>
+                </div>
+                <button class="modal-close" @onclick="CloseTypeStructure">×</button>
+            </header>
+            <div class="type-structure-content">
+                @foreach (MethodParameterStructure parameter in ParameterStructures)
+                {
+                    <section class="parameter-structure-card">
+                        <div class="parameter-structure-title">
+                            <b>@parameter.DisplayName</b>
+                            <code>@parameter.Structure.JavaType</code>
+                        </div>
+                        <ul class="type-tree">
+                            <TypeStructureNode Node="@parameter.Structure" />
+                        </ul>
+                    </section>
+                }
+            </div>
+            <footer>
+                <span>示例只用于辅助填写，请按实际业务含义修改字段值。</span>
+                <div>
+                    <button class="subtle-button" @onclick="CloseTypeStructure">关闭</button>
+                    <button class="primary" @onclick="GenerateRequestExample">生成并填入请求 JSON</button>
+                </div>
+            </footer>
+        </section>
+    </div>
+}
+
+@if (SettingsVisible)
+{
+    <div class="modal-backdrop" @onclick="CloseSettings">
+        <section class="settings-modal" @onclick:stopPropagation="true">
+            <header>
+                <div><h2>连接与页面设置</h2><p>设置会保存在当前浏览器中</p></div>
+                <button class="modal-close" @onclick="CloseSettings">×</button>
+            </header>
+            <div class="settings-content">
+                <label class="wide-field">
+                    <span>ZooKeeper 连接地址<b>*</b></span>
+                    <input @bind="SettingsDraft.ZooKeeperAddress" placeholder="zk-1:2181,zk-2:2181" />
+                    <small>支持 DubboNet 的 digest 认证连接字符串格式</small>
+                </label>
+                <div class="settings-grid">
+                    <label><span>注册目录</span><input @bind="SettingsDraft.RegistryRootPath" placeholder="/dubbo" /></label>
+                    <label><span>请求超时（ms）</span><input type="number" min="100" max="600000" @bind="SettingsDraft.RequestTimeoutMs" /></label>
+                </div>
+                <div class="settings-grid">
+                    <label><span>元数据中心地址</span><input @bind="SettingsDraft.MetadataCenterAddress" placeholder="留空则复用注册中心" /></label>
+                    <label><span>元数据目录</span><input @bind="SettingsDraft.MetadataRootPath" placeholder="/dubbo" /></label>
+                </div>
+                <div class="settings-grid">
+                    <label>
+                        <span>负载均衡</span>
+                        <select @bind="SettingsDraft.LoadBalanceMode">
+                            @foreach (DubboClient.LoadBalanceMode mode in Enum.GetValues<DubboClient.LoadBalanceMode>())
+                            {
+                                <option value="@mode">@mode</option>
+                            }
+                        </select>
+                    </label>
+                    <label>
+                        <span>签名兜底超时（ms）</span>
+                        <input type="number" min="100" max="60000" @bind="SettingsDraft.MetadataFallbackTimeoutMs" />
+                        <small>仅包内部在元数据中心不可用时使用</small>
+                    </label>
+                </div>
+                <div class="setting-checks">
+                    <label title="加载目录时一次性读取全部服务的 Provider 和方法，服务节点仍保持收起">
+                        <input type="checkbox" @bind="SettingsDraft.PreloadAllServiceMethods" />加载目录时预取全部服务方法
+                    </label>
+                    <label><input type="checkbox" @bind="SettingsDraft.HideUnmatched" />只显示搜索匹配项</label>
+                    <label><input type="checkbox" @bind="SettingsDraft.SearchMethodsOnly" />仅搜索方法名</label>
+                    <label><input type="checkbox" @bind="SettingsDraft.CaseSensitiveSearch" />搜索区分大小写</label>
+                    <label><input type="checkbox" @bind="SettingsDraft.SaveResponseInHistory" />历史记录保存响应正文</label>
+                </div>
+            </div>
+            <footer>
+                <button class="subtle-button" @onclick="CloseSettings">取消</button>
+                <button class="primary" @onclick="SaveSettingsAsync">保存并刷新</button>
+            </footer>
+        </section>
+    </div>
+}
+
+@code {
+    private const string SettingsStorageKey = "dubbo-tester.settings.v1";
+    private const string HistoryStorageKey = "dubbo-tester.history.v1";
+    private static readonly JsonSerializerOptions StorageJsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions MetadataJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    private TesterSettings Settings { get; set; } = new();
+    private TesterSettings SettingsDraft { get; set; } = new();
+    private InvocationInput Input { get; set; } = new();
+    private List<DubboServiceItem> Services { get; set; } = [];
+    private List<MethodSignatureItem> Signatures { get; set; } = [];
+    private IReadOnlyList<MethodParameterStructure> ParameterStructures { get; set; } = [];
+    private List<InvocationHistory> History { get; set; } = [];
+    private DubboServiceItem? SelectedService { get; set; }
+    private DubboServiceItem? ExpandedService { get; set; }
+    private DubboProviderItem? SelectedProvider { get; set; }
+    private InvocationOutput? LastOutput { get; set; }
+    private string SearchText { get; set; } = string.Empty;
+    private string ResultText { get; set; } = string.Empty;
+    private string Notice { get; set; } = "请先配置 ZooKeeper，然后刷新服务目录";
+    private bool NoticeIsError { get; set; }
+    private bool SettingsVisible { get; set; }
+    private bool TypeStructureVisible { get; set; }
+    private bool SignatureInfoVisible { get; set; }
+    private bool FavoritesOnly { get; set; }
+    private bool IsCatalogBusy { get; set; }
+    private CancellationTokenSource? CatalogLoadCancellation { get; set; }
+    private CancellationTokenSource? CatalogPreloadTrackingCancellation { get; set; }
+    private CatalogPreloadStatus? PreloadStatus { get; set; }
+    private bool CatalogStopRequested { get; set; }
+    private bool IsDisposed { get; set; }
+    private bool IsServiceBusy { get; set; }
+    private bool IsSignatureBusy { get; set; }
+    private bool IsProviderTesting { get; set; }
+    private bool IsInvoking { get; set; }
+    private bool? ProviderTestSucceeded { get; set; }
+    private int SelectedSignatureIndex { get; set; }
+    private MethodSignatureItem? SelectedSignature =>
+        SelectedSignatureIndex >= 0 && SelectedSignatureIndex < Signatures.Count
+            ? Signatures[SelectedSignatureIndex]
+            : null;
+    private bool HasParameterStructure =>
+        DubboTypeStructureBuilder.HasDetailedStructure(ParameterStructures);
+    private bool IsCatalogPreloading =>
+        PreloadStatus?.State == CatalogPreloadState.Running;
+    private bool IsCatalogActive => IsCatalogBusy || IsCatalogPreloading;
+    private string CatalogNotice => IsCatalogPreloading
+        ? CatalogStopRequested
+            ? "正在结束后台方法预取，已完成的数据会保留…"
+            : $"正在后台预取服务方法：{PreloadStatus!.LoadedServiceCount}/{PreloadStatus.TotalServiceCount}，"
+              + $"失败 {PreloadStatus.FailedServiceCount}，剩余 {PreloadStatus.PendingServiceCount}"
+        : Notice;
+
+    private IEnumerable<DubboServiceItem> FilteredServices
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(SearchText))
+            {
+                return Services;
+            }
+
+            StringComparison comparison = Settings.CaseSensitiveSearch
+                ? StringComparison.Ordinal
+                : StringComparison.OrdinalIgnoreCase;
+            return Services.Where(service =>
+                (!Settings.SearchMethodsOnly && service.Name.Contains(SearchText, comparison))
+                || service.Methods.Any(method => method.Contains(SearchText, comparison)));
+        }
+    }
+
+    private IEnumerable<InvocationHistory> VisibleHistory =>
+        FavoritesOnly ? History.Where(item => item.Favorite) : History;
+
+    private string RegistryDisplayName
+    {
+        get
+        {
+            string value = Settings.RegistryRootPath.Trim('/').Split('/').LastOrDefault() ?? string.Empty;
+            return string.IsNullOrWhiteSpace(value) ? "dubbo" : value;
+        }
+    }
+    private string ProviderTestClass => ProviderTestSucceeded switch
+    {
+        true => "connected",
+        false => "disconnected",
+        _ => string.Empty
+    };
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        try
+        {
+            string? settingsJson = await JS.InvokeAsync<string?>("dubboTester.load", SettingsStorageKey);
+            string? historyJson = await JS.InvokeAsync<string?>("dubboTester.load", HistoryStorageKey);
+            bool hasPressureDraft = PressureDraft.TryGet(
+                out TesterSettings pressureSettings,
+                out InvocationInput pressureInvocation);
+            Settings = hasPressureDraft
+                ? pressureSettings
+                : DeserializeOrDefault(settingsJson, new TesterSettings());
+            if (hasPressureDraft) Input = pressureInvocation;
+            History = DeserializeOrDefault(historyJson, new List<InvocationHistory>());
+            SettingsDraft = Settings.Clone();
+            StateHasChanged();
+
+            if (!string.IsNullOrWhiteSpace(Settings.ZooKeeperAddress))
+            {
+                await RefreshCatalogAsync(false);
+            }
+        }
+        catch (Exception exception)
+        {
+            SetNotice($"读取本地设置失败：{exception.Message}", true);
+            StateHasChanged();
+        }
+    }
+
+    private static T DeserializeOrDefault<T>(string? json, T fallback)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return fallback;
+        try { return JsonSerializer.Deserialize<T>(json, StorageJsonOptions) ?? fallback; }
+        catch (JsonException) { return fallback; }
+    }
+
+    private async Task RefreshCatalogAsync(bool forceRefresh = false)
+    {
+        if (IsCatalogBusy) return;
+        CancelCatalogPreloadTracking();
+        PreloadStatus = null;
+        var cancellation = new CancellationTokenSource();
+        CatalogLoadCancellation = cancellation;
+        CatalogStopRequested = false;
+        IsCatalogBusy = true;
+        SetNotice(forceRefresh
+            ? "正在忽略缓存并重新读取 ZooKeeper 服务目录…"
+            : "正在加载服务目录（优先使用全局缓存）…");
+        try
+        {
+            DubboCatalogLoadResult result = await Session.LoadServicesAsync(
+                Settings,
+                forceRefresh,
+                cancellation.Token);
+            Services = result.Services.ToList();
+            SelectedService = null;
+            ExpandedService = null;
+            await InvokeAsync(StateHasChanged);
+
+            if (Settings.PreloadAllServiceMethods
+                && !result.HasAllServiceDetails
+                && !result.PreloadAttempted)
+            {
+                PreloadStatus = CatalogPreloader.StartOrGet(Settings, result.Services);
+                StartCatalogPreloadTracking(Settings.Clone());
+            }
+
+            string source = result.FromCache ? "全局缓存" : "ZooKeeper";
+            if (IsCatalogPreloading)
+            {
+                SetNotice(
+                    $"已从{source}加载 {Services.Count} 个服务，Provider 与方法正在后台预取");
+            }
+            else if (Settings.PreloadAllServiceMethods && !result.HasAllServiceDetails)
+            {
+                SetNotice(
+                    $"已从{source}加载 {Services.Count} 个服务；因 ZooKeeper 超时或连接波动，"
+                    + $"仍有 {result.PendingServiceDetailCount} 个服务未预取，可展开服务重试或强制刷新");
+            }
+            else
+            {
+                string details = result.HasAllServiceDetails ? "，已包含全部服务方法" : string.Empty;
+                SetNotice($"已就绪：从{source}加载 {Services.Count} 个 Dubbo 服务{details}");
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (Services.Count > 0)
+            {
+                try
+                {
+                    DubboCatalogLoadResult cached = await Session.LoadServicesAsync(Settings);
+                    Services = cached.Services.ToList();
+                }
+                catch
+                {
+                    // 保留当前已经显示的目录；结束操作不应再触发新的错误提示。
+                }
+            }
+            SetNotice(Services.Count == 0
+                ? "已手动结束服务目录加载"
+                : $"已手动结束加载，已保留当前 {Services.Count} 个服务及成功预取的方法");
+        }
+        catch (Exception exception) { SetNotice($"加载注册中心失败：{GetErrorMessage(exception)}", true); }
+        finally
+        {
+            IsCatalogBusy = false;
+            if (ReferenceEquals(CatalogLoadCancellation, cancellation))
+            {
+                CatalogLoadCancellation = null;
+            }
+            cancellation.Dispose();
+        }
+    }
+
+    private void StopCatalogLoad()
+    {
+        CatalogStopRequested = true;
+        if (IsCatalogBusy && CatalogLoadCancellation is not null)
+        {
+            SetNotice("正在结束服务目录加载，已完成的数据会保留…");
+            CatalogLoadCancellation.Cancel();
+            return;
+        }
+
+        if (IsCatalogPreloading)
+        {
+            CatalogPreloader.Stop(Settings.ZooKeeperAddress, Settings.RegistryRootPath);
+            SetNotice("正在结束后台方法预取，已完成的数据会保留…");
+        }
+    }
+
+    private void StartCatalogPreloadTracking(TesterSettings settings)
+    {
+        CancelCatalogPreloadTracking();
+        var cancellation = new CancellationTokenSource();
+        CatalogPreloadTrackingCancellation = cancellation;
+        _ = TrackCatalogPreloadAsync(settings, cancellation);
+    }
+
+    private async Task TrackCatalogPreloadAsync(
+        TesterSettings settings,
+        CancellationTokenSource cancellation)
+    {
+        try
+        {
+            while (!cancellation.IsCancellationRequested)
+            {
+                CatalogPreloadStatus? status = CatalogPreloader.GetStatus(
+                    settings.ZooKeeperAddress,
+                    settings.RegistryRootPath);
+                if (status is null)
+                {
+                    return;
+                }
+
+                await InvokeAsync(() =>
+                {
+                    if (IsDisposed) return;
+                    PreloadStatus = status;
+                    StateHasChanged();
+                });
+
+                if (status.State != CatalogPreloadState.Running)
+                {
+                    DubboCatalogLoadResult cached = await Session.LoadServicesAsync(
+                        settings,
+                        forceRefresh: false,
+                        cancellation.Token);
+                    await InvokeAsync(() =>
+                    {
+                        if (IsDisposed) return;
+                        if (IsSameCatalog(settings, Settings))
+                        {
+                            Services = cached.Services.ToList();
+                            SetNotice(BuildPreloadCompletionNotice(status),
+                                status.State == CatalogPreloadState.Faulted);
+                        }
+                        CatalogStopRequested = false;
+                        StateHasChanged();
+                    });
+                    return;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellation.Token);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // 页面切换或设置改变时只结束当前页面的状态跟踪，后台预取继续运行。
+        }
+        catch (ObjectDisposedException) when (cancellation.IsCancellationRequested || IsDisposed)
+        {
+            // Blazor circuit 已释放。
+        }
+        finally
+        {
+            if (ReferenceEquals(CatalogPreloadTrackingCancellation, cancellation))
+            {
+                CatalogPreloadTrackingCancellation = null;
+            }
+            cancellation.Dispose();
+        }
+    }
+
+    private void CancelCatalogPreloadTracking()
+    {
+        CatalogPreloadTrackingCancellation?.Cancel();
+    }
+
+    private static bool IsSameCatalog(TesterSettings left, TesterSettings right) =>
+        string.Equals(left.ZooKeeperAddress.Trim(), right.ZooKeeperAddress.Trim(),
+            StringComparison.OrdinalIgnoreCase)
+        && string.Equals(NormalizeRegistryRoot(left.RegistryRootPath),
+            NormalizeRegistryRoot(right.RegistryRootPath), StringComparison.Ordinal);
+
+    private static string NormalizeRegistryRoot(string? root)
+    {
+        string value = string.IsNullOrWhiteSpace(root) ? "/dubbo" : root.Trim();
+        if (!value.StartsWith('/')) value = "/" + value;
+        return value.Length > 1 ? value.TrimEnd('/') : value;
+    }
+
+    private static string BuildPreloadCompletionNotice(CatalogPreloadStatus status)
+    {
+        string progress = $"{status.LoadedServiceCount}/{status.TotalServiceCount} 个服务已包含方法详情";
+        return status.State switch
+        {
+            CatalogPreloadState.Completed when status.FailedServiceCount == 0 => $"后台预取完成：{progress}",
+            CatalogPreloadState.Completed => $"后台预取结束：{progress}，失败 {status.FailedServiceCount} 个，可展开服务局部刷新",
+            CatalogPreloadState.Stopped => $"已手动结束后台预取：{progress}，失败 {status.FailedServiceCount} 个",
+            CatalogPreloadState.TimedOut => $"后台预取超过 5 分钟，已结束：{progress}，失败 {status.FailedServiceCount} 个",
+            CatalogPreloadState.ConsecutiveFailures => $"后台预取连续失败 5 次，已结束：{progress}，失败 {status.FailedServiceCount} 个",
+            CatalogPreloadState.Faulted => $"后台预取失败：{status.Error ?? "未知错误"}；{progress}",
+            _ => $"后台预取已结束：{progress}"
+        };
+    }
+
+    private async Task ToggleServiceAsync(DubboServiceItem service)
+    {
+        SelectedService = service;
+        if (ReferenceEquals(ExpandedService, service)) { ExpandedService = null; return; }
+        ExpandedService = service;
+        Input.ServiceName = service.Name;
+
+        IsServiceBusy = true;
+        try
+        {
+            await Session.LoadServiceDetailsAsync(Settings, service, forceRefresh: true);
+            SetNotice($"已刷新 {service.Name}：{service.Providers.Count} 个 Provider，{service.Methods.Count} 个方法");
+        }
+        catch (Exception exception) { SetNotice($"加载服务详情失败：{GetErrorMessage(exception)}", true); }
+        finally { IsServiceBusy = false; }
+    }
+
+    private void SelectProvider(DubboProviderItem provider)
+    {
+        SelectedProvider = provider;
+        Input.Host = provider.Host;
+        Input.Port = provider.Port;
+        Input.ServiceName = provider.ServiceName;
+        Input.Version = provider.Version ?? string.Empty;
+        Input.Group = provider.Group ?? string.Empty;
+        ProviderTestSucceeded = null;
+        SetNotice($"已选择 Provider {provider.Description}");
+    }
+
+    private async Task SelectMethodAsync(DubboServiceItem service, string method)
+    {
+        SelectedService = service;
+        Input.ServiceName = service.Name;
+        Input.MethodName = method;
+        Signatures = [];
+        ParameterStructures = [];
+        TypeStructureVisible = false;
+        SignatureInfoVisible = false;
+        SelectedSignatureIndex = 0;
+        await LoadSignaturesAsync(false);
+    }
+
+    private async Task LoadSignaturesAsync(bool showInformationOnSuccess)
+    {
+        if (IsSignatureBusy || string.IsNullOrWhiteSpace(Input.ServiceName) || string.IsNullOrWhiteSpace(Input.MethodName)) return;
+        if (showInformationOnSuccess) SignatureInfoVisible = false;
+        IsSignatureBusy = true;
+        try
+        {
+            Signatures = (await Session.LoadMethodSignaturesAsync(Settings, Input.ServiceName.Trim(), Input.MethodName.Trim())).ToList();
+            SelectedSignatureIndex = 0;
+            if (Signatures.Count > 0)
+            {
+                ApplySignature(Signatures[0]);
+                SetNotice($"已取得 {Signatures.Count} 个方法签名（来源：{Signatures[0].Source}）");
+                if (showInformationOnSuccess) SignatureInfoVisible = true;
+            }
+            else { SetNotice("未发现该方法的签名；可手动填写精确 Java 参数类型", true); }
+        }
+        catch (Exception exception)
+        {
+            Signatures = [];
+            ParameterStructures = [];
+            TypeStructureVisible = false;
+            SignatureInfoVisible = false;
+            SetNotice($"读取签名失败：{GetErrorMessage(exception)}。可手动填写 Java 参数类型", true);
+        }
+        finally { IsSignatureBusy = false; }
+    }
+
+    private void SignatureChanged(ChangeEventArgs args)
+    {
+        if (!int.TryParse(args.Value?.ToString(), out int index) || index < 0 || index >= Signatures.Count) return;
+        SelectedSignatureIndex = index;
+        ApplySignature(Signatures[index]);
+    }
+
+    private void ApplySignature(MethodSignatureItem signature)
+    {
+        Input.JavaParameterTypes = string.Join(", ", signature.ParameterTypes);
+        Input.Version = signature.Version ?? Input.Version;
+        Input.Group = signature.Group ?? Input.Group;
+        ParameterStructures = DubboTypeStructureBuilder.Build(signature);
+        if (!HasParameterStructure) TypeStructureVisible = false;
+    }
+
+    private void OpenTypeStructure()
+    {
+        if (HasParameterStructure) TypeStructureVisible = true;
+    }
+
+    private void CloseTypeStructure() => TypeStructureVisible = false;
+
+    private void CloseSignatureInfo() => SignatureInfoVisible = false;
+
+    private static string DisplayMetadataValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "—" : value;
+
+    private static string FormatLoadedAt(DateTimeOffset loadedAt) =>
+        loadedAt == default ? "—" : loadedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
+
+    private static string SerializeTypeDefinitions(MethodSignatureItem signature) =>
+        JsonSerializer.Serialize(signature.TypeDefinitions, MetadataJsonOptions);
+
+    private void GenerateRequestExample()
+    {
+        if (!HasParameterStructure) return;
+        Input.RequestJson = DubboTypeStructureBuilder.GenerateExampleJson(ParameterStructures);
+        TypeStructureVisible = false;
+        SetNotice("已根据元数据结构生成请求 JSON 示例，请按实际业务含义修改字段值");
+    }
+
+    private async Task TestProviderAsync()
+    {
+        IsProviderTesting = true;
+        ProviderTestSucceeded = null;
+        try
+        {
+            await DubboSession.TestProviderAsync(Input.Host, Input.Port, Settings.RequestTimeoutMs);
+            ProviderTestSucceeded = true;
+            SetNotice($"Provider {Input.Host}:{Input.Port} TCP 连接成功");
+        }
+        catch (Exception exception)
+        {
+            ProviderTestSucceeded = false;
+            SetNotice($"Provider 连接失败：{GetErrorMessage(exception)}", true);
+        }
+        finally { IsProviderTesting = false; }
+    }
+
+    private async Task InvokeAsync()
+    {
+        if (IsInvoking) return;
+        IsInvoking = true;
+        LastOutput = null;
+        ResultText = string.Empty;
+        SetNotice($"正在调用 {Input.ServiceName}#{Input.MethodName}…");
+        try
+        {
+            LastOutput = await Session.InvokeAsync(Settings, Input);
+            ResultText = LastOutput.Success ? LastOutput.Content : LastOutput.Error ?? "Dubbo 请求失败，未返回错误详情。";
+            SetNotice(LastOutput.Success ? $"调用成功，用时 {LastOutput.RequestElapsed} ms" : $"调用失败：{LastOutput.Error}", !LastOutput.Success);
+            AddHistory(LastOutput);
+            await PersistHistoryAsync();
+        }
+        catch (Exception exception)
+        {
+            string message = GetErrorMessage(exception);
+            LastOutput = new InvocationOutput { Success = false, Error = message };
+            ResultText = message;
+            SetNotice($"调用失败：{message}", true);
+            if (!string.IsNullOrWhiteSpace(Input.ServiceName)
+                && !string.IsNullOrWhiteSpace(Input.MethodName))
+            {
+                AddHistory(LastOutput);
+                await PersistHistoryAsync();
+            }
+        }
+        finally { IsInvoking = false; }
+    }
+
+    private void OpenPressureTest()
+    {
+        if (IsInvoking) return;
+        PressureDraft.Capture(Settings, Input);
+        Navigation.NavigateTo("/pressure-test");
+    }
+
+    private void AddHistory(InvocationOutput output)
+    {
+        History.Insert(0, new InvocationHistory
+        {
+            Success = output.Success,
+            Route = Input.Route,
+            ServiceName = Input.ServiceName,
+            MethodName = Input.MethodName,
+            Host = Input.Host,
+            Port = Input.Port,
+            RequestJson = Input.RequestJson,
+            JavaParameterTypes = Input.JavaParameterTypes,
+            Version = Input.Version,
+            Group = Input.Group,
+            AttachmentsJson = Input.AttachmentsJson,
+            Response = Settings.SaveResponseInHistory ? ResultText : string.Empty,
+            ElapsedMs = output.RequestElapsed
+        });
+        if (History.Count > 100) History.RemoveRange(100, History.Count - 100);
+    }
+
+    private void LoadHistory(InvocationHistory item)
+    {
+        Signatures = [];
+        ParameterStructures = [];
+        TypeStructureVisible = false;
+        SignatureInfoVisible = false;
+        Input.Route = item.Route;
+        Input.ServiceName = item.ServiceName;
+        Input.MethodName = item.MethodName;
+        Input.Host = item.Host;
+        Input.Port = item.Port;
+        Input.RequestJson = item.RequestJson;
+        Input.JavaParameterTypes = item.JavaParameterTypes;
+        Input.Version = item.Version;
+        Input.Group = item.Group;
+        Input.AttachmentsJson = item.AttachmentsJson;
+        if (!string.IsNullOrWhiteSpace(item.Response))
+        {
+            ResultText = item.Response;
+            LastOutput = new InvocationOutput
+            {
+                Success = item.Success,
+                Content = item.Response,
+                Error = item.Success ? null : item.Response,
+                RequestElapsed = item.ElapsedMs
+            };
+        }
+        SetNotice($"已加载历史请求 {item.Endpoint}");
+    }
+
+    private async Task ToggleFavoriteAsync(InvocationHistory item) { item.Favorite = !item.Favorite; await PersistHistoryAsync(); }
+    private async Task DeleteHistoryAsync(InvocationHistory item) { History.Remove(item); await PersistHistoryAsync(); }
+    private async Task ClearHistoryAsync() { History.Clear(); await PersistHistoryAsync(); }
+
+    private void FormatRequest()
+    {
+        try { Input.RequestJson = JsonArgumentParser.FormatArguments(Input.RequestJson); SetNotice("请求 JSON 已格式化"); }
+        catch (Exception exception) { SetNotice($"JSON 格式错误：{exception.Message}", true); }
+    }
+
+    private IEnumerable<string> FilterMethods(IEnumerable<string> methods)
+    {
+        if (string.IsNullOrWhiteSpace(SearchText) || !Settings.HideUnmatched) return methods;
+        StringComparison comparison = Settings.CaseSensitiveSearch ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        return methods.Where(method => method.Contains(SearchText, comparison));
+    }
+
+    private void OpenSettings() { SettingsDraft = Settings.Clone(); SettingsVisible = true; }
+    private void CloseSettings() => SettingsVisible = false;
+
+    private async Task SaveSettingsAsync()
+    {
+        if (string.IsNullOrWhiteSpace(SettingsDraft.RegistryRootPath)) SettingsDraft.RegistryRootPath = "/dubbo";
+        if (string.IsNullOrWhiteSpace(SettingsDraft.MetadataRootPath)) SettingsDraft.MetadataRootPath = SettingsDraft.RegistryRootPath;
+        Settings = SettingsDraft.Clone();
+        SettingsVisible = false;
+        await PersistSettingsAsync();
+        await RefreshCatalogAsync(false);
+    }
+
+    private async Task PersistSettingsAsync() =>
+        await JS.InvokeVoidAsync("dubboTester.save", SettingsStorageKey, JsonSerializer.Serialize(Settings, StorageJsonOptions));
+
+    private async Task PersistHistoryAsync() =>
+        await JS.InvokeVoidAsync("dubboTester.save", HistoryStorageKey, JsonSerializer.Serialize(History, StorageJsonOptions));
+
+    private async Task CopyResultAsync() { await JS.InvokeVoidAsync("dubboTester.copy", ResultText); SetNotice("响应已复制到剪贴板"); }
+    private async Task DownloadResultAsync() =>
+        await JS.InvokeVoidAsync("dubboTester.download", $"dubbo-response-{DateTime.Now:yyyyMMdd-HHmmss}.json", ResultText);
+
+    private void SetNotice(string message, bool isError = false) { Notice = message; NoticeIsError = isError; }
+    private int HistoryNumber(InvocationHistory item) { int index = History.IndexOf(item); return index < 0 ? 0 : History.Count - index; }
+    private static string OneLine(string value) => value.Replace("\r", string.Empty).Replace("\n", " ").Trim();
+    private static string GetErrorMessage(Exception exception)
+    {
+        Exception current = exception;
+        while (current.InnerException is not null) current = current.InnerException;
+        return current.Message;
+    }
+
+    public void Dispose()
+    {
+        IsDisposed = true;
+        CatalogLoadCancellation?.Cancel();
+        CatalogPreloadTrackingCancellation?.Cancel();
+    }
+}
