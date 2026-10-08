@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using DubboNet.Clients.DataModle;
@@ -107,15 +108,21 @@ public static class DubboTypeStructureBuilder
     {
         private readonly IReadOnlyList<DubboTypeMetadata> _definitions;
         private readonly Dictionary<string, DubboTypeMetadata> _definitionsByName;
+        private readonly Dictionary<string, DubboTypeMetadata> _definitionsByPath;
+        private readonly Dictionary<string, DubboTypeMetadata?> _concretePropertiesByName;
 
         public BuildContext(IReadOnlyList<DubboTypeMetadata> definitions)
         {
             _definitions = definitions ?? [];
             _definitionsByName = new Dictionary<string, DubboTypeMetadata>(StringComparer.Ordinal);
-            foreach (DubboTypeMetadata definition in _definitions)
+            _definitionsByPath = new Dictionary<string, DubboTypeMetadata>(StringComparer.Ordinal);
+            _concretePropertiesByName = new Dictionary<string, DubboTypeMetadata?>(StringComparer.Ordinal);
+            for (int index = 0; index < _definitions.Count; index++)
             {
+                DubboTypeMetadata definition = _definitions[index];
                 AddDefinitionName(definition.Id, definition);
                 AddDefinitionName(definition.Type, definition);
+                IndexDefinition(definition, $"/types/{index}");
             }
         }
 
@@ -231,6 +238,43 @@ public static class DubboTypeStructureBuilder
             if (!string.IsNullOrWhiteSpace(name)) _definitionsByName.TryAdd(NormalizeReference(name), definition);
         }
 
+        private void IndexDefinition(DubboTypeMetadata definition, string path)
+        {
+            _definitionsByPath.TryAdd(path, definition);
+            IReadOnlyList<DubboTypeMetadata> items = definition.Items ?? [];
+            for (int index = 0; index < items.Count; index++)
+            {
+                IndexDefinition(items[index], $"{path}/items/{index}");
+            }
+
+            foreach ((string propertyName, DubboTypeMetadata property) in
+                definition.Properties ?? new Dictionary<string, DubboTypeMetadata>())
+            {
+                AddConcreteProperty(propertyName, property);
+                IndexDefinition(property, $"{path}/properties/{EscapeReferenceSegment(propertyName)}");
+            }
+        }
+
+        private void AddConcreteProperty(string name, DubboTypeMetadata property)
+        {
+            string? concreteType = ConcreteType(property);
+            if (concreteType is null) return;
+
+            if (!_concretePropertiesByName.TryGetValue(name, out DubboTypeMetadata? existing))
+            {
+                _concretePropertiesByName[name] = property;
+                return;
+            }
+
+            // A field name is only a safe fallback when every concrete occurrence has the
+            // same Java type. Conflicting types deliberately disable the inference.
+            if (existing is null
+                || !string.Equals(ConcreteType(existing), concreteType, StringComparison.Ordinal))
+            {
+                _concretePropertiesByName[name] = null;
+            }
+        }
+
         private DubboTypeMetadata? Resolve(DubboTypeMetadata? inline, string javaType)
         {
             if (inline is not null)
@@ -252,12 +296,69 @@ public static class DubboTypeStructureBuilder
         private DubboTypeMetadata? ResolveReference(string? reference)
         {
             if (string.IsNullOrWhiteSpace(reference)) return null;
+            string path = NormalizeReferencePath(reference);
+            if (path.Length > 0 && _definitionsByPath.TryGetValue(path, out DubboTypeMetadata? byPath))
+            {
+                return ResolveReferenceChain(byPath);
+            }
+
             string normalized = NormalizeReference(reference);
             if (_definitionsByName.TryGetValue(normalized, out DubboTypeMetadata? named)) return named;
 
             string tail = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? string.Empty;
             if (int.TryParse(tail, out int index) && index >= 0 && index < _definitions.Count) return _definitions[index];
             return _definitionsByName.GetValueOrDefault(tail);
+        }
+
+        private DubboTypeMetadata ResolveReferenceChain(DubboTypeMetadata metadata)
+        {
+            var visited = new HashSet<DubboTypeMetadata>();
+            DubboTypeMetadata current = metadata;
+            while (visited.Add(current)
+                && string.IsNullOrWhiteSpace(current.Type)
+                && string.IsNullOrWhiteSpace(current.Id)
+                && (current.Properties?.Count ?? 0) == 0
+                && (current.Items?.Count ?? 0) == 0
+                && (current.EnumValues?.Count ?? 0) == 0
+                && !string.IsNullOrWhiteSpace(current.Reference))
+            {
+                string nextPath = NormalizeReferencePath(current.Reference);
+                if (nextPath.Length == 0
+                    || !_definitionsByPath.TryGetValue(nextPath, out DubboTypeMetadata? next)
+                    || ReferenceEquals(current, next))
+                {
+                    break;
+                }
+                current = next;
+            }
+
+            if (ConcreteType(current) is null)
+            {
+                string propertyName = ReferencePropertyName(current.Reference);
+                if (propertyName.Length > 0
+                    && _concretePropertiesByName.TryGetValue(propertyName, out DubboTypeMetadata? inferred)
+                    && inferred is not null)
+                {
+                    return inferred;
+                }
+            }
+            return current;
+        }
+
+        private static string? ConcreteType(DubboTypeMetadata metadata)
+        {
+            if (!string.IsNullOrWhiteSpace(metadata.Type) && !IsCategory(metadata.Type))
+                return NormalizeType(metadata.Type);
+            return string.IsNullOrWhiteSpace(metadata.Id) ? null : NormalizeType(metadata.Id);
+        }
+
+        private static string ReferencePropertyName(string? reference)
+        {
+            if (string.IsNullOrWhiteSpace(reference)) return string.Empty;
+            string path = NormalizeReferencePath(reference);
+            return path.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() is { } name
+                ? UnescapeReferenceSegment(name)
+                : string.Empty;
         }
     }
 
@@ -368,4 +469,48 @@ public static class DubboTypeStructureBuilder
     private static string NormalizeReference(string value) => NormalizeType(value)
         .Replace("#/definitions/", string.Empty, StringComparison.OrdinalIgnoreCase)
         .Replace("#/types/", string.Empty, StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeReferencePath(string value)
+    {
+        string reference = value.Trim();
+        if (reference.StartsWith("#/", StringComparison.Ordinal))
+        {
+            return "/" + string.Join(
+                '/',
+                reference[2..]
+                    .Split('/', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(UnescapeReferenceSegment));
+        }
+        if (!reference.StartsWith("$.", StringComparison.Ordinal)) return string.Empty;
+
+        var path = new StringBuilder(reference.Length);
+        path.Append('/');
+        for (int index = 2; index < reference.Length; index++)
+        {
+            char character = reference[index];
+            switch (character)
+            {
+                case '.':
+                case '[':
+                    if (path[^1] != '/') path.Append('/');
+                    break;
+                case ']':
+                case '\'':
+                case '"':
+                    break;
+                default:
+                    path.Append(character);
+                    break;
+            }
+        }
+        return path.ToString().TrimEnd('/');
+    }
+
+    private static string EscapeReferenceSegment(string value) => value
+        .Replace("~", "~0", StringComparison.Ordinal)
+        .Replace("/", "~1", StringComparison.Ordinal);
+
+    private static string UnescapeReferenceSegment(string value) => value
+        .Replace("~1", "/", StringComparison.Ordinal)
+        .Replace("~0", "~", StringComparison.Ordinal);
 }

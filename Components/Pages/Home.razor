@@ -37,7 +37,7 @@
         </div>
     </header>
 
-    <main class="workspace">
+    <main class="workspace @(HistoryCollapsed ? "history-collapsed" : null)">
         <aside class="catalog-panel panel">
             <div class="panel-heading">
                 <div>
@@ -126,6 +126,12 @@
             }
         </aside>
 
+        <div class="catalog-resizer"
+             role="separator"
+             aria-orientation="vertical"
+             aria-label="调整服务目录宽度"
+             title="拖动调整服务目录宽度"></div>
+
         <section class="request-panel panel">
             <div class="connection-bar">
                 <label class="route-switch">
@@ -213,7 +219,10 @@
                         <button class="text-button" @onclick="FormatRequest">格式化</button>
                     </div>
                 </div>
-                <textarea spellcheck="false" @bind="Input.RequestJson"></textarea>
+                <textarea spellcheck="false"
+                          value="@Input.RequestJson"
+                          @oninput="RequestJsonChanged"
+                          @onchange="PersistCurrentRequestDraftAsync"></textarea>
             </section>
 
             <div class="action-row">
@@ -288,45 +297,62 @@
             </section>
         </section>
 
-        <aside class="history-panel panel">
+        <aside class="history-panel panel @(HistoryCollapsed ? "collapsed" : null)">
             <div class="panel-heading history-heading">
-                <div>
-                    <h2>历史记录</h2>
-                    <span>@VisibleHistory.Count() 条</span>
-                </div>
-                <div class="history-actions">
-                    <button class="heart-filter @(FavoritesOnly ? "active" : null)" title="只看收藏" @onclick="() => FavoritesOnly = !FavoritesOnly">♥</button>
-                    <button class="subtle-button danger" disabled="@(History.Count == 0)" @onclick="ClearHistoryAsync">清空</button>
-                </div>
-            </div>
-            <label class="save-response-setting">
-                <input type="checkbox" @bind="Settings.SaveResponseInHistory" @bind:after="PersistSettingsAsync" />
-                <span>历史中保存响应正文</span>
-            </label>
-            <div class="history-list">
-                @foreach (InvocationHistory item in VisibleHistory)
+                @if (HistoryCollapsed)
                 {
-                    <article class="history-card @(item.Success ? null : "failed")" @key="item.Id">
-                        <button class="history-main" @onclick="() => LoadHistory(item)">
-                            <div class="history-meta">
-                                <span class="history-id">#@HistoryNumber(item)</span>
-                                <span>@item.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</span>
-                                <span>@item.ElapsedMs ms</span>
+                    <button class="history-collapse-button expand"
+                            title="展开历史记录"
+                            aria-label="展开历史记录"
+                            @onclick="ToggleHistoryCollapsedAsync">‹</button>
+                }
+                else
+                {
+                    <div>
+                        <h2>历史记录</h2>
+                        <span>@VisibleHistory.Count() 条</span>
+                    </div>
+                    <div class="history-actions">
+                        <button class="heart-filter @(FavoritesOnly ? "active" : null)" title="只看收藏" @onclick="() => FavoritesOnly = !FavoritesOnly">♥</button>
+                        <button class="subtle-button danger" disabled="@(History.Count == 0)" @onclick="ClearHistoryAsync">清空</button>
+                        <button class="history-collapse-button"
+                                title="折叠历史记录"
+                                aria-label="折叠历史记录"
+                                @onclick="ToggleHistoryCollapsedAsync">›</button>
+                    </div>
+                }
+            </div>
+            @if (!HistoryCollapsed)
+            {
+                <label class="save-response-setting">
+                    <input type="checkbox" @bind="Settings.SaveResponseInHistory" @bind:after="PersistSettingsAsync" />
+                    <span>历史中保存响应正文</span>
+                </label>
+                <div class="history-list">
+                    @foreach (InvocationHistory item in VisibleHistory)
+                    {
+                        <article class="history-card @(item.Success ? null : "failed")" @key="item.Id">
+                            <button class="history-main" @onclick="() => LoadHistoryAsync(item)">
+                                <div class="history-meta">
+                                    <span class="history-id">#@HistoryNumber(item)</span>
+                                    <span>@item.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</span>
+                                    <span>@item.ElapsedMs ms</span>
+                                </div>
+                                <strong title="@item.Endpoint">@item.Endpoint</strong>
+                                <code title="@item.RequestJson">@OneLine(item.RequestJson)</code>
+                            </button>
+                            <div class="history-card-actions">
+                                <button class="favorite @(item.Favorite ? "active" : null)" title="收藏" @onclick="() => ToggleFavoriteAsync(item)">♥</button>
+                                <button title="删除" @onclick="() => DeleteHistoryAsync(item)">×</button>
                             </div>
-                            <strong title="@item.Endpoint">@item.Endpoint</strong>
-                            <code title="@item.RequestJson">@OneLine(item.RequestJson)</code>
-                        </button>
-                        <div class="history-card-actions">
-                            <button class="favorite @(item.Favorite ? "active" : null)" title="收藏" @onclick="() => ToggleFavoriteAsync(item)">♥</button>
-                            <button title="删除" @onclick="() => DeleteHistoryAsync(item)">×</button>
-                        </div>
-                    </article>
-                }
-                @if (!VisibleHistory.Any())
-                {
-                    <div class="empty-state compact"><span>暂无历史记录</span></div>
-                }
-            </div>
+                        </article>
+                    }
+                    @if (!VisibleHistory.Any())
+                    {
+                        <div class="empty-state compact"><span>暂无历史记录</span></div>
+                    }
+                </div>
+            }
         </aside>
     </main>
 </div>
@@ -501,6 +527,9 @@
 @code {
     private const string SettingsStorageKey = "dubbo-tester.settings.v1";
     private const string HistoryStorageKey = "dubbo-tester.history.v1";
+    private const string RequestDraftStorageKey = "dubbo-tester.request-drafts.v1";
+    private const string HistoryCollapsedStorageKey = "dubbo-tester.history-collapsed.v1";
+    private const string CatalogWidthStorageKey = "dubbo-tester.catalog-width.v1";
     private static readonly JsonSerializerOptions StorageJsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions MetadataJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -515,6 +544,7 @@
     private List<MethodSignatureItem> Signatures { get; set; } = [];
     private IReadOnlyList<MethodParameterStructure> ParameterStructures { get; set; } = [];
     private List<InvocationHistory> History { get; set; } = [];
+    private Dictionary<string, string> RequestDrafts { get; set; } = new(StringComparer.Ordinal);
     private DubboServiceItem? SelectedService { get; set; }
     private DubboServiceItem? ExpandedService { get; set; }
     private DubboProviderItem? SelectedProvider { get; set; }
@@ -527,6 +557,7 @@
     private bool TypeStructureVisible { get; set; }
     private bool SignatureInfoVisible { get; set; }
     private bool FavoritesOnly { get; set; }
+    private bool HistoryCollapsed { get; set; }
     private bool IsCatalogBusy { get; set; }
     private CancellationTokenSource? CatalogLoadCancellation { get; set; }
     private CancellationTokenSource? CatalogPreloadTrackingCancellation { get; set; }
@@ -603,6 +634,8 @@
         {
             string? settingsJson = await JS.InvokeAsync<string?>("dubboTester.load", SettingsStorageKey);
             string? historyJson = await JS.InvokeAsync<string?>("dubboTester.load", HistoryStorageKey);
+            string? requestDraftsJson = await JS.InvokeAsync<string?>("dubboTester.loadSession", RequestDraftStorageKey);
+            string? historyCollapsed = await JS.InvokeAsync<string?>("dubboTester.load", HistoryCollapsedStorageKey);
             bool hasPressureDraft = PressureDraft.TryGet(
                 out TesterSettings pressureSettings,
                 out InvocationInput pressureInvocation);
@@ -611,11 +644,20 @@
                 : DeserializeOrDefault(settingsJson, new TesterSettings());
             if (hasPressureDraft) Input = pressureInvocation;
             History = DeserializeOrDefault(historyJson, new List<InvocationHistory>());
+            RequestDrafts = DeserializeOrDefault(
+                requestDraftsJson,
+                new Dictionary<string, string>(StringComparer.Ordinal));
+            HistoryCollapsed = bool.TryParse(historyCollapsed, out bool collapsed) && collapsed;
             Settings.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(Settings.HistoryLimit);
             bool historyTrimmed = HistoryRetentionPolicy.TrimToLimit(
                 History,
                 Settings.HistoryLimit);
             SettingsDraft = Settings.Clone();
+            await JS.InvokeVoidAsync(
+                "dubboTester.initializeCatalogResize",
+                ".workspace",
+                ".catalog-resizer",
+                CatalogWidthStorageKey);
             StateHasChanged();
             if (historyTrimmed)
             {
@@ -882,9 +924,11 @@
 
     private async Task SelectMethodAsync(DubboServiceItem service, string method)
     {
+        await PersistCurrentRequestDraftAsync();
         SelectedService = service;
         Input.ServiceName = service.Name;
         Input.MethodName = method;
+        Input.JavaParameterTypes = string.Empty;
         Signatures = [];
         ParameterStructures = [];
         TypeStructureVisible = false;
@@ -904,7 +948,7 @@
             SelectedSignatureIndex = 0;
             if (Signatures.Count > 0)
             {
-                ApplySignature(Signatures[0]);
+                await ApplySignatureAsync(Signatures[0]);
                 SetNotice($"已取得 {Signatures.Count} 个方法签名（来源：{Signatures[0].Source}）");
                 if (showInformationOnSuccess) SignatureInfoVisible = true;
             }
@@ -921,20 +965,22 @@
         finally { IsSignatureBusy = false; }
     }
 
-    private void SignatureChanged(ChangeEventArgs args)
+    private async Task SignatureChanged(ChangeEventArgs args)
     {
         if (!int.TryParse(args.Value?.ToString(), out int index) || index < 0 || index >= Signatures.Count) return;
+        await PersistCurrentRequestDraftAsync();
         SelectedSignatureIndex = index;
-        ApplySignature(Signatures[index]);
+        await ApplySignatureAsync(Signatures[index]);
     }
 
-    private void ApplySignature(MethodSignatureItem signature)
+    private async Task ApplySignatureAsync(MethodSignatureItem signature)
     {
         Input.JavaParameterTypes = string.Join(", ", signature.ParameterTypes);
         Input.Version = signature.Version ?? Input.Version;
         Input.Group = signature.Group ?? Input.Group;
         ParameterStructures = DubboTypeStructureBuilder.Build(signature);
         if (!HasParameterStructure) TypeStructureVisible = false;
+        await RestoreCurrentRequestDraftAsync();
     }
 
     private void OpenTypeStructure()
@@ -955,10 +1001,11 @@
     private static string SerializeTypeDefinitions(MethodSignatureItem signature) =>
         JsonSerializer.Serialize(signature.TypeDefinitions, MetadataJsonOptions);
 
-    private void GenerateRequestExample()
+    private async Task GenerateRequestExample()
     {
         if (!CanGenerateRequestExample) return;
         Input.RequestJson = DubboTypeStructureBuilder.GenerateExampleJson(ParameterStructures);
+        await PersistCurrentRequestDraftAsync();
         TypeStructureVisible = false;
         SetNotice("已根据 Java 参数类型和元数据结构生成请求 JSON 示例，请按实际业务含义修改字段值");
     }
@@ -984,6 +1031,7 @@
     private async Task InvokeAsync()
     {
         if (IsInvoking) return;
+        await PersistCurrentRequestDraftAsync();
         IsInvoking = true;
         LastOutput = null;
         ResultText = string.Empty;
@@ -1012,9 +1060,10 @@
         finally { IsInvoking = false; }
     }
 
-    private void OpenPressureTest()
+    private async Task OpenPressureTest()
     {
         if (IsInvoking) return;
+        await PersistCurrentRequestDraftAsync();
         PressureDraft.Capture(Settings, Input);
         Navigation.NavigateTo("/pressure-test");
     }
@@ -1040,8 +1089,9 @@
         HistoryRetentionPolicy.TrimToLimit(History, Settings.HistoryLimit);
     }
 
-    private void LoadHistory(InvocationHistory item)
+    private async Task LoadHistoryAsync(InvocationHistory item)
     {
+        await PersistCurrentRequestDraftAsync();
         Signatures = [];
         ParameterStructures = [];
         TypeStructureVisible = false;
@@ -1056,6 +1106,7 @@
         Input.Version = item.Version;
         Input.Group = item.Group;
         Input.AttachmentsJson = item.AttachmentsJson;
+        await PersistCurrentRequestDraftAsync();
         if (!string.IsNullOrWhiteSpace(item.Response))
         {
             ResultText = item.Response;
@@ -1074,9 +1125,81 @@
     private async Task DeleteHistoryAsync(InvocationHistory item) { History.Remove(item); await PersistHistoryAsync(); }
     private async Task ClearHistoryAsync() { History.Clear(); await PersistHistoryAsync(); }
 
-    private void FormatRequest()
+    private async Task ToggleHistoryCollapsedAsync()
     {
-        try { Input.RequestJson = JsonArgumentParser.FormatArguments(Input.RequestJson); SetNotice("请求 JSON 已格式化"); }
+        HistoryCollapsed = !HistoryCollapsed;
+        await JS.InvokeVoidAsync(
+            "dubboTester.save",
+            HistoryCollapsedStorageKey,
+            HistoryCollapsed.ToString());
+    }
+
+    private void RequestJsonChanged(ChangeEventArgs args)
+    {
+        Input.RequestJson = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private async Task PersistCurrentRequestDraftAsync()
+    {
+        string? key = CurrentRequestDraftKey();
+        if (key is null) return;
+
+        RequestDrafts[key] = Input.RequestJson;
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "dubboTester.saveSession",
+                RequestDraftStorageKey,
+                JsonSerializer.Serialize(RequestDrafts, StorageJsonOptions));
+        }
+        catch (Microsoft.JSInterop.JSException)
+        {
+            // Keep the in-memory draft when sessionStorage is unavailable or full.
+        }
+    }
+
+    private Task RestoreCurrentRequestDraftAsync()
+    {
+        string? key = CurrentRequestDraftKey();
+        if (key is not null && RequestDrafts.TryGetValue(key, out string? requestJson))
+        {
+            Input.RequestJson = requestJson;
+        }
+        else
+        {
+            // Do not carry another method/overload's arguments into a newly selected method.
+            Input.RequestJson = "{}";
+        }
+        return Task.CompletedTask;
+    }
+
+    private string? CurrentRequestDraftKey()
+    {
+        string serviceName = Input.ServiceName.Trim();
+        string methodName = Input.MethodName.Trim();
+        if (serviceName.Length == 0 || methodName.Length == 0) return null;
+
+        string parameterTypes = SelectedSignature is not null
+            ? string.Join(",", SelectedSignature.ParameterTypes)
+            : Input.JavaParameterTypes.Trim();
+        return string.Join(
+            '\u001f',
+            Settings.ZooKeeperAddress.Trim(),
+            serviceName,
+            methodName,
+            parameterTypes,
+            Input.Version.Trim(),
+            Input.Group.Trim());
+    }
+
+    private async Task FormatRequest()
+    {
+        try
+        {
+            Input.RequestJson = JsonArgumentParser.FormatArguments(Input.RequestJson);
+            await PersistCurrentRequestDraftAsync();
+            SetNotice("请求 JSON 已格式化");
+        }
         catch (Exception exception) { SetNotice($"JSON 格式错误：{exception.Message}", true); }
     }
 

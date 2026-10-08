@@ -228,6 +228,72 @@ public sealed class DubboTypeStructureBuilderTests
         Assert.Equal("2026-09-30 00:00:00", example.RootElement.GetProperty("gmtCreate").GetString());
     }
 
+    [Fact]
+    public void GenerateExampleJson_ResolvesDubboJsonPathReferencesForCollectionItems()
+    {
+        var signature = new MethodSignatureItem
+        {
+            ServiceName = "com.example.dubbonet.api.OrderService",
+            MethodName = "calculateTotal",
+            ParameterTypes = ["java.util.List<com.example.dubbonet.model.OrderItem>"],
+            TypeDefinitions =
+            [
+                new DubboTypeMetadata
+                {
+                    Type = "com.example.dubbonet.model.Order",
+                    Properties = new Dictionary<string, DubboTypeMetadata>
+                    {
+                        ["orderId"] = new() { Type = "java.lang.String" },
+                        ["totalAmount"] = new() { Type = "java.math.BigDecimal" }
+                    }
+                },
+                new DubboTypeMetadata
+                {
+                    Type = "com.example.dubbonet.model.PageResult",
+                    Properties = new Dictionary<string, DubboTypeMetadata>
+                    {
+                        ["pageNo"] = new() { Type = "int" }
+                    }
+                },
+                new DubboTypeMetadata
+                {
+                    Type = "com.example.dubbonet.model.OperationResult"
+                },
+                new DubboTypeMetadata
+                {
+                    Type = "com.example.dubbonet.model.OrderQuery",
+                    Properties = new Dictionary<string, DubboTypeMetadata>
+                    {
+                        // This is the shape returned by an older DubboNet cache after the
+                        // anonymous entries were moved: pageNo incorrectly points to itself.
+                        ["pageNo"] = new() { Reference = "$.types[3].properties.pageNo" }
+                    }
+                },
+                new DubboTypeMetadata
+                {
+                    Type = "com.example.dubbonet.model.OrderItem",
+                    TypeBuilderName = "DefaultTypeBuilder",
+                    Properties = new Dictionary<string, DubboTypeMetadata>
+                    {
+                        ["name"] = new() { Reference = "$.types[0].properties.orderId" },
+                        ["quantity"] = new() { Reference = "$.types[3].properties.pageNo" },
+                        ["sku"] = new() { Reference = "#/types/0/properties/orderId" },
+                        ["unitPrice"] = new() { Reference = "$.types[0].properties.totalAmount" }
+                    }
+                }
+            ]
+        };
+
+        IReadOnlyList<MethodParameterStructure> parameters = DubboTypeStructureBuilder.Build(signature);
+        using JsonDocument example = JsonDocument.Parse(DubboTypeStructureBuilder.GenerateExampleJson(parameters));
+        JsonElement item = example.RootElement[0][0];
+
+        Assert.Equal("string", item.GetProperty("name").GetString());
+        Assert.Equal(0, item.GetProperty("quantity").GetInt32());
+        Assert.Equal("string", item.GetProperty("sku").GetString());
+        Assert.Equal(0, item.GetProperty("unitPrice").GetInt32());
+    }
+
     private static DubboTypeMetadata Wrapper(string type, string valueType) => new()
     {
         Type = type,
