@@ -35,8 +35,11 @@
                 </label>
                 @if (Input.Route == InvocationRoute.Registry)
                 {
-                    <label class="span-two">ZooKeeper
+                    <label>ZooKeeper
                         <input @bind="Settings.ZooKeeperAddress" disabled="@IsRunning" placeholder="127.0.0.1:2181" />
+                    </label>
+                    <label>注册目录
+                        <input @bind="Input.RegistryRootPath" disabled="@IsRunning" placeholder="从请求页选择的服务目录" />
                     </label>
                 }
                 else
@@ -63,7 +66,8 @@
                 <label>服务分组
                     <input @bind="Input.Group" disabled="@IsRunning" placeholder="可选" />
                 </label>
-                <label class="span-three">Attachments JSON
+                <label class="span-three">
+                    <span>Attachments JSON <small>可选，随 RPC 请求传递，类似请求 Header</small></span>
                     <input @bind="Input.AttachmentsJson" disabled="@IsRunning" placeholder='{"traceId":"..."}' />
                 </label>
             </div>

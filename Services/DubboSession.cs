@@ -16,7 +16,8 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
     private readonly ConcurrentDictionary<string, Lazy<NativeDubboActuatorSuite>> _directSuites = new();
     private DubboClient? _client;
     private MyZookeeper? _registry;
-    private string? _configurationKey;
+    private string? _clientConfigurationKey;
+    private string? _registryAddress;
     private bool _disposed;
 
     public async Task<DubboCatalogLoadResult> LoadServicesAsync(
@@ -24,16 +25,16 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         bool forceRefresh = false,
         CancellationToken cancellationToken = default)
     {
-        string root = NormalizeRoot(settings.RegistryRootPath);
+        RegistryRootSelection selection = RegistryRootPaths.Parse(settings.RegistryRootPath);
         return await catalogCache.GetOrLoadAsync(
             settings.ZooKeeperAddress,
-            root,
+            selection.CacheKey,
             requireAllServiceDetails: false,
             forceRefresh,
             async _ =>
             {
-                await EnsureConfiguredAsync(settings, cancellationToken);
-                return await LoadServiceNamesAsync(root, cancellationToken);
+                await EnsureRegistryAsync(settings, cancellationToken);
+                return await LoadCatalogAsync(selection, cancellationToken);
             },
             cancellationToken);
     }
@@ -44,23 +45,62 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         bool forceRefresh = false,
         CancellationToken cancellationToken = default)
     {
-        string root = NormalizeRoot(settings.RegistryRootPath);
+        RegistryRootSelection selection = RegistryRootPaths.Parse(settings.RegistryRootPath);
+        string serviceRoot = RegistryRootPaths.ResolveInvocationRoot(
+            settings.RegistryRootPath,
+            service.RegistryRootPath);
         if (!forceRefresh
             && catalogCache.TryApplyServiceDetails(
                 settings.ZooKeeperAddress,
-                root,
+                selection.CacheKey,
                 service))
         {
             return;
         }
 
-        await EnsureConfiguredAsync(settings, cancellationToken);
+        await EnsureRegistryAsync(settings, cancellationToken);
         await LoadServiceDetailsCoreAsync(
-            root,
+            serviceRoot,
             service,
             retryTime: 2,
             cancellationToken);
-        catalogCache.UpdateService(settings.ZooKeeperAddress, root, service);
+        catalogCache.UpdateService(settings.ZooKeeperAddress, selection.CacheKey, service);
+    }
+
+    private async Task<IReadOnlyList<DubboServiceItem>> LoadCatalogAsync(
+        RegistryRootSelection selection,
+        CancellationToken cancellationToken)
+    {
+        var roots = new HashSet<string>(selection.ExplicitRoots, StringComparer.Ordinal);
+        if (selection.AutoDiscover)
+        {
+            foreach (string discovered in await DiscoverRegistryRootsAsync(cancellationToken))
+            {
+                roots.Add(discovered);
+            }
+        }
+
+        var services = new List<DubboServiceItem>();
+        Exception? firstFailure = null;
+        int loadedRootCount = 0;
+        foreach (string root in roots.Order(StringComparer.Ordinal))
+        {
+            try
+            {
+                services.AddRange(await LoadServiceNamesAsync(root, cancellationToken));
+                loadedRootCount++;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                firstFailure ??= exception;
+            }
+        }
+        if (loadedRootCount == 0 && firstFailure is not null) throw firstFailure;
+        return services;
     }
 
     private async Task<IReadOnlyList<DubboServiceItem>> LoadServiceNamesAsync(
@@ -68,12 +108,60 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         CancellationToken cancellationToken)
     {
         var result = await _registry!.GetChildrenAsync(root).WaitAsync(cancellationToken);
-        return (result?.Children ?? [])
-            .Where(IsServiceNode)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .Select(name => new DubboServiceItem { Name = name })
+        return ServiceNames(result?.Children ?? [])
+            .Select(name => new DubboServiceItem
+            {
+                Name = name,
+                RegistryRootPath = root
+            })
             .ToArray();
     }
+
+    private async Task<IReadOnlyList<string>> DiscoverRegistryRootsAsync(
+        CancellationToken cancellationToken)
+    {
+        var rootResult = await _registry!
+            .GetChildrenAsync("/", retryTime: 1)
+            .WaitAsync(cancellationToken);
+        var discovered = new List<string>();
+        foreach (string child in rootResult?.Children ?? [])
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string candidate = RegistryRootPaths.NormalizeRoot(child);
+            try
+            {
+                var servicesResult = await _registry
+                    .GetChildrenAsync(candidate, retryTime: 1)
+                    .WaitAsync(cancellationToken);
+                string[] serviceNames = ServiceNames(servicesResult?.Children ?? []).ToArray();
+                foreach (string serviceName in serviceNames)
+                {
+                    var branches = await _registry
+                        .GetChildrenAsync($"{candidate}/{serviceName}", retryTime: 1)
+                        .WaitAsync(cancellationToken);
+                    if ((branches?.Children ?? []).Contains("providers", StringComparer.Ordinal))
+                    {
+                        discovered.Add(candidate);
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                // A first-level node that cannot be read as a Dubbo registry is ignored.
+            }
+        }
+        return discovered;
+    }
+
+    private static IEnumerable<string> ServiceNames(IEnumerable<string> names) => names
+            .Where(IsServiceNode)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Distinct(StringComparer.Ordinal);
 
     private async Task LoadServiceDetailsCoreAsync(
         string root,
@@ -90,7 +178,11 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
 
     private static bool IsServiceNode(string name) =>
         !string.IsNullOrWhiteSpace(name)
-        && !string.Equals(name, "metadata", StringComparison.Ordinal);
+        && !RegistryManagementNodes.Contains(name);
+
+    private static readonly HashSet<string> RegistryManagementNodes = new(
+        ["config", "metadata", "mapping", "service-discovery"],
+        StringComparer.OrdinalIgnoreCase);
 
     internal static void PopulateServiceDetails(
         DubboServiceItem service,
@@ -127,9 +219,10 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         TesterSettings settings,
         string serviceName,
         string methodName,
+        string? registryRootPath = null,
         CancellationToken cancellationToken = default)
     {
-        await EnsureConfiguredAsync(settings, cancellationToken);
+        await EnsureConfiguredAsync(settings, registryRootPath, cancellationToken);
         IReadOnlyList<DubboMethodMetadata> metadata =
             await _client!.GetMethodMetadataAsync(serviceName, methodName);
         IReadOnlyList<DubboTypeMetadata> serviceTypes = [];
@@ -151,7 +244,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         ValidateInvocation(input);
         if (input.Route == InvocationRoute.Registry)
         {
-            await EnsureConfiguredAsync(settings, cancellationToken);
+            await EnsureConfiguredAsync(settings, input.RegistryRootPath, cancellationToken);
         }
 
         object?[] arguments = JsonArgumentParser.ParseArguments(input.RequestJson);
@@ -213,7 +306,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         ValidateInvocation(input);
         if (input.Route == InvocationRoute.Registry)
         {
-            await EnsureConfiguredAsync(settings, cancellationToken);
+            await EnsureConfiguredAsync(settings, input.RegistryRootPath, cancellationToken);
             return;
         }
 
@@ -237,7 +330,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         await client.ConnectAsync(host.Trim(), port, timeout.Token);
     }
 
-    private async Task EnsureConfiguredAsync(
+    private async Task EnsureRegistryAsync(
         TesterSettings settings,
         CancellationToken cancellationToken)
     {
@@ -247,18 +340,8 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
             throw new ArgumentException("请先在设置中填写 ZooKeeper 连接地址。");
         }
 
-        string configurationKey = JsonSerializer.Serialize(new
-        {
-            settings.ZooKeeperAddress,
-            Root = NormalizeRoot(settings.RegistryRootPath),
-            settings.MetadataCenterAddress,
-            MetadataRoot = NormalizeRoot(settings.MetadataRootPath),
-            settings.RequestTimeoutMs,
-            settings.MetadataFallbackTimeoutMs,
-            settings.LoadBalanceMode
-        });
-
-        if (_configurationKey == configurationKey && _client is not null && _registry is not null)
+        string address = settings.ZooKeeperAddress.Trim();
+        if (_registry is not null && string.Equals(_registryAddress, address, StringComparison.Ordinal))
         {
             return;
         }
@@ -266,23 +349,81 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (_configurationKey == configurationKey && _client is not null && _registry is not null)
+            if (_registry is not null && string.Equals(_registryAddress, address, StringComparison.Ordinal))
             {
                 return;
             }
 
             _client?.Dispose();
             _registry?.Dispose();
+            _client = null;
+            _clientConfigurationKey = null;
+            _registry = new MyZookeeper(address);
+            _registryAddress = address;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 
-            string registryRoot = NormalizeRoot(settings.RegistryRootPath);
-            _registry = new MyZookeeper(settings.ZooKeeperAddress.Trim());
+    private async Task EnsureConfiguredAsync(
+        TesterSettings settings,
+        string? registryRootPath,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrWhiteSpace(settings.ZooKeeperAddress))
+        {
+            throw new ArgumentException("请先在设置中填写 ZooKeeper 连接地址。");
+        }
+
+        string address = settings.ZooKeeperAddress.Trim();
+        string registryRoot = RegistryRootPaths.ResolveInvocationRoot(
+            settings.RegistryRootPath,
+            registryRootPath);
+        string metadataRoot = RegistryRootPaths.ResolveMetadataRoot(
+            settings.MetadataRootPath,
+            registryRoot);
+        string configurationKey = JsonSerializer.Serialize(new
+        {
+            ZooKeeperAddress = address,
+            Root = registryRoot,
+            settings.MetadataCenterAddress,
+            MetadataRoot = metadataRoot,
+            settings.RequestTimeoutMs,
+            settings.MetadataFallbackTimeoutMs,
+            settings.LoadBalanceMode
+        });
+
+        if (_clientConfigurationKey == configurationKey && _client is not null && _registry is not null)
+        {
+            return;
+        }
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_clientConfigurationKey == configurationKey && _client is not null && _registry is not null)
+            {
+                return;
+            }
+
+            _client?.Dispose();
+            if (_registry is null || !string.Equals(_registryAddress, address, StringComparison.Ordinal))
+            {
+                _registry?.Dispose();
+                _registry = new MyZookeeper(address);
+                _registryAddress = address;
+            }
+
             _client = new DubboClient(
-                settings.ZooKeeperAddress.Trim(),
+                address,
                 new DubboClient.DubboClientConf
                 {
-                    DubboRootPath = registryRoot + "/",
+                    DubboRootPath = registryRoot == "/" ? "/" : registryRoot + "/",
                     MetadataCenterAddress = NullIfWhiteSpace(settings.MetadataCenterAddress),
-                    MetadataRootPath = NormalizeRoot(settings.MetadataRootPath),
+                    MetadataRootPath = metadataRoot,
                     DubboRequestTimeout = Math.Clamp(settings.RequestTimeoutMs, 100, 600_000),
                     TelnetMetadataTimeout = Math.Clamp(
                         settings.MetadataFallbackTimeoutMs,
@@ -291,7 +432,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
                     MaintainServiceNum = 50,
                     NowLoadBalanceMode = settings.LoadBalanceMode
                 });
-            _configurationKey = configurationKey;
+            _clientConfigurationKey = configurationKey;
         }
         finally
         {
@@ -404,17 +545,6 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         {
             throw new ArgumentException("直连 Provider 的地址或端口无效。");
         }
-    }
-
-    private static string NormalizeRoot(string? root)
-    {
-        string value = string.IsNullOrWhiteSpace(root) ? "/dubbo" : root.Trim();
-        if (!value.StartsWith('/'))
-        {
-            value = "/" + value;
-        }
-
-        return value.Length > 1 ? value.TrimEnd('/') : value;
     }
 
     private static string? NullIfWhiteSpace(string? value) =>

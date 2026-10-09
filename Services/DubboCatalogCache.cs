@@ -11,7 +11,7 @@ public sealed class DubboCatalogCache
 {
     private const int MaximumAddressCount = 10;
     private readonly object _sync = new();
-    private readonly Dictionary<string, CacheEntry> _entries =
+    private readonly Dictionary<string, AddressCache> _entries =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _addressLocks =
         new(StringComparer.OrdinalIgnoreCase);
@@ -68,21 +68,20 @@ public sealed class DubboCatalogCache
         string address = NormalizeAddress(zooKeeperAddress);
         lock (_sync)
         {
-            if (!_entries.TryGetValue(address, out CacheEntry? entry)
-                || !string.Equals(entry.RegistryRoot, registryRoot, StringComparison.Ordinal))
+            if (!TryGetEntry(address, registryRoot, out AddressCache? addressCache, out CacheEntry? entry))
             {
                 return;
             }
 
             int index = entry.Services.FindIndex(item =>
-                string.Equals(item.Name, service.Name, StringComparison.Ordinal));
+                IsSameService(item, service));
             if (index < 0)
             {
                 return;
             }
 
             entry.Services[index] = CloneService(service);
-            entry.LastAccess = NextAccessSequence();
+            Touch(addressCache, entry);
         }
     }
 
@@ -94,15 +93,14 @@ public sealed class DubboCatalogCache
         string address = NormalizeAddress(zooKeeperAddress);
         lock (_sync)
         {
-            if (!_entries.TryGetValue(address, out CacheEntry? entry)
-                || !string.Equals(entry.RegistryRoot, registryRoot, StringComparison.Ordinal))
+            if (!TryGetEntry(address, registryRoot, out AddressCache? addressCache, out CacheEntry? entry))
             {
                 return false;
             }
 
             DubboServiceItem? cached = entry.Services.FirstOrDefault(item =>
                 item.IsLoaded
-                && string.Equals(item.Name, target.Name, StringComparison.Ordinal));
+                && IsSameService(item, target));
             if (cached is null)
             {
                 return false;
@@ -114,7 +112,7 @@ public sealed class DubboCatalogCache
             target.Methods.Clear();
             target.Methods.AddRange(snapshot.Methods);
             target.IsLoaded = true;
-            entry.LastAccess = NextAccessSequence();
+            Touch(addressCache, entry);
             return true;
         }
     }
@@ -124,14 +122,13 @@ public sealed class DubboCatalogCache
         string address = NormalizeAddress(zooKeeperAddress);
         lock (_sync)
         {
-            if (!_entries.TryGetValue(address, out CacheEntry? entry)
-                || !string.Equals(entry.RegistryRoot, registryRoot, StringComparison.Ordinal))
+            if (!TryGetEntry(address, registryRoot, out AddressCache? addressCache, out CacheEntry? entry))
             {
                 return;
             }
 
             entry.PreloadAttempted = true;
-            entry.LastAccess = NextAccessSequence();
+            Touch(addressCache, entry);
         }
     }
 
@@ -143,15 +140,14 @@ public sealed class DubboCatalogCache
     {
         lock (_sync)
         {
-            if (!_entries.TryGetValue(address, out CacheEntry? entry)
-                || !string.Equals(entry.RegistryRoot, registryRoot, StringComparison.Ordinal)
+            if (!TryGetEntry(address, registryRoot, out AddressCache? addressCache, out CacheEntry? entry)
                 || (requireAllServiceDetails && !entry.PreloadAttempted))
             {
                 result = null!;
                 return false;
             }
 
-            entry.LastAccess = NextAccessSequence();
+            Touch(addressCache, entry);
             bool complete = entry.Services.All(service => service.IsLoaded);
             result = new DubboCatalogLoadResult(
                 CloneServices(entry.Services),
@@ -168,10 +164,12 @@ public sealed class DubboCatalogCache
     {
         lock (_sync)
         {
-            return _entries.TryGetValue(address, out CacheEntry? entry)
-                && string.Equals(entry.RegistryRoot, registryRoot, StringComparison.Ordinal)
-                    ? CloneServices(entry.Services)
-                    : null;
+            if (!TryGetEntry(address, registryRoot, out AddressCache? addressCache, out CacheEntry? entry))
+            {
+                return null;
+            }
+            Touch(addressCache, entry);
+            return CloneServices(entry.Services);
         }
     }
 
@@ -183,21 +181,54 @@ public sealed class DubboCatalogCache
     {
         lock (_sync)
         {
-            if (!_entries.ContainsKey(address) && _entries.Count >= MaximumAddressCount)
+            if (!_entries.TryGetValue(address, out AddressCache? addressCache))
             {
-                string leastRecentlyUsedAddress = _entries
-                    .MinBy(pair => pair.Value.LastAccess)
-                    .Key;
-                _entries.Remove(leastRecentlyUsedAddress);
+                if (_entries.Count >= MaximumAddressCount)
+                {
+                    string leastRecentlyUsedAddress = _entries
+                        .MinBy(pair => pair.Value.LastAccess)
+                        .Key;
+                    _entries.Remove(leastRecentlyUsedAddress);
+                }
+                addressCache = new AddressCache();
+                _entries[address] = addressCache;
             }
 
-            _entries[address] = new CacheEntry(
-                registryRoot,
+            long access = NextAccessSequence();
+            addressCache.Catalogs[registryRoot] = new CacheEntry(
                 CloneServices(services).ToList(),
                 preloadAttempted,
-                NextAccessSequence());
+                access);
+            addressCache.LastAccess = access;
         }
     }
+
+    private bool TryGetEntry(
+        string address,
+        string registryRoot,
+        out AddressCache addressCache,
+        out CacheEntry entry)
+    {
+        if (_entries.TryGetValue(address, out addressCache!)
+            && addressCache.Catalogs.TryGetValue(registryRoot, out entry!))
+        {
+            return true;
+        }
+        addressCache = null!;
+        entry = null!;
+        return false;
+    }
+
+    private void Touch(AddressCache addressCache, CacheEntry entry)
+    {
+        long access = NextAccessSequence();
+        addressCache.LastAccess = access;
+        entry.LastAccess = access;
+    }
+
+    private static bool IsSameService(DubboServiceItem left, DubboServiceItem right) =>
+        string.Equals(left.RegistryRootPath, right.RegistryRootPath, StringComparison.Ordinal)
+        && string.Equals(left.Name, right.Name, StringComparison.Ordinal);
 
     private long NextAccessSequence() => Interlocked.Increment(ref _accessSequence);
 
@@ -220,6 +251,7 @@ public sealed class DubboCatalogCache
         var clone = new DubboServiceItem
         {
             Name = source.Name,
+            RegistryRootPath = source.RegistryRootPath,
             IsLoaded = source.IsLoaded
         };
         clone.Methods.AddRange(source.Methods);
@@ -243,13 +275,17 @@ public sealed class DubboCatalogCache
         RegistryUrl = source.RegistryUrl
     };
 
+    private sealed class AddressCache
+    {
+        public Dictionary<string, CacheEntry> Catalogs { get; } = new(StringComparer.Ordinal);
+        public long LastAccess { get; set; }
+    }
+
     private sealed class CacheEntry(
-        string registryRoot,
         List<DubboServiceItem> services,
         bool preloadAttempted,
         long lastAccess)
     {
-        public string RegistryRoot { get; } = registryRoot;
         public List<DubboServiceItem> Services { get; } = services;
         public bool PreloadAttempted { get; set; } = preloadAttempted;
         public long LastAccess { get; set; } = lastAccess;

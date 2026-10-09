@@ -101,6 +101,46 @@ public sealed class DubboTypeStructureBuilderTests
     }
 
     [Fact]
+    public void GenerateExampleJson_UsesTypesNormalizedFromOfficialDubboMetadata()
+    {
+        var signature = new MethodSignatureItem
+        {
+            ServiceName = "com.example.dubbonet.api.OrderService",
+            MethodName = "calculateTotal",
+            ParameterTypes = ["java.util.List<com.example.dubbonet.model.OrderItem>"],
+            TypeDefinitions =
+            [
+                new DubboTypeMetadata
+                {
+                    Type = "java.util.List<com.example.dubbonet.model.OrderItem>",
+                    Items = [new() { Type = "com.example.dubbonet.model.OrderItem" }]
+                },
+                new DubboTypeMetadata
+                {
+                    Type = "com.example.dubbonet.model.OrderItem",
+                    Properties = new Dictionary<string, DubboTypeMetadata>
+                    {
+                        ["sku"] = new() { Type = "java.lang.String" },
+                        ["name"] = new() { Type = "java.lang.String" },
+                        ["quantity"] = new() { Type = "int" },
+                        ["unitPrice"] = new() { Type = "java.math.BigDecimal" }
+                    }
+                }
+            ]
+        };
+
+        IReadOnlyList<MethodParameterStructure> parameters = DubboTypeStructureBuilder.Build(signature);
+        using JsonDocument example = JsonDocument.Parse(
+            DubboTypeStructureBuilder.GenerateExampleJson(parameters));
+        JsonElement item = example.RootElement[0][0];
+
+        Assert.Equal("string", item.GetProperty("name").GetString());
+        Assert.Equal(0, item.GetProperty("quantity").GetInt32());
+        Assert.Equal("string", item.GetProperty("sku").GetString());
+        Assert.Equal(0, item.GetProperty("unitPrice").GetInt32());
+    }
+
+    [Fact]
     public void GenerateExampleJson_GeneratesExamplesForMultipleScalarParameters()
     {
         var signature = new MethodSignatureItem

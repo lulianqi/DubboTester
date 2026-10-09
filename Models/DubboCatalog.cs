@@ -5,6 +5,7 @@ namespace DubboTester.Models;
 public sealed class DubboServiceItem
 {
     public required string Name { get; init; }
+    public string RegistryRootPath { get; init; } = string.Empty;
     public List<DubboProviderItem> Providers { get; } = [];
     public List<string> Methods { get; } = [];
     public bool IsLoaded { get; set; }
@@ -39,6 +40,12 @@ public sealed record DubboCatalogLoadResult(
 {
     public int LoadedServiceDetailCount => Services.Count(service => service.IsLoaded);
     public int PendingServiceDetailCount => Services.Count - LoadedServiceDetailCount;
+    public IReadOnlyList<string> RegistryRoots => Services
+        .Select(service => service.RegistryRootPath)
+        .Where(root => !string.IsNullOrWhiteSpace(root))
+        .Distinct(StringComparer.Ordinal)
+        .Order(StringComparer.Ordinal)
+        .ToArray();
 }
 
 public enum CatalogPreloadState

@@ -19,6 +19,7 @@
 .route-badge { padding: 4px 8px; border-radius: 999px; color: #0958d9 !important; background: #eaf3ff; }
 .target-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; padding: 14px 15px 16px; }
 .target-grid label, .load-fields label { min-width: 0; display: grid; gap: 6px; color: #586679; font-size: 10px; }
+.target-grid label small { color: #969eaa; font-weight: 400; }
 .target-grid input, .target-grid select, .load-fields input { min-width: 0; width: 100%; height: 37px; padding: 0 10px; border: 1px solid #dfe5ee; border-radius: 7px; color: #25344a; background: #fff; }
 .target-grid .span-two { grid-column: span 2; }
 .target-grid .span-three { grid-column: 1 / -1; }

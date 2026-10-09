@@ -170,6 +170,72 @@ public sealed class DubboCatalogCacheTests
     }
 
     [Fact]
+    public async Task GetOrLoadAsync_KeepsSeparateCatalogsForSameAddress()
+    {
+        var cache = new DubboCatalogCache();
+        await cache.GetOrLoadAsync(
+            "zk:2181",
+            "/dubbo-a",
+            false,
+            false,
+            _ => Task.FromResult<IReadOnlyList<DubboServiceItem>>(
+                [new DubboServiceItem { Name = "ServiceA", RegistryRootPath = "/dubbo-a" }]));
+        await cache.GetOrLoadAsync(
+            "zk:2181",
+            "/dubbo-b",
+            false,
+            false,
+            _ => Task.FromResult<IReadOnlyList<DubboServiceItem>>(
+                [new DubboServiceItem { Name = "ServiceB", RegistryRootPath = "/dubbo-b" }]));
+
+        DubboCatalogLoadResult first = await cache.GetOrLoadAsync(
+            "zk:2181",
+            "/dubbo-a",
+            false,
+            false,
+            _ => throw new InvalidOperationException("第一个目录应继续命中缓存"));
+
+        Assert.True(first.FromCache);
+        Assert.Equal("ServiceA", Assert.Single(first.Services).Name);
+    }
+
+    [Fact]
+    public async Task UpdateService_DistinguishesSameServiceNameAcrossRegistryRoots()
+    {
+        var cache = new DubboCatalogCache();
+        await cache.GetOrLoadAsync(
+            "zk:2181",
+            "/dubbo-a\n/dubbo-b",
+            false,
+            false,
+            _ => Task.FromResult<IReadOnlyList<DubboServiceItem>>(
+            [
+                new DubboServiceItem { Name = "demo.Service", RegistryRootPath = "/dubbo-a" },
+                new DubboServiceItem { Name = "demo.Service", RegistryRootPath = "/dubbo-b" }
+            ]));
+        var loaded = new DubboServiceItem
+        {
+            Name = "demo.Service",
+            RegistryRootPath = "/dubbo-b",
+            IsLoaded = true
+        };
+        loaded.Methods.Add("fromB");
+
+        cache.UpdateService("zk:2181", "/dubbo-a\n/dubbo-b", loaded);
+        DubboCatalogLoadResult result = await cache.GetOrLoadAsync(
+            "zk:2181",
+            "/dubbo-a\n/dubbo-b",
+            false,
+            false,
+            _ => throw new InvalidOperationException("应命中缓存"));
+
+        Assert.False(result.Services.Single(service => service.RegistryRootPath == "/dubbo-a").IsLoaded);
+        Assert.Equal(
+            ["fromB"],
+            result.Services.Single(service => service.RegistryRootPath == "/dubbo-b").Methods);
+    }
+
+    [Fact]
     public async Task GetOrLoadAsync_KeepsOnlyTenLeastRecentlyUsedAddresses()
     {
         var cache = new DubboCatalogCache();

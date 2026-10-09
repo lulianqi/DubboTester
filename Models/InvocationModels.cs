@@ -9,6 +9,7 @@ public enum InvocationRoute
 public sealed class InvocationInput
 {
     public InvocationRoute Route { get; set; } = InvocationRoute.Registry;
+    public string RegistryRootPath { get; set; } = string.Empty;
     public string ServiceName { get; set; } = string.Empty;
     public string MethodName { get; set; } = string.Empty;
     public string Host { get; set; } = string.Empty;
@@ -41,6 +42,7 @@ public sealed class InvocationHistory
     public bool Favorite { get; set; }
     public bool Success { get; set; }
     public InvocationRoute Route { get; set; }
+    public string RegistryRootPath { get; set; } = string.Empty;
     public string ServiceName { get; set; } = string.Empty;
     public string MethodName { get; set; } = string.Empty;
     public string Host { get; set; } = string.Empty;
