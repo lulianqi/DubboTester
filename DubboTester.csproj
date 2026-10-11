@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="DubboNet" Version="1.3.3" />
+    <PackageReference Include="DubboNet" Version="2.0.0" />
   </ItemGroup>
 
   <ItemGroup>

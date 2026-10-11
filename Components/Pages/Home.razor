@@ -21,7 +21,7 @@
             </div>
         </div>
         <div class="topbar-actions">
-            <span class="package-badge">DubboNet 1.3.2</span>
+            <span class="package-badge">DubboNet 2.0.0</span>
             <button class="icon-button" title="设置" @onclick="OpenSettings">⚙</button>
             <button class="icon-button" title="强制刷新注册中心" disabled="@IsCatalogActive" @onclick="() => RefreshCatalogAsync(true)">
                 <span class="@(IsCatalogBusy ? "spin" : null)">↻</span>
@@ -442,7 +442,7 @@
                 }
             </div>
             <footer>
-                <span>以上为 DubboNet 1.3.2 本次读取到的完整方法与类型元数据。</span>
+                <span>以上为 DubboNet 2.0.0 本次读取到的完整方法与类型元数据。</span>
                 <div><button class="primary" @onclick="CloseSignatureInfo">关闭</button></div>
             </footer>
         </section>
