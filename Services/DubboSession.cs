@@ -330,6 +330,47 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         await client.ConnectAsync(host.Trim(), port, timeout.Token);
     }
 
+    public static async Task TestZooKeeperAsync(
+        string address,
+        int timeoutMs = 10_000,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            throw new ArgumentException("请先填写 ZooKeeper 地址。", nameof(address));
+        }
+
+        string normalizedAddress = address.Trim();
+        int effectiveTimeoutMs = Math.Clamp(timeoutMs, 1_000, 30_000);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(effectiveTimeoutMs);
+
+        try
+        {
+            await using var registry = new MyZookeeper(normalizedAddress);
+            bool connected = await registry.ConnectZooKeeperAsync(timeout.Token);
+            if (!connected || !registry.IsConnected)
+            {
+                throw new InvalidOperationException("ZooKeeper 未能建立有效会话。");
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"连接 ZooKeeper {normalizedAddress} 超时（{effectiveTimeoutMs} ms）。");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new InvalidOperationException(
+                $"无法连接 ZooKeeper {normalizedAddress}：{exception.Message}",
+                exception);
+        }
+    }
+
     private async Task EnsureRegistryAsync(
         TesterSettings settings,
         CancellationToken cancellationToken)

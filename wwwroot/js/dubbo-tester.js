@@ -9,46 +9,54 @@ window.dubboTester = {
         if (!workspace || !handle || handle.dataset.resizeInitialized === "true") return;
 
         const minimumWidth = 220;
+        const getMaximumWidth = () => {
+            const bounds = workspace.getBoundingClientRect();
+            const history = workspace.querySelector(".history-panel");
+            const historyBounds = history?.getBoundingClientRect();
+            const historySharesRow = historyBounds
+                && Math.abs(historyBounds.top - bounds.top) < 4;
+            const historyWidth = !historySharesRow
+                ? 0
+                : history?.classList.contains("collapsed")
+                    ? 44
+                    : historyBounds.width;
+            return Math.max(
+                minimumWidth,
+                Math.min(bounds.width * .45, bounds.width - historyWidth - 520));
+        };
+        const setWidthFromClientX = clientX => {
+            const bounds = workspace.getBoundingClientRect();
+            const width = Math.min(
+                getMaximumWidth(),
+                Math.max(minimumWidth, clientX - bounds.left));
+            workspace.style.setProperty("--catalog-width", `${width}px`);
+            return width;
+        };
         const savedWidth = Number.parseFloat(window.localStorage.getItem(storageKey));
         if (Number.isFinite(savedWidth) && savedWidth >= minimumWidth) {
-            workspace.style.setProperty("--catalog-width", `${savedWidth}px`);
+            workspace.style.setProperty(
+                "--catalog-width",
+                `${Math.min(savedWidth, getMaximumWidth())}px`);
         }
 
         handle.dataset.resizeInitialized = "true";
         handle.addEventListener("pointerdown", event => {
             if (event.button !== 0) return;
             event.preventDefault();
-            handle.setPointerCapture(event.pointerId);
             document.body.classList.add("resizing-catalog");
+            const pointerId = event.pointerId;
 
             const resize = pointerEvent => {
-                const bounds = workspace.getBoundingClientRect();
-                const history = workspace.querySelector(".history-panel");
-                const historyBounds = history?.getBoundingClientRect();
-                const historySharesRow = historyBounds
-                    && Math.abs(historyBounds.top - bounds.top) < 4;
-                const historyWidth = !historySharesRow
-                    ? 0
-                    : history?.classList.contains("collapsed")
-                        ? 44
-                        : historyBounds.width;
-                const maximumWidth = Math.max(
-                    minimumWidth,
-                    Math.min(bounds.width * .45, bounds.width - historyWidth - 520));
-                const width = Math.min(
-                    maximumWidth,
-                    Math.max(minimumWidth, pointerEvent.clientX - bounds.left));
-                workspace.style.setProperty("--catalog-width", `${width}px`);
+                if (pointerEvent.pointerId !== pointerId) return;
+                setWidthFromClientX(pointerEvent.clientX);
             };
 
             const finish = pointerEvent => {
+                if (pointerEvent.pointerId !== pointerId) return;
                 resize(pointerEvent);
-                if (handle.hasPointerCapture(event.pointerId)) {
-                    handle.releasePointerCapture(event.pointerId);
-                }
-                handle.removeEventListener("pointermove", resize);
-                handle.removeEventListener("pointerup", finish);
-                handle.removeEventListener("pointercancel", finish);
+                window.removeEventListener("pointermove", resize);
+                window.removeEventListener("pointerup", finish);
+                window.removeEventListener("pointercancel", finish);
                 document.body.classList.remove("resizing-catalog");
                 const width = Number.parseFloat(
                     getComputedStyle(workspace).getPropertyValue("--catalog-width"));
@@ -57,9 +65,9 @@ window.dubboTester = {
                 }
             };
 
-            handle.addEventListener("pointermove", resize);
-            handle.addEventListener("pointerup", finish);
-            handle.addEventListener("pointercancel", finish);
+            window.addEventListener("pointermove", resize);
+            window.addEventListener("pointerup", finish);
+            window.addEventListener("pointercancel", finish);
         });
     },
     copy: value => navigator.clipboard.writeText(value ?? ""),

@@ -22,6 +22,7 @@ logs/
 .env.*
 appsettings.Local.json
 appsettings.*.Local.json
+App_Data/
 
 # Test and coverage output
 TestResults/

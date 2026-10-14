@@ -17,11 +17,15 @@
             <div class="brand-mark">D</div>
             <div>
                 <div class="brand">Dubbo Tester</div>
-                <div class="brand-subtitle">Native Dubbo2 · Hessian2</div>
+                <div class="brand-subtitle">
+                    <span>Native Dubbo2</span>
+                    <span aria-hidden="true">·</span>
+                    <button type="button" class="about-link" @onclick="OpenAbout">关于</button>
+                </div>
             </div>
         </div>
         <div class="topbar-actions">
-            <span class="package-badge">DubboNet 2.0.0</span>
+            <a class="mcp-entry topbar-mcp-entry" href="/mcp-service" title="配置远程 MCP 服务">MCP 服务</a>
             <button class="icon-button" title="设置" @onclick="OpenSettings">⚙</button>
             <button class="icon-button" title="强制刷新注册中心" disabled="@IsCatalogActive" @onclick="() => RefreshCatalogAsync(true)">
                 <span class="@(IsCatalogBusy ? "spin" : null)">↻</span>
@@ -44,7 +48,9 @@
                     <h2>服务目录</h2>
                     <span>@Services.Count 个服务</span>
                 </div>
-                <button class="subtle-button" title="忽略缓存并刷新" disabled="@IsCatalogActive" @onclick="() => RefreshCatalogAsync(true)">刷新</button>
+                <div class="catalog-heading-actions">
+                    <button class="subtle-button" title="忽略缓存并刷新" disabled="@IsCatalogActive" @onclick="() => RefreshCatalogAsync(true)">刷新</button>
+                </div>
             </div>
 
             <div class="search-box">
@@ -384,6 +390,44 @@
     </main>
 </div>
 
+@if (AboutVisible)
+{
+    <div class="modal-backdrop" @onclick="CloseAbout">
+        <section class="settings-modal about-modal" role="dialog" aria-modal="true" aria-labelledby="about-dialog-title" @onclick:stopPropagation="true">
+            <header>
+                <div>
+                    <h2 id="about-dialog-title">关于 Dubbo Tester</h2>
+                    <p>工程版本与开源项目地址</p>
+                </div>
+                <button class="modal-close" title="关闭" @onclick="CloseAbout">×</button>
+            </header>
+            <div class="about-content">
+                <section class="about-project">
+                    <div>
+                        <h3>Dubbo Tester</h3>
+                        <span class="about-version">@($"v{DubboTesterVersion}")</span>
+                    </div>
+                    <p>Dubbo 服务调试、压测与 MCP 工具配置应用。</p>
+                    <a href="https://github.com/lulianqi/DubboTester" target="_blank" rel="noopener noreferrer">https://github.com/lulianqi/DubboTester</a>
+                </section>
+                <section class="about-project">
+                    <div>
+                        <h3>DubboNet</h3>
+                        <span class="about-version">@($"v{DubboNetVersion}")</span>
+                    </div>
+                    <p>当前应用使用的 .NET Dubbo 客户端。</p>
+                    <a href="https://github.com/lulianqi/DubboNet" target="_blank" rel="noopener noreferrer">https://github.com/lulianqi/DubboNet</a>
+                </section>
+                <section class="about-feedback">
+                    <h3>问题反馈</h3>
+                    <a href="https://github.com/lulianqi/DubboTester/issues" target="_blank" rel="noopener noreferrer">https://github.com/lulianqi/DubboTester/issues</a>
+                </section>
+            </div>
+            <footer><button class="primary" @onclick="CloseAbout">关闭</button></footer>
+        </section>
+    </div>
+}
+
 @if (SignatureInfoVisible)
 {
     <div class="modal-backdrop" @onclick="CloseSignatureInfo">
@@ -562,6 +606,8 @@
 }
 
 @code {
+    private const string DubboNetVersion = "2.0.0";
+    private const string DubboTesterVersion = "1.2.0";
     private const string SettingsStorageKey = "dubbo-tester.settings.v1";
     private const string HistoryStorageKey = "dubbo-tester.history.v1";
     private const string RequestDraftStorageKey = "dubbo-tester.request-drafts.v1";
@@ -591,6 +637,7 @@
     private string Notice { get; set; } = "请先配置 ZooKeeper，然后刷新服务目录";
     private bool NoticeIsError { get; set; }
     private bool NoticeIsWarning { get; set; }
+    private bool AboutVisible { get; set; }
     private bool SettingsVisible { get; set; }
     private bool TypeStructureVisible { get; set; }
     private bool SignatureInfoVisible { get; set; }
@@ -661,6 +708,21 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        try
+        {
+            // 缓存和设置加载会触发后续渲染。每次渲染都让脚本幂等检查一次，
+            // 这样拖拽条节点被 Blazor 更新后也能重新绑定事件。
+            await JS.InvokeVoidAsync(
+                "dubboTester.initializeCatalogResize",
+                ".workspace",
+                ".catalog-resizer",
+                CatalogWidthStorageKey);
+        }
+        catch (JSDisconnectedException)
+        {
+            return;
+        }
+
         if (!firstRender)
         {
             return;
@@ -689,11 +751,6 @@
                 History,
                 Settings.HistoryLimit);
             SettingsDraft = Settings.Clone();
-            await JS.InvokeVoidAsync(
-                "dubboTester.initializeCatalogResize",
-                ".workspace",
-                ".catalog-resizer",
-                CatalogWidthStorageKey);
             StateHasChanged();
             if (historyTrimmed)
             {
@@ -1283,6 +1340,8 @@
 
     private void OpenSettings() { SettingsDraft = Settings.Clone(); SettingsVisible = true; }
     private void CloseSettings() => SettingsVisible = false;
+    private void OpenAbout() => AboutVisible = true;
+    private void CloseAbout() => AboutVisible = false;
 
     private async Task SaveSettingsAsync()
     {
