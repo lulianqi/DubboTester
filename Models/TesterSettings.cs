@@ -17,7 +17,7 @@ public sealed class TesterSettings
     public bool HideUnmatched { get; set; }
     public bool SearchMethodsOnly { get; set; }
     public bool CaseSensitiveSearch { get; set; }
-    public bool PreloadAllServiceMethods { get; set; }
+    public bool OnlyRefreshServiceNames { get; set; }
 
     public TesterSettings Clone() => (TesterSettings)MemberwiseClone();
 }

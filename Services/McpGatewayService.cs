@@ -276,6 +276,7 @@ public sealed class McpGatewayService : IDisposable
             {
                 StartedAt = DateTimeOffset.Now - stopwatch.Elapsed,
                 ToolName = method.ToolName,
+                RegistryRootPath = method.RegistryRootPath,
                 ServiceName = method.ServiceName,
                 MethodName = method.MethodName,
                 RemoteAddress = _httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString() ?? string.Empty,

@@ -50,6 +50,20 @@
                 </div>
                 <div class="catalog-heading-actions">
                     <button class="subtle-button" title="忽略缓存并刷新" disabled="@IsCatalogActive" @onclick="() => RefreshCatalogAsync(true)">刷新</button>
+                    <div class="catalog-refresh-settings">
+                        <button type="button"
+                                class="catalog-refresh-settings-button"
+                                title="刷新设置"
+                                aria-expanded="@ShowCatalogRefreshSettings"
+                                @onclick="() => ShowCatalogRefreshSettings = !ShowCatalogRefreshSettings">⚙</button>
+                        @if (ShowCatalogRefreshSettings)
+                        {
+                            <div class="catalog-refresh-settings-popover">
+                                <label><input type="checkbox" @bind="Settings.OnlyRefreshServiceNames" @bind:after="PersistCatalogRefreshModeAsync" />仅刷新服务名称</label>
+                                <small>关闭时同时刷新 Provider 与方法信息</small>
+                            </div>
+                        }
+                    </div>
                 </div>
             </div>
 
@@ -83,9 +97,9 @@
                         @foreach (DubboServiceItem service in registryGroup)
                         {
                             <div class="service-node @(ReferenceEquals(SelectedService, service) ? "active-service" : null)"
-                                 @key="service">
+                                @key="service">
                                 <button class="service-row" @onclick="() => ToggleServiceAsync(service)">
-                                    <span class="chevron">@(ReferenceEquals(ExpandedService, service) ? "▾" : "›")</span>
+                                    <span class="chevron">@(IsServiceExpanded(service) ? "▾" : "›")</span>
                                     <span class="service-icon">⬡</span>
                                     <span class="service-name" title="@service.Name">@service.Name</span>
                                     @if (service.IsLoaded)
@@ -94,10 +108,10 @@
                                     }
                                 </button>
 
-                                @if (ReferenceEquals(ExpandedService, service))
+                                @if (IsServiceExpanded(service))
                                 {
                                     <div class="service-children">
-                                        @if (IsServiceBusy)
+                                        @if (IsServiceLoading(service))
                                         {
                                             <div class="loading-row"><span class="spinner"></span>加载 Provider…</div>
                                         }
@@ -107,7 +121,7 @@
                                             {
                                                 <button class="tree-item provider-item @(SelectedProvider?.RegistryUrl == provider.RegistryUrl ? "selected" : null)"
                                                         title="@provider.RegistryUrl"
-                                                        @onclick="() => SelectProvider(provider)">
+                                                        @onclick="() => SelectProvider(service, provider)">
                                                     <span class="status-led @(provider.Disabled ? "disabled" : null)"></span>
                                                     <span>@provider.Address</span>
                                                     <small>@provider.Scheme</small>
@@ -588,8 +602,8 @@
                     </label>
                 </div>
                 <div class="setting-checks">
-                    <label title="加载目录时一次性读取全部服务的 Provider 和方法，服务节点仍保持收起">
-                        <input type="checkbox" @bind="SettingsDraft.PreloadAllServiceMethods" />加载目录时预取全部服务方法
+                    <label title="开启后刷新目录时不再后台读取全部服务的 Provider 与方法">
+                        <input type="checkbox" @bind="SettingsDraft.OnlyRefreshServiceNames" />仅刷新服务名称
                     </label>
                     <label><input type="checkbox" @bind="SettingsDraft.HideUnmatched" />只显示搜索匹配项</label>
                     <label><input type="checkbox" @bind="SettingsDraft.SearchMethodsOnly" />仅搜索方法名</label>
@@ -629,7 +643,8 @@
     private List<InvocationHistory> History { get; set; } = [];
     private Dictionary<string, string> RequestDrafts { get; set; } = new(StringComparer.Ordinal);
     private DubboServiceItem? SelectedService { get; set; }
-    private DubboServiceItem? ExpandedService { get; set; }
+    private HashSet<string> ExpandedServiceKeys { get; } = new(StringComparer.Ordinal);
+    private HashSet<string> LoadingServiceKeys { get; } = new(StringComparer.Ordinal);
     private DubboProviderItem? SelectedProvider { get; set; }
     private InvocationOutput? LastOutput { get; set; }
     private string SearchText { get; set; } = string.Empty;
@@ -643,13 +658,13 @@
     private bool SignatureInfoVisible { get; set; }
     private bool FavoritesOnly { get; set; }
     private bool HistoryCollapsed { get; set; }
+    private bool ShowCatalogRefreshSettings { get; set; }
     private bool IsCatalogBusy { get; set; }
     private CancellationTokenSource? CatalogLoadCancellation { get; set; }
     private CancellationTokenSource? CatalogPreloadTrackingCancellation { get; set; }
     private CatalogPreloadStatus? PreloadStatus { get; set; }
     private bool CatalogStopRequested { get; set; }
     private bool IsDisposed { get; set; }
-    private bool IsServiceBusy { get; set; }
     private bool IsSignatureBusy { get; set; }
     private bool SignatureReadFailed { get; set; }
     private bool IsProviderTesting { get; set; }
@@ -796,10 +811,11 @@
                 cancellation.Token);
             Services = result.Services.ToList();
             SelectedService = null;
-            ExpandedService = null;
+            ExpandedServiceKeys.Clear();
+            LoadingServiceKeys.Clear();
             await InvokeAsync(StateHasChanged);
 
-            if (Settings.PreloadAllServiceMethods
+            if (!Settings.OnlyRefreshServiceNames
                 && !result.HasAllServiceDetails
                 && !result.PreloadAttempted)
             {
@@ -813,7 +829,7 @@
                 SetNotice(
                     $"已从{source}加载 {Services.Count} 个服务，Provider 与方法正在后台预取");
             }
-            else if (Settings.PreloadAllServiceMethods && !result.HasAllServiceDetails)
+            else if (!Settings.OnlyRefreshServiceNames && !result.HasAllServiceDetails)
             {
                 SetNotice(
                     $"已从{source}加载 {Services.Count} 个服务；因 ZooKeeper 超时或连接波动，"
@@ -993,33 +1009,48 @@
     private async Task ToggleServiceAsync(DubboServiceItem service)
     {
         SelectedService = service;
-        if (ReferenceEquals(ExpandedService, service)) { ExpandedService = null; return; }
-        ExpandedService = service;
+        string serviceKey = ServiceExpansionKey(service);
+        if (!ExpandedServiceKeys.Add(serviceKey))
+        {
+            ExpandedServiceKeys.Remove(serviceKey);
+            return;
+        }
+
         Input.RegistryRootPath = service.RegistryRootPath;
         Input.ServiceName = service.Name;
 
-        IsServiceBusy = true;
+        if (!LoadingServiceKeys.Add(serviceKey)) return;
         try
         {
             await Session.LoadServiceDetailsAsync(Settings, service, forceRefresh: true);
             SetNotice($"已刷新 {service.Name}：{service.Providers.Count} 个 Provider，{service.Methods.Count} 个方法");
         }
         catch (Exception exception) { SetNotice($"加载服务详情失败：{GetErrorMessage(exception)}", true); }
-        finally { IsServiceBusy = false; }
+        finally { LoadingServiceKeys.Remove(serviceKey); }
     }
 
-    private void SelectProvider(DubboProviderItem provider)
+    private void SelectProvider(DubboServiceItem service, DubboProviderItem provider)
     {
+        SelectedService = service;
         SelectedProvider = provider;
         Input.Host = provider.Host;
         Input.Port = provider.Port;
-        Input.RegistryRootPath = SelectedService?.RegistryRootPath ?? Input.RegistryRootPath;
+        Input.RegistryRootPath = service.RegistryRootPath;
         Input.ServiceName = provider.ServiceName;
         Input.Version = provider.Version ?? string.Empty;
         Input.Group = provider.Group ?? string.Empty;
         ProviderTestSucceeded = null;
         SetNotice($"已选择 Provider {provider.Description}");
     }
+
+    private bool IsServiceExpanded(DubboServiceItem service) =>
+        ExpandedServiceKeys.Contains(ServiceExpansionKey(service));
+
+    private bool IsServiceLoading(DubboServiceItem service) =>
+        LoadingServiceKeys.Contains(ServiceExpansionKey(service));
+
+    private static string ServiceExpansionKey(DubboServiceItem service) =>
+        $"{RegistryRootPaths.NormalizeRoot(service.RegistryRootPath)}\n{service.Name}";
 
     private async Task SelectMethodAsync(DubboServiceItem service, string method)
     {
@@ -1361,6 +1392,12 @@
 
     private async Task PersistSettingsAsync() =>
         await JS.InvokeVoidAsync("dubboTester.save", SettingsStorageKey, JsonSerializer.Serialize(Settings, StorageJsonOptions));
+
+    private async Task PersistCatalogRefreshModeAsync()
+    {
+        SettingsDraft.OnlyRefreshServiceNames = Settings.OnlyRefreshServiceNames;
+        await PersistSettingsAsync();
+    }
 
     private async Task PersistHistoryAsync() =>
         await JS.InvokeVoidAsync("dubboTester.save", HistoryStorageKey, JsonSerializer.Serialize(History, StorageJsonOptions));

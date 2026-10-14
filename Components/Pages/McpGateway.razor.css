@@ -137,15 +137,17 @@
 .configured-heading-actions { display: flex; align-items: center; gap: 12px; }
 .small-button { height: 32px; padding: 0 11px; font-size: 10px; }
 .configured-list { overflow-x: auto; padding: 0 15px 14px; }
-.configured-row { min-width: 920px; min-height: 48px; display: grid; grid-template-columns: minmax(180px,1fr) minmax(120px,.55fr) minmax(260px,1.35fr) 130px 150px; align-items: center; gap: 12px; padding: 8px 10px; border-bottom: 1px solid #edf0f5; color: #536176; font-size: 9px; }
-.configured-row > b, .configured-row > code, .configured-method { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.configured-row { min-width: 1080px; min-height: 48px; display: grid; grid-template-columns: minmax(180px,1fr) minmax(110px,.5fr) minmax(230px,1.2fr) minmax(180px,1fr) 115px 120px; align-items: center; gap: 12px; padding: 8px 10px; border-bottom: 1px solid #edf0f5; color: #536176; font-size: 9px; }
+.configured-row > b, .configured-row > code, .configured-method, .configured-description { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .configured-row > b { color: #31435a; font-size: 10px; }
 .configured-row > code { color: #315b8c; font-size: 9px; }
 .configured-table-head { min-height: 34px; color: #8791a0; background: #fafbfd; font-weight: 650; }
+.configured-table-head > span:last-child { text-align: center; }
 .configured-method { display: flex; align-items: baseline; gap: 3px; }
 .configured-method b { overflow: hidden; color: #415168; text-overflow: ellipsis; }
 .configured-method small { flex: 0 0 auto; color: #8791a0; }
-.configured-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+.configured-description { display: block; color: #657184; }
+.configured-actions { display: flex; align-items: center; justify-content: center; gap: 2px; }
 .mcp-modal-backdrop { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(18,28,43,.48); backdrop-filter: blur(2px); }
 .mcp-modal { width: min(820px,calc(100vw - 32px)); max-height: min(850px,calc(100vh - 48px)); overflow: hidden; display: flex; flex-direction: column; border: 1px solid #dfe6ef; border-radius: 12px; background: #fff; box-shadow: 0 24px 70px rgba(12,27,48,.24); }
 .mcp-modal > header { min-height: 66px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 18px; border-bottom: 1px solid #edf1f5; }
@@ -193,15 +195,18 @@
 .debug-result.failed > div { color: #b72d40; }
 .debug-result > div span { color: #718096; font-size: 9px; }
 .debug-result pre { max-height: 240px; overflow: auto; margin: 0; padding: 11px; border-top: 1px solid rgba(80,100,120,.12); color: #34445a; background: rgba(255,255,255,.66); white-space: pre-wrap; overflow-wrap: anywhere; font: 9px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
-.mcp-history { max-height: 500px; overflow: auto; }
+.mcp-history { max-height: none; overflow: visible; }
 .mcp-record { border-bottom: 1px solid #eef1f5; }
-.mcp-record summary { min-width: 720px; height: 43px; display: grid; grid-template-columns: 115px minmax(220px,1fr) 55px 75px 130px; align-items: center; gap: 12px; padding: 0 15px; color: #657184; cursor: pointer; font-size: 9px; }
+.mcp-record summary { min-width: 980px; min-height: 43px; display: grid; grid-template-columns: 115px minmax(190px,.8fr) minmax(300px,1.35fr) 55px 75px 120px; align-items: center; gap: 12px; padding: 7px 15px; color: #657184; cursor: pointer; font-size: 9px; }
 .mcp-record summary b { overflow: hidden; color: #34445a; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.mcp-record-target { min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+.mcp-record-target code { flex: 0 0 auto; padding: 2px 6px; border-radius: 4px; color: #376ea8; background: #eef5ff; font: inherit; }
+.mcp-record-target span { overflow: hidden; color: #526176; text-overflow: ellipsis; white-space: nowrap; }
 .mcp-record summary em { width: max-content; padding: 2px 7px; border-radius: 999px; color: #087f58; background: #dcf8ed; font-style: normal; font-weight: 700; }
 .mcp-record.failed summary em { color: #b92b3d; background: #ffe7ea; }
-.mcp-record > div { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 8px 12px; padding: 0 15px 14px 30px; background: #fbfcfe; }
+.mcp-record > div { min-width: 0; display: grid; grid-template-columns: auto minmax(0,1fr); gap: 8px 12px; padding: 0 15px 14px 30px; background: #fbfcfe; }
 .mcp-record h3 { margin: 10px 0 0; color: #5e6c7e; font-size: 9px; }
-.mcp-record pre { max-height: 260px; overflow: auto; margin: 0; padding: 9px; border: 1px solid #e1e7ef; border-radius: 6px; color: #34445a; background: #fff; white-space: pre-wrap; overflow-wrap: anywhere; font: 9px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+.mcp-record pre { min-width: 0; max-height: none; overflow-x: auto; overflow-y: visible; margin: 0; padding: 9px; border: 1px solid #e1e7ef; border-radius: 6px; color: #34445a; background: #fff; white-space: pre-wrap; overflow-wrap: anywhere; font: 9px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
 
 @media (max-width: 900px) {
     .mcp-header { grid-template-columns: auto 1fr; }

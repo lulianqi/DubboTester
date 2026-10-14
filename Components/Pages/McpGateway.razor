@@ -9,7 +9,7 @@
 
 <div class="mcp-shell">
     <header class="mcp-header">
-        <button class="mcp-back" @onclick='() => Navigation.NavigateTo("/")'>← 返回请求页</button>
+        <button class="mcp-back" @onclick='() => Navigation.NavigateTo("/")'>← 返回主页</button>
         <div class="mcp-brand"><span>D</span><div><h1>Dubbo MCP 服务</h1><p>全局后台服务 · Streamable HTTP</p></div></div>
         <div class="mcp-state @(IsGatewayEnabled ? "enabled" : null)">
             <i></i>
@@ -122,17 +122,17 @@
                                                 {
                                                     <div class="mcp-service" @key="service">
                                                         <button class="mcp-service-row" @onclick="() => ToggleServiceAsync(service)">
-                                                            <span>@(ReferenceEquals(ExpandedService, service) ? "▾" : "›")</span>
+                                                            <span>@(IsServiceExpanded(service) ? "▾" : "›")</span>
                                                             <b title="@service.Name">@service.Name</b>
                                                             @if (service.IsLoaded)
                                                             {
                                                                 <small>@service.Methods.Count</small>
                                                             }
                                                         </button>
-                                                        @if (ReferenceEquals(ExpandedService, service))
+                                                        @if (IsServiceExpanded(service))
                                                         {
                                                             <div class="mcp-methods">
-                                                                @if (IsServiceBusy)
+                                                                @if (IsServiceLoading(service))
                                                                 {
                                                                     <div class="mcp-loading">加载方法…</div>
                                                                 }
@@ -192,13 +192,14 @@
                 }
                 else
                 {
-                    <div class="configured-row configured-table-head"><span>工具名</span><span>注册目录</span><span>服务 / 方法</span><span>启用</span><span>操作</span></div>
+                    <div class="configured-row configured-table-head"><span>工具名</span><span>注册目录</span><span>服务 / 方法</span><span>方法描述</span><span>启用</span><span>操作</span></div>
                     @foreach (McpDubboMethodConfiguration method in Config.Methods.OrderBy(item => item.ToolName, StringComparer.Ordinal))
                     {
                         <div class="configured-row" @key="method.Id">
                             <b title="@method.ToolName">@method.ToolName</b>
                             <code title="@method.RegistryRootPath">@method.RegistryRootPath</code>
                             <span class="configured-method" title="@method.Signature"><b>@method.ServiceName</b><small>#@method.MethodName</small></span>
+                            <span class="configured-description" title="@method.Description">@(string.IsNullOrWhiteSpace(method.Description) ? "—" : method.Description)</span>
                             <label class="mcp-switch compact-switch"><input type="checkbox" checked="@method.Enabled" @onchange="() => ToggleConfiguredMethodAsync(method)" /><span></span>@(method.Enabled ? "已启用" : "未启用")</label>
                             <span class="configured-actions"><button class="link-button" @onclick="() => OpenDetailsDialog(method)">详情</button><button class="link-button" @onclick="() => OpenEditDialogAsync(method)">编辑</button><button class="link-button danger" @onclick="() => DeleteConfiguredMethodAsync(method)">删除</button></span>
                         </div>
@@ -222,9 +223,13 @@
                             <summary>
                                 <span>@record.StartedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</span>
                                 <b>@record.ToolName</b>
+                                <span class="mcp-record-target" title="@FormatRecordTarget(record)">
+                                    <code>@DisplayRegistryRoot(record.RegistryRootPath)</code>
+                                    <span>@record.ServiceName#@record.MethodName</span>
+                                </span>
                                 <em>@(record.Success ? "成功" : "失败")</em>
                                 <span>@record.ElapsedMs ms</span>
-                                <span>@record.RemoteAddress</span>
+                                <span title="调用方地址">@DisplayRemoteAddress(record.RemoteAddress)</span>
                             </summary>
                             <div><h3>请求参数</h3><pre>@record.RequestJson</pre><h3>响应 / 错误</h3><pre>@record.Response</pre></div>
                         </details>
@@ -444,14 +449,14 @@
     private McpGatewayConfiguration Config { get; set; } = new();
     private List<DubboServiceItem> Services { get; set; } = [];
     private HashSet<string> ExpandedRegistryRoots { get; } = new(StringComparer.Ordinal);
-    private DubboServiceItem? ExpandedService { get; set; }
+    private HashSet<string> ExpandedServiceKeys { get; } = new(StringComparer.Ordinal);
+    private HashSet<string> LoadingServiceKeys { get; } = new(StringComparer.Ordinal);
     private IReadOnlyList<McpCallRecord> History { get; set; } = [];
     private string SearchText { get; set; } = string.Empty;
     private string Notice { get; set; } = "配置 ZooKeeper 并扫描服务，然后为需要暴露的方法启用 MCP。";
     private bool NoticeIsError { get; set; }
     private bool NoticeIsWarning { get; set; }
     private bool IsScanning { get; set; }
-    private bool IsServiceBusy { get; set; }
     private bool IsSaving { get; set; }
     private bool ShowToken { get; set; }
     private bool ShowRefreshSettings { get; set; }
@@ -480,7 +485,7 @@
     private InvocationOutput? DebugOutput { get; set; }
     private string DebugFailure { get; set; } = string.Empty;
 
-    private bool IsBusy => IsScanning || IsServiceBusy || IsSaving || IsDialogBusy;
+    private bool IsBusy => IsScanning || LoadingServiceKeys.Count > 0 || IsSaving || IsDialogBusy;
     private bool IsGatewayEnabled => Gateway.IsEnabled;
     private string Endpoint => Navigation.ToAbsoluteUri("mcp").ToString();
     private int EnabledMethodCount => Config.Methods.Count(method => method.Enabled);
@@ -595,7 +600,8 @@
                 Config.ToTesterSettings(),
                 forceRefresh);
             Services = result.Services.ToList();
-            ExpandedService = null;
+            ExpandedServiceKeys.Clear();
+            LoadingServiceKeys.Clear();
             ExpandedRegistryRoots.Clear();
             foreach (string root in result.RegistryRoots)
             {
@@ -643,14 +649,14 @@
 
     private async Task ToggleServiceAsync(DubboServiceItem service)
     {
-        if (ReferenceEquals(ExpandedService, service))
+        string serviceKey = ServiceExpansionKey(service);
+        if (!ExpandedServiceKeys.Add(serviceKey))
         {
-            ExpandedService = null;
+            ExpandedServiceKeys.Remove(serviceKey);
             return;
         }
 
-        ExpandedService = service;
-        IsServiceBusy = true;
+        if (!LoadingServiceKeys.Add(serviceKey)) return;
         try
         {
             // Expanding a service is an explicit refresh point. This avoids presenting
@@ -667,9 +673,18 @@
         }
         finally
         {
-            IsServiceBusy = false;
+            LoadingServiceKeys.Remove(serviceKey);
         }
     }
+
+    private bool IsServiceExpanded(DubboServiceItem service) =>
+        ExpandedServiceKeys.Contains(ServiceExpansionKey(service));
+
+    private bool IsServiceLoading(DubboServiceItem service) =>
+        LoadingServiceKeys.Contains(ServiceExpansionKey(service));
+
+    private static string ServiceExpansionKey(DubboServiceItem service) =>
+        $"{RegistryRootPaths.NormalizeRoot(service.RegistryRootPath)}\n{service.Name}";
 
     private void ToggleRegistryRoot(string root)
     {
@@ -1172,6 +1187,19 @@
 
     private static string NormalizeRegistryRoot(string? root) =>
         RegistryRootPaths.NormalizeRoot(root);
+
+    private static string DisplayRegistryRoot(string? root) =>
+        string.IsNullOrWhiteSpace(root) ? "—" : root.Trim();
+
+    private static string FormatRecordTarget(McpCallRecord record) =>
+        $"{DisplayRegistryRoot(record.RegistryRootPath)} · {record.ServiceName}#{record.MethodName}";
+
+    private static string DisplayRemoteAddress(string? address) => address switch
+    {
+        "::1" => "本机（::1）",
+        "127.0.0.1" => "本机（127.0.0.1）",
+        _ => string.IsNullOrWhiteSpace(address) ? "未知来源" : address
+    };
 
     private async Task CopyAsync(string value)
     {

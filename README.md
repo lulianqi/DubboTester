@@ -25,6 +25,19 @@ dotnet run
 
 默认开发地址见 `Properties/launchSettings.json`。首次打开后，在设置里填写 ZooKeeper 地址并刷新服务目录。
 
+### Docker
+
+```bash
+docker build -t dubbo-tester .
+docker run --rm \
+  -p 5154:8080 \
+  -v dubbo-tester-data:/app/App_Data \
+  --name dubbo-tester \
+  dubbo-tester
+```
+
+启动后访问 `http://localhost:5154`。命名卷用于持久化 MCP 配置；容器需要能够访问所配置的 ZooKeeper 和 Dubbo Provider 地址。
+
 ## 请求参数约定
 
 - 无参数：`[]` 或留空

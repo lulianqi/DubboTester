@@ -110,6 +110,7 @@ public sealed class McpCallRecord
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
     public DateTimeOffset StartedAt { get; init; } = DateTimeOffset.Now;
     public string ToolName { get; init; } = string.Empty;
+    public string RegistryRootPath { get; init; } = string.Empty;
     public string ServiceName { get; init; } = string.Empty;
     public string MethodName { get; init; } = string.Empty;
     public string RemoteAddress { get; init; } = string.Empty;
