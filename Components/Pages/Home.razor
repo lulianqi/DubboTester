@@ -8,6 +8,7 @@
 @inject PressureTestDraftStore PressureDraft
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@inject IConfiguration Configuration
 
 <PageTitle>Dubbo Tester</PageTitle>
 
@@ -500,7 +501,7 @@
                 }
             </div>
             <footer>
-                <span>以上为 DubboNet 2.0.0 本次读取到的完整方法与类型元数据。</span>
+                <span>以上为 DubboNet @DubboNetVersion 本次读取到的完整方法与类型元数据。</span>
                 <div><button class="primary" @onclick="CloseSignatureInfo">关闭</button></div>
             </footer>
         </section>
@@ -621,7 +622,7 @@
 
 @code {
     private const string DubboNetVersion = "2.0.0";
-    private const string DubboTesterVersion = "1.2.0";
+    private string DubboTesterVersion => Configuration["DubboTester:Version"] ?? "未知";
     private const string SettingsStorageKey = "dubbo-tester.settings.v1";
     private const string HistoryStorageKey = "dubbo-tester.history.v1";
     private const string RequestDraftStorageKey = "dubbo-tester.request-drafts.v1";

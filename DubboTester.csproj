@@ -13,6 +13,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="version.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Remove="DubboTester.Tests/**/*.cs" />
     <Content Remove="DubboTester.Tests/**" />
     <EmbeddedResource Remove="DubboTester.Tests/**" />

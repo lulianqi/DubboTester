@@ -5,6 +5,7 @@ using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Protocol;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.AddJsonFile("version.json", optional: false, reloadOnChange: false);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()

@@ -4,15 +4,15 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
-COPY global.json DubboTester.csproj ./
+COPY . ./
 RUN dotnet restore DubboTester.csproj
 
-COPY . ./
 RUN dotnet publish DubboTester.csproj \
     --configuration ${BUILD_CONFIGURATION} \
     --output /app/publish \
     --no-restore \
-    /p:UseAppHost=false
+    /p:UseAppHost=false \
+    && test -s /app/publish/wwwroot/_framework/blazor.web.js
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
