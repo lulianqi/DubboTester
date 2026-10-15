@@ -1,6 +1,7 @@
 @page "/"
 @page "/dubbo"
 @page "/independent-pages/dubbo"
+@using System.Text
 @using System.Text.Json
 @implements IDisposable
 @inject DubboSession Session
@@ -26,11 +27,16 @@
             </div>
         </div>
         <div class="topbar-actions">
-            <a class="mcp-entry topbar-mcp-entry" href="/mcp-service" title="配置远程 MCP 服务">MCP 服务</a>
+            <a class="mcp-entry topbar-mcp-entry" href="/mcp-service" title="配置远程 MCP 服务">
+                <svg class="mcp-entry-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <circle cx="4" cy="8" r="2"></circle>
+                    <circle cx="12" cy="4" r="2"></circle>
+                    <circle cx="12" cy="12" r="2"></circle>
+                    <path d="M5.8 7.1 10.2 4.9M5.8 8.9l4.4 2.2"></path>
+                </svg>
+                <span>MCP 服务</span>
+            </a>
             <button class="icon-button" title="设置" @onclick="OpenSettings">⚙</button>
-            <button class="icon-button" title="强制刷新注册中心" disabled="@IsCatalogActive" @onclick="() => RefreshCatalogAsync(true)">
-                <span class="@(IsCatalogBusy ? "spin" : null)">↻</span>
-            </button>
         </div>
         <div class="notice @(NoticeIsError ? "notice-error" : NoticeIsWarning ? "notice-warning" : null)">
             <span class="notice-dot"></span>
@@ -162,24 +168,34 @@
         <section class="request-panel panel">
             <div class="connection-bar">
                 <label class="route-switch">
-                    <select @bind="Input.Route">
+                    <select @bind="Input.Route" @bind:after="OnRouteChanged" disabled="@IsProviderTesting">
                         <option value="@InvocationRoute.Registry">注册中心</option>
                         <option value="@InvocationRoute.DirectProvider">直连 Provider</option>
                     </select>
                 </label>
-                <div class="address-field">
+                <div class="address-field @(!IsDirectProviderRoute ? "disabled" : null)">
                     <span>主机地址</span>
-                    <input placeholder="选择 Provider" @bind="Input.Host" />
+                    <input placeholder="@(IsDirectProviderRoute ? "选择 Provider" : "根据注册中心自动选择")"
+                           disabled="@(!IsDirectProviderRoute || IsProviderTesting)"
+                           @bind="Input.Host" />
                 </div>
-                <input class="port-field" type="number" min="1" max="65535" @bind="Input.Port" />
-                <button class="connect-button @ProviderTestClass" title="检测 TCP 连通性" disabled="@IsProviderTesting" @onclick="TestProviderAsync">
+                <input class="port-field" type="number" min="1" max="65535"
+                       disabled="@(!IsDirectProviderRoute || IsProviderTesting)"
+                       @bind="Input.Port" />
+                <button class="connect-button @ProviderTestClass"
+                        title="连接主机"
+                        aria-label="连接主机"
+                        disabled="@(!IsDirectProviderRoute || IsProviderTesting)"
+                        @onclick="TestProviderAsync">
                     @if (IsProviderTesting)
                     {
                         <span class="spinner"></span>
                     }
                     else
                     {
-                        <span>⛓</span>
+                        <svg class="connect-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                            <path d="M7 2.5v4M13 2.5v4M5 6.5h10v2a5 5 0 0 1-5 5v4M7.5 17.5h5" />
+                        </svg>
                     }
                 </button>
             </div>
@@ -192,7 +208,7 @@
                 <div class="endpoint-separator">#</div>
                 <div class="endpoint-input method-endpoint">
                     <span>方法</span>
-                    <input placeholder="methodName" @bind="Input.MethodName" />
+                    <input placeholder="methodName" @bind="Input.MethodName" @bind:after="OnMethodInputChanged" />
                 </div>
                 <button class="subtle-button signature-load" disabled="@(IsSignatureBusy || string.IsNullOrWhiteSpace(Input.MethodName))" @onclick="() => LoadSignaturesAsync(true)">
                     @(IsSignatureBusy ? "加载中…" : "读取签名")
@@ -297,10 +313,10 @@
                     }
                 </div>
                 <div class="split-send">
-                    <button class="primary send-button split-send-main" disabled="@IsInvoking" @onclick="InvokeAsync">
+                    <button class="primary send-button split-send-main" disabled="@(IsInvoking || IsProviderTesting)" @onclick="InvokeAsync">
                         @if (IsInvoking)
                         {
-                            <span class="spinner light"></span><span>请求中</span>
+                            <span class="spinner light"></span><span>发送中</span>
                         }
                         else
                         {
@@ -336,12 +352,17 @@
                         }
                     </div>
                     <div class="toolbar-actions">
+                        <label class="result-history-toggle"
+                               title="最新响应会追加到最前面；最多保留约 20 万字符，超出后自动丢弃较早内容">
+                            <input type="checkbox" @bind="KeepResultHistory" />
+                            <span>保留历史记录</span>
+                        </label>
                         <button class="text-button" disabled="@string.IsNullOrEmpty(ResultText)" @onclick="CopyResultAsync">复制</button>
                         <button class="text-button" disabled="@string.IsNullOrEmpty(ResultText)" @onclick="DownloadResultAsync">下载</button>
-                        <button class="text-button" disabled="@string.IsNullOrEmpty(ResultText)" @onclick="() => ResultText = string.Empty">清空</button>
+                        <button class="text-button" disabled="@string.IsNullOrEmpty(ResultText)" @onclick="ClearResult">清空</button>
                     </div>
                 </div>
-                <pre class="result-content @(LastOutput is { Success: false } ? "error-content" : null)">@ResultText</pre>
+                <pre class="result-content @(LastOutput is { Success: false } && !KeepResultHistory ? "error-content" : null)">@ResultText</pre>
             </section>
         </section>
 
@@ -432,6 +453,10 @@
                     </div>
                     <p>当前应用使用的 .NET Dubbo 客户端。</p>
                     <a href="https://github.com/lulianqi/DubboNet" target="_blank" rel="noopener noreferrer">https://github.com/lulianqi/DubboNet</a>
+                </section>
+                <section class="about-feedback">
+                    <h3>最新镜像</h3>
+                    <a href="https://hub.docker.com/r/lulianqi/dubbo-tester" target="_blank" rel="noopener noreferrer">https://hub.docker.com/r/lulianqi/dubbo-tester</a>
                 </section>
                 <section class="about-feedback">
                     <h3>问题反馈</h3>
@@ -648,8 +673,11 @@
     private HashSet<string> LoadingServiceKeys { get; } = new(StringComparer.Ordinal);
     private DubboProviderItem? SelectedProvider { get; set; }
     private InvocationOutput? LastOutput { get; set; }
+    private ResponseResultHistoryBuffer RetainedResultHistory { get; } = new();
     private string SearchText { get; set; } = string.Empty;
     private string ResultText { get; set; } = string.Empty;
+    private bool KeepResultHistory { get; set; }
+    private long ResultContextVersion { get; set; }
     private string Notice { get; set; } = "请先配置 ZooKeeper，然后刷新服务目录";
     private bool NoticeIsError { get; set; }
     private bool NoticeIsWarning { get; set; }
@@ -671,6 +699,7 @@
     private bool IsProviderTesting { get; set; }
     private bool IsInvoking { get; set; }
     private bool? ProviderTestSucceeded { get; set; }
+    private bool IsDirectProviderRoute => Input.Route == InvocationRoute.DirectProvider;
     private int SelectedSignatureIndex { get; set; }
     private MethodSignatureItem? SelectedSignature =>
         SelectedSignatureIndex >= 0 && SelectedSignatureIndex < Signatures.Count
@@ -715,7 +744,7 @@
     private IEnumerable<InvocationHistory> VisibleHistory =>
         FavoritesOnly ? History.Where(item => item.Favorite) : History;
 
-    private string ProviderTestClass => ProviderTestSucceeded switch
+    private string ProviderTestClass => !IsDirectProviderRoute ? string.Empty : ProviderTestSucceeded switch
     {
         true => "connected",
         false => "disconnected",
@@ -1044,6 +1073,11 @@
         SetNotice($"已选择 Provider {provider.Description}");
     }
 
+    private void OnRouteChanged()
+    {
+        ProviderTestSucceeded = null;
+    }
+
     private bool IsServiceExpanded(DubboServiceItem service) =>
         ExpandedServiceKeys.Contains(ServiceExpansionKey(service));
 
@@ -1056,6 +1090,8 @@
     private async Task SelectMethodAsync(DubboServiceItem service, string method)
     {
         await PersistCurrentRequestDraftAsync();
+        ResultContextVersion++;
+        if (!KeepResultHistory) ClearResult();
         SelectedService = service;
         Input.RegistryRootPath = service.RegistryRootPath;
         Input.ServiceName = service.Name;
@@ -1071,6 +1107,12 @@
         SignatureInfoVisible = false;
         SelectedSignatureIndex = 0;
         await LoadSignaturesAsync(false);
+    }
+
+    private void OnMethodInputChanged()
+    {
+        ResultContextVersion++;
+        if (!KeepResultHistory) ClearResult();
     }
 
     private async Task LoadSignaturesAsync(bool showInformationOnSuccess)
@@ -1168,8 +1210,14 @@
 
     private async Task TestProviderAsync()
     {
+        if (!IsDirectProviderRoute || IsProviderTesting) return;
+
         IsProviderTesting = true;
         ProviderTestSucceeded = null;
+        SetNotice($"正在连接 Provider {Input.Host}:{Input.Port}…");
+        StateHasChanged();
+        await Task.Yield();
+
         try
         {
             await DubboSession.TestProviderAsync(Input.Host, Input.Port, Settings.RequestTimeoutMs);
@@ -1181,35 +1229,56 @@
             ProviderTestSucceeded = false;
             SetNotice($"Provider 连接失败：{GetErrorMessage(exception)}", true);
         }
-        finally { IsProviderTesting = false; }
+        finally
+        {
+            IsProviderTesting = false;
+            StateHasChanged();
+        }
     }
 
     private async Task InvokeAsync()
     {
-        if (IsInvoking) return;
-        await PersistCurrentRequestDraftAsync();
+        if (IsInvoking || IsProviderTesting) return;
+        DateTimeOffset submittedAt = DateTimeOffset.Now;
+        InvocationInput submittedInput = Input.Clone();
+        long resultContextVersion = ResultContextVersion;
         IsInvoking = true;
-        LastOutput = null;
-        ResultText = string.Empty;
+        if (!KeepResultHistory) ClearResult();
         SetNotice($"正在调用 {Input.ServiceName}#{Input.MethodName}…");
+
+        // Yield once after requesting a render so the busy state is visible before
+        // persistence or the Dubbo invocation starts doing potentially blocking work.
+        StateHasChanged();
+        await Task.Yield();
+
         try
         {
-            LastOutput = await Session.InvokeAsync(Settings, Input);
-            ResultText = LastOutput.Success ? LastOutput.Content : LastOutput.Error ?? "Dubbo 请求失败，未返回错误详情。";
-            SetNotice(LastOutput.Success ? $"调用成功，用时 {LastOutput.RequestElapsed} ms" : $"调用失败：{LastOutput.Error}", !LastOutput.Success);
-            AddHistory(LastOutput);
+            await PersistCurrentRequestDraftAsync();
+            InvocationOutput output = await Session.InvokeAsync(Settings, submittedInput);
+            string responseText = output.Success
+                ? output.Content
+                : output.Error ?? "Dubbo 请求失败，未返回错误详情。";
+            if (KeepResultHistory || resultContextVersion == ResultContextVersion)
+            {
+                PresentResult(submittedAt, submittedInput, output, responseText);
+            }
+            SetNotice(output.Success ? $"调用成功，用时 {output.RequestElapsed} ms" : $"调用失败：{output.Error}", !output.Success);
+            AddHistory(output, responseText, submittedInput);
             await PersistHistoryAsync();
         }
         catch (Exception exception)
         {
             string message = GetErrorMessage(exception);
-            LastOutput = new InvocationOutput { Success = false, Error = message };
-            ResultText = message;
-            SetNotice($"调用失败：{message}", true);
-            if (!string.IsNullOrWhiteSpace(Input.ServiceName)
-                && !string.IsNullOrWhiteSpace(Input.MethodName))
+            InvocationOutput output = new() { Success = false, Error = message };
+            if (KeepResultHistory || resultContextVersion == ResultContextVersion)
             {
-                AddHistory(LastOutput);
+                PresentResult(submittedAt, submittedInput, output, message);
+            }
+            SetNotice($"调用失败：{message}", true);
+            if (!string.IsNullOrWhiteSpace(submittedInput.ServiceName)
+                && !string.IsNullOrWhiteSpace(submittedInput.MethodName))
+            {
+                AddHistory(output, message, submittedInput);
                 await PersistHistoryAsync();
             }
         }
@@ -1224,23 +1293,23 @@
         Navigation.NavigateTo("/pressure-test");
     }
 
-    private void AddHistory(InvocationOutput output)
+    private void AddHistory(InvocationOutput output, string responseText, InvocationInput submittedInput)
     {
         History.Insert(0, new InvocationHistory
         {
             Success = output.Success,
-            Route = Input.Route,
-            RegistryRootPath = Input.RegistryRootPath,
-            ServiceName = Input.ServiceName,
-            MethodName = Input.MethodName,
-            Host = Input.Host,
-            Port = Input.Port,
-            RequestJson = Input.RequestJson,
-            JavaParameterTypes = Input.JavaParameterTypes,
-            Version = Input.Version,
-            Group = Input.Group,
-            AttachmentsJson = Input.AttachmentsJson,
-            Response = Settings.SaveResponseInHistory ? ResultText : string.Empty,
+            Route = submittedInput.Route,
+            RegistryRootPath = submittedInput.RegistryRootPath,
+            ServiceName = submittedInput.ServiceName,
+            MethodName = submittedInput.MethodName,
+            Host = submittedInput.Host,
+            Port = submittedInput.Port,
+            RequestJson = submittedInput.RequestJson,
+            JavaParameterTypes = submittedInput.JavaParameterTypes,
+            Version = submittedInput.Version,
+            Group = submittedInput.Group,
+            AttachmentsJson = submittedInput.AttachmentsJson,
+            Response = Settings.SaveResponseInHistory ? responseText : string.Empty,
             ElapsedMs = output.RequestElapsed
         });
         HistoryRetentionPolicy.TrimToLimit(History, Settings.HistoryLimit);
@@ -1249,6 +1318,8 @@
     private async Task LoadHistoryAsync(InvocationHistory item)
     {
         await PersistCurrentRequestDraftAsync();
+        ResultContextVersion++;
+        ClearResult();
         Signatures = [];
         ParameterStructures = [];
         SignatureReadFailed = false;
@@ -1278,6 +1349,63 @@
             };
         }
         SetNotice($"已加载历史请求 {item.Endpoint}");
+    }
+
+    private void PresentResult(
+        DateTimeOffset submittedAt,
+        InvocationInput submittedInput,
+        InvocationOutput output,
+        string responseText)
+    {
+        LastOutput = output;
+        if (!KeepResultHistory)
+        {
+            RetainedResultHistory.Clear();
+            ResultText = responseText;
+            return;
+        }
+
+        RetainedResultHistory.Prepend(FormatRetainedResult(
+            submittedAt,
+            submittedInput,
+            output,
+            responseText));
+        ResultText = RetainedResultHistory.Text;
+    }
+
+    private static string FormatRetainedResult(
+        DateTimeOffset submittedAt,
+        InvocationInput input,
+        InvocationOutput output,
+        string responseText)
+    {
+        StringBuilder builder = new();
+        builder.Append("请求时间：").AppendLine(submittedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff zzz"));
+        builder.Append("请求方法：").Append(input.ServiceName).Append('#').AppendLine(input.MethodName);
+        if (!string.IsNullOrWhiteSpace(input.RegistryRootPath))
+        {
+            builder.Append("注册目录：").AppendLine(input.RegistryRootPath);
+        }
+        if (!string.IsNullOrWhiteSpace(input.JavaParameterTypes))
+        {
+            builder.Append("Java 参数类型：").AppendLine(input.JavaParameterTypes);
+        }
+        builder.AppendLine("请求参数：").AppendLine(input.RequestJson);
+        builder.Append("响应状态：").Append(output.Success ? "成功" : "失败")
+            .Append(" · ").Append(output.RequestElapsed).Append(" ms");
+        if (output.RequestId is not null)
+        {
+            builder.Append(" · Request ID ").Append(output.RequestId);
+        }
+        builder.AppendLine().AppendLine("响应结果：").Append(responseText);
+        return builder.ToString();
+    }
+
+    private void ClearResult()
+    {
+        LastOutput = null;
+        ResultText = string.Empty;
+        RetainedResultHistory.Clear();
     }
 
     private async Task ToggleFavoriteAsync(InvocationHistory item) { item.Favorite = !item.Favorite; await PersistHistoryAsync(); }
