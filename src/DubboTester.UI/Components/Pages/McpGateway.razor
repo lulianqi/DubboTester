@@ -2,6 +2,7 @@
 @page "/independent-pages/mcp"
 @implements IDisposable
 @inject McpGatewayService Gateway
+@inject IMcpEndpointAddressProvider EndpointAddressProvider
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 
@@ -487,7 +488,8 @@
 
     private bool IsBusy => IsScanning || LoadingServiceKeys.Count > 0 || IsSaving || IsDialogBusy;
     private bool IsGatewayEnabled => Gateway.IsEnabled;
-    private string Endpoint => Navigation.ToAbsoluteUri("mcp").ToString();
+    private string Endpoint => EndpointAddressProvider.EndpointOverride
+        ?? Navigation.ToAbsoluteUri("mcp").ToString();
     private int EnabledMethodCount => Config.Methods.Count(method => method.Enabled);
     private int RegistryRootCount => Services.Select(service => NormalizeRegistryRoot(service.RegistryRootPath)).Distinct(StringComparer.Ordinal).Count();
     private IEnumerable<DubboServiceItem> FilteredServices => string.IsNullOrWhiteSpace(SearchText)

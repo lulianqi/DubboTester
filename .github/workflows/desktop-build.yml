@@ -1,0 +1,144 @@
+name: Build desktop apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - release1.3
+    paths:
+      - .github/workflows/desktop-build.yml
+      - global.json
+      - DubboTester.sln
+      - src/DubboTester.Core/**
+      - src/DubboTester.Hosting/**
+      - src/DubboTester.UI/**
+      - src/DubboTester.Desktop/**
+  pull_request:
+    paths:
+      - .github/workflows/desktop-build.yml
+      - global.json
+      - DubboTester.sln
+      - src/DubboTester.Core/**
+      - src/DubboTester.Hosting/**
+      - src/DubboTester.UI/**
+      - src/DubboTester.Desktop/**
+
+permissions:
+  contents: read
+
+env:
+  DESKTOP_PROJECT: src/DubboTester.Desktop/DubboTester.Desktop.csproj
+
+jobs:
+  macos:
+    name: macOS universal app
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install Mac Catalyst workload
+        run: dotnet workload install maui-maccatalyst --skip-manifest-update
+
+      - name: Restore desktop project
+        run: dotnet restore "$DESKTOP_PROJECT" -p:Configuration=Release
+
+      - name: Publish unsigned universal app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet publish "$DESKTOP_PROJECT" \
+            --configuration Release \
+            --framework net10.0-maccatalyst \
+            --no-restore \
+            -p:CreatePackage=false \
+            -p:EnableCodeSigning=false
+
+          version="$(dotnet msbuild "$DESKTOP_PROJECT" -nologo -getProperty:ApplicationDisplayVersion)"
+          app_path="$(find src/DubboTester.Desktop/bin/Release/net10.0-maccatalyst -type d -name 'Dubbo Tester.app' -print -quit)"
+
+          if [[ -z "$app_path" ]]; then
+            echo '::error::Published macOS app bundle was not found.'
+            exit 1
+          fi
+
+          mkdir -p artifacts
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$app_path" \
+            "artifacts/DubboTester-macOS-universal-${version}.zip"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: DubboTester-macOS
+          path: artifacts/DubboTester-macOS-*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows x64 app
+    runs-on: windows-2025
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install Windows MAUI workload
+        shell: pwsh
+        run: dotnet workload install maui-windows --skip-manifest-update
+
+      - name: Restore desktop project
+        shell: pwsh
+        run: |
+          dotnet restore $env:DESKTOP_PROJECT `
+            -p:Configuration=Release `
+            -p:RuntimeIdentifierOverride=win-x64 `
+            -p:WindowsPackageType=None `
+            -p:SelfContained=true `
+            -p:WindowsAppSDKSelfContained=true
+
+      - name: Publish self-contained Windows app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publishDirectory = Join-Path $env:RUNNER_TEMP 'dubbo-tester-windows'
+          $artifactDirectory = Join-Path $env:GITHUB_WORKSPACE 'artifacts'
+
+          dotnet publish $env:DESKTOP_PROJECT `
+            --configuration Release `
+            --framework net10.0-windows10.0.19041.0 `
+            --no-restore `
+            --output $publishDirectory `
+            -p:RuntimeIdentifierOverride=win-x64 `
+            -p:WindowsPackageType=None `
+            -p:SelfContained=true `
+            -p:WindowsAppSDKSelfContained=true
+
+          $version = dotnet msbuild $env:DESKTOP_PROJECT -nologo -getProperty:ApplicationDisplayVersion
+          New-Item -ItemType Directory -Force -Path $artifactDirectory | Out-Null
+          Compress-Archive `
+            -Path (Join-Path $publishDirectory '*') `
+            -DestinationPath (Join-Path $artifactDirectory "DubboTester-Windows-x64-$version.zip") `
+            -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: DubboTester-Windows-x64
+          path: artifacts/DubboTester-Windows-x64-*.zip
+          if-no-files-found: error
+          retention-days: 14

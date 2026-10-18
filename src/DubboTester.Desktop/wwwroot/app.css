@@ -1,0 +1,15 @@
+.status-bar-safe-area {
+    display: none;
+}
+
+@supports (-webkit-touch-callout: none) {
+    .status-bar-safe-area {
+        display: flex;
+        position: sticky;
+        top: 0;
+        height: env(safe-area-inset-top);
+        background: #f6f8fc;
+        width: 100%;
+        z-index: 1001;
+    }
+}

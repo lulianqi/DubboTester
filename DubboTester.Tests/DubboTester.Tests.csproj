@@ -18,7 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../DubboTester.csproj" />
+    <ProjectReference Include="../src/DubboTester.Core/DubboTester.Core.csproj" />
   </ItemGroup>
 
 </Project>

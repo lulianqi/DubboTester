@@ -19,11 +19,54 @@ Dubbo 2.7.x 可能把 `String`、`Long`、`Integer` 等 JDK 类型的内部实�
 ## 运行
 
 ```bash
-dotnet restore
-dotnet run
+dotnet restore DubboTester.csproj
+dotnet run --project DubboTester.csproj
 ```
 
 默认开发地址见 `Properties/launchSettings.json`。首次打开后，在设置里填写 ZooKeeper 地址并刷新服务目录。
+
+## 项目结构
+
+- `DubboTester.csproj`：现有 Web 与 Docker 启动入口。
+- `src/DubboTester.Core`：Dubbo、缓存、压力测试和 MCP 业务逻辑，不依赖具体 UI 宿主。
+- `src/DubboTester.UI`：Web 与桌面端共享的 Razor 页面、布局和静态资源。
+- `src/DubboTester.Hosting`：ASP.NET Core 服务注册、MCP Streamable HTTP 传输和 Web 宿主适配。
+- `src/DubboTester.Desktop`：Windows/macOS 的 .NET MAUI Blazor Hybrid 桌面入口。
+- `DubboTester.Tests`：核心逻辑测试。
+
+桌面版位于同一个解决方案和仓库中，但拥有独立入口。它通过 `BlazorWebView`
+直接加载共享页面，并在进程内提供 `http://localhost:5154/mcp`。Web 与 Docker
+继续只发布 `DubboTester.csproj`，不会包含 MAUI 桌面运行时。详细设计见
+[`docs/desktop-architecture.md`](docs/desktop-architecture.md)。
+
+### 桌面版开发运行
+
+安装 .NET 10 Mac Catalyst workload 后，在 macOS 上运行：
+
+```bash
+sudo dotnet workload install maui-maccatalyst
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  dotnet build src/DubboTester.Desktop/DubboTester.Desktop.csproj -c Debug
+```
+
+Debug 构建产物位于
+`src/DubboTester.Desktop/bin/Debug/net10.0-maccatalyst/<runtime>/Dubbo Tester.app`。
+当前项目的 Debug 配置允许在旧版 Xcode 上进行迁移验证，并采用 `SdkOnly` 链接；正式
+Release 打包仍会执行 Mac Catalyst workload 对 Xcode 版本的严格校验。
+
+Windows 使用同一个项目，目标框架会自动切换为
+`net10.0-windows10.0.19041.0`，构建机安装 `maui-windows` workload 即可。桌面配置
+保存在操作系统应用数据目录，和 Web/Docker 的 `App_Data` 相互独立。
+
+仓库中的 `Build desktop apps` GitHub Actions 工作流会在 `release1.3` 分支更新、
+相关 Pull Request 或手动触发时分别构建：
+
+- 同时支持 Intel 与 Apple Silicon 的未签名 macOS `.app` 压缩包。
+- 包含 .NET 与 Windows App SDK 运行组件的 Windows x64 免安装压缩包。
+
+未签名产物用于开发验证。面向普通用户正式发布 macOS 版本时，仍需要 Apple Developer
+证书、Developer ID 签名和公证；Windows 后续也可以在该工作流基础上增加证书签名或
+MSIX 打包。
 
 ### Docker
 

@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using DubboTester.Models;
-using Microsoft.AspNetCore.Http;
 using ModelContextProtocol.Protocol;
 
 namespace DubboTester.Services;
@@ -22,18 +21,20 @@ public sealed class McpGatewayService : IDisposable
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     private readonly string _configurationPath;
     private readonly DubboSession _runtimeSession;
-    private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IMcpRequestContextAccessor _requestContextAccessor;
     private McpGatewayConfiguration _configuration;
     private readonly List<McpCallRecord> _history = [];
     private bool _disposed;
 
     public McpGatewayService(
-        IWebHostEnvironment environment,
+        IAppDataDirectoryProvider appDataDirectoryProvider,
         DubboCatalogCache catalogCache,
-        IHttpContextAccessor httpContextAccessor)
+        IMcpRequestContextAccessor requestContextAccessor)
     {
-        _configurationPath = Path.Combine(environment.ContentRootPath, "App_Data", "mcp-config.json");
-        _httpContextAccessor = httpContextAccessor;
+        _configurationPath = Path.Combine(
+            appDataDirectoryProvider.DirectoryPath,
+            "mcp-config.json");
+        _requestContextAccessor = requestContextAccessor;
         _runtimeSession = new DubboSession(catalogCache);
         _configuration = LoadConfiguration();
     }
@@ -279,7 +280,7 @@ public sealed class McpGatewayService : IDisposable
                 RegistryRootPath = method.RegistryRootPath,
                 ServiceName = method.ServiceName,
                 MethodName = method.MethodName,
-                RemoteAddress = _httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+                RemoteAddress = _requestContextAccessor.GetRemoteAddress(),
                 RequestJson = requestJson,
                 Response = response,
                 Success = success,
