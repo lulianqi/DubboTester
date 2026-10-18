@@ -44,6 +44,11 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Select compatible Xcode
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.0.1.app/Contents/Developer
+          xcodebuild -version
+
       - name: Install Mac Catalyst workload
         run: dotnet workload install maui-maccatalyst --skip-manifest-update
 
