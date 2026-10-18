@@ -18,7 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../src/DubboTester.Core/DubboTester.Core.csproj" />
+    <ProjectReference Include="../../src/shared/DubboTester.Core/DubboTester.Core.csproj" />
   </ItemGroup>
 
 </Project>

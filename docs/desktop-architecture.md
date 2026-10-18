@@ -7,12 +7,13 @@
 ## 项目边界
 
 ```text
-DubboTester.csproj (Web)
+src/apps/DubboTester.Web/DubboTester.csproj (Web)
 ├── DubboTester.Hosting
 ├── DubboTester.UI
 └── DubboTester.Core
 
-DubboTester.Desktop (MAUI)
+src/apps/DubboTester.Desktop (MAUI)
+├── DubboTester.Hosting（仅 Windows）
 ├── DubboTester.UI
 └── DubboTester.Core
 ```
@@ -57,11 +58,10 @@ DubboTester.Desktop (MAUI)
 - 验证桌面进程内 MCP Endpoint 的鉴权、`initialize` 与 `tools/list` Streamable HTTP 请求。
 - 增加 GitHub Actions 桌面构建工作流，生成 macOS universal `.app` 和 Windows x64
   self-contained 免安装压缩包。
+- 已在 GitHub Actions 中完成 Windows x64 与 macOS universal Release 构建及产物上传验证。
 
 待完成：
 
-- 在 Windows 构建机上验证并生成 Windows 安装产物。
-- 在满足当前 Mac Catalyst workload 要求的 Xcode 环境中生成正式 Release 安装产物。
 - 为正式发布工作流接入 Windows/macOS 签名证书，并完成 macOS 公证。
 
 ## 本机构建准备
@@ -96,7 +96,7 @@ sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  dotnet build src/DubboTester.Desktop/DubboTester.Desktop.csproj -c Debug
+  dotnet build src/apps/DubboTester.Desktop/DubboTester.Desktop.csproj -c Debug
 ```
 
 Mac Catalyst workload 对 Xcode 版本有严格要求；如果构建报告版本不匹配，需要升级

@@ -78,13 +78,13 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="../DubboTester.Core/DubboTester.Core.csproj" />
-        <ProjectReference Include="../DubboTester.UI/DubboTester.UI.csproj" />
+        <ProjectReference Include="../../shared/DubboTester.Core/DubboTester.Core.csproj" />
+        <ProjectReference Include="../../shared/DubboTester.UI/DubboTester.UI.csproj" />
     </ItemGroup>
 
     <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
         <FrameworkReference Include="Microsoft.AspNetCore.App" />
-        <ProjectReference Include="../DubboTester.Hosting/DubboTester.Hosting.csproj" />
+        <ProjectReference Include="../../shared/DubboTester.Hosting/DubboTester.Hosting.csproj" />
     </ItemGroup>
 
 </Project>

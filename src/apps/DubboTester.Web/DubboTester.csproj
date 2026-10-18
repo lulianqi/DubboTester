@@ -8,8 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="src/DubboTester.Hosting/DubboTester.Hosting.csproj" />
-    <ProjectReference Include="src/DubboTester.UI/DubboTester.UI.csproj" />
+    <ProjectReference Include="../../shared/DubboTester.Hosting/DubboTester.Hosting.csproj" />
+    <ProjectReference Include="../../shared/DubboTester.UI/DubboTester.UI.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,15 +20,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Remove="DubboTester.Tests/**/*.cs" />
-    <Compile Remove="src/**/*.cs" />
-    <Content Remove="DubboTester.Tests/**" />
-    <Content Remove="src/**" />
-    <EmbeddedResource Remove="DubboTester.Tests/**" />
-    <EmbeddedResource Remove="src/**" />
-    <None Remove="DubboTester.Tests/**" />
-    <None Remove="src/**" />
-    <RazorComponent Remove="src/**/*.razor" />
+    <Compile Remove="App_Data/**/*.cs" />
+    <Content Remove="App_Data/**" />
+    <EmbeddedResource Remove="App_Data/**" />
+    <None Remove="App_Data/**" />
   </ItemGroup>
 
 </Project>

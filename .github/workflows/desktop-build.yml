@@ -9,25 +9,25 @@ on:
       - .github/workflows/desktop-build.yml
       - global.json
       - DubboTester.sln
-      - src/DubboTester.Core/**
-      - src/DubboTester.Hosting/**
-      - src/DubboTester.UI/**
-      - src/DubboTester.Desktop/**
+      - src/shared/DubboTester.Core/**
+      - src/shared/DubboTester.Hosting/**
+      - src/shared/DubboTester.UI/**
+      - src/apps/DubboTester.Desktop/**
   pull_request:
     paths:
       - .github/workflows/desktop-build.yml
       - global.json
       - DubboTester.sln
-      - src/DubboTester.Core/**
-      - src/DubboTester.Hosting/**
-      - src/DubboTester.UI/**
-      - src/DubboTester.Desktop/**
+      - src/shared/DubboTester.Core/**
+      - src/shared/DubboTester.Hosting/**
+      - src/shared/DubboTester.UI/**
+      - src/apps/DubboTester.Desktop/**
 
 permissions:
   contents: read
 
 env:
-  DESKTOP_PROJECT: src/DubboTester.Desktop/DubboTester.Desktop.csproj
+  DESKTOP_PROJECT: src/apps/DubboTester.Desktop/DubboTester.Desktop.csproj
 
 jobs:
   macos:
@@ -68,7 +68,7 @@ jobs:
             -p:EnableCodeSigning=false
 
           version="$(dotnet msbuild "$DESKTOP_PROJECT" -nologo -getProperty:ApplicationDisplayVersion)"
-          app_path="$(find src/DubboTester.Desktop/bin/Release/net10.0-maccatalyst -type d -name 'Dubbo Tester.app' -print -quit)"
+          app_path="$(find src/apps/DubboTester.Desktop/bin/Release/net10.0-maccatalyst -type d -name 'Dubbo Tester.app' -print -quit)"
 
           if [[ -z "$app_path" ]]; then
             echo '::error::Published macOS app bundle was not found.'

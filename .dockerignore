@@ -15,5 +15,5 @@
 appsettings.Local.json
 appsettings.*.Local.json
 App_Data/
-DubboTester.Tests/
+tests/
 README.md

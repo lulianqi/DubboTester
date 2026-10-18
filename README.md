@@ -19,24 +19,33 @@ Dubbo 2.7.x 可能把 `String`、`Long`、`Integer` 等 JDK 类型的内部实�
 ## 运行
 
 ```bash
-dotnet restore DubboTester.csproj
-dotnet run --project DubboTester.csproj
+dotnet restore src/apps/DubboTester.Web/DubboTester.csproj
+dotnet run --project src/apps/DubboTester.Web/DubboTester.csproj
 ```
 
 默认开发地址见 `Properties/launchSettings.json`。首次打开后，在设置里填写 ZooKeeper 地址并刷新服务目录。
 
 ## 项目结构
 
-- `DubboTester.csproj`：现有 Web 与 Docker 启动入口。
-- `src/DubboTester.Core`：Dubbo、缓存、压力测试和 MCP 业务逻辑，不依赖具体 UI 宿主。
-- `src/DubboTester.UI`：Web 与桌面端共享的 Razor 页面、布局和静态资源。
-- `src/DubboTester.Hosting`：ASP.NET Core 服务注册、MCP Streamable HTTP 传输和 Web 宿主适配。
-- `src/DubboTester.Desktop`：Windows/macOS 的 .NET MAUI Blazor Hybrid 桌面入口。
-- `DubboTester.Tests`：核心逻辑测试。
+```text
+src/
+├── apps/
+│   ├── DubboTester.Web/       # Web 与 Docker 启动入口
+│   └── DubboTester.Desktop/   # Windows/macOS MAUI 桌面入口
+└── shared/
+    ├── DubboTester.Core/      # Dubbo、缓存、压测和 MCP 核心业务
+    ├── DubboTester.Hosting/   # ASP.NET Core 与 MCP HTTP 宿主适配
+    └── DubboTester.UI/        # Web 与桌面端共享 Razor UI
+tests/
+└── DubboTester.Tests/         # 核心逻辑测试
+```
+
+解决方案中按相同职责划分为 `Apps`、`Shared` 和 `Tests` 三个逻辑目录。
+仓库根目录只保留解决方案、构建部署文件和项目级文档。
 
 桌面版位于同一个解决方案和仓库中，但拥有独立入口。它通过 `BlazorWebView`
 直接加载共享页面，并在进程内提供 `http://localhost:5154/mcp`。Web 与 Docker
-继续只发布 `DubboTester.csproj`，不会包含 MAUI 桌面运行时。详细设计见
+继续只发布 `src/apps/DubboTester.Web/DubboTester.csproj`，不会包含 MAUI 桌面运行时。详细设计见
 [`docs/desktop-architecture.md`](docs/desktop-architecture.md)。
 
 ### 桌面版开发运行
@@ -46,11 +55,11 @@ dotnet run --project DubboTester.csproj
 ```bash
 sudo dotnet workload install maui-maccatalyst
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  dotnet build src/DubboTester.Desktop/DubboTester.Desktop.csproj -c Debug
+  dotnet build src/apps/DubboTester.Desktop/DubboTester.Desktop.csproj -c Debug
 ```
 
 Debug 构建产物位于
-`src/DubboTester.Desktop/bin/Debug/net10.0-maccatalyst/<runtime>/Dubbo Tester.app`。
+`src/apps/DubboTester.Desktop/bin/Debug/net10.0-maccatalyst/<runtime>/Dubbo Tester.app`。
 当前项目的 Debug 配置允许在旧版 Xcode 上进行迁移验证，并采用 `SdkOnly` 链接；正式
 Release 打包仍会执行 Mac Catalyst workload 对 Xcode 版本的严格校验。
 

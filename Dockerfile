@@ -5,9 +5,9 @@ ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
 COPY . ./
-RUN dotnet restore DubboTester.csproj
+RUN dotnet restore src/apps/DubboTester.Web/DubboTester.csproj
 
-RUN dotnet publish DubboTester.csproj \
+RUN dotnet publish src/apps/DubboTester.Web/DubboTester.csproj \
     --configuration ${BUILD_CONFIGURATION} \
     --output /app/publish \
     --no-restore \
