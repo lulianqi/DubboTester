@@ -2,6 +2,23 @@
 
 从 `testengineer/independent-pages/dubbo` 独立出来的 .NET 10 Blazor Server Dubbo 调试工具。
 
+## 获取与安装
+
+[前往 GitHub Releases 下载最新版本](https://github.com/lulianqi/DubboTester/releases/latest)
+
+从 `v1.3.0` 开始，桌面版随 GitHub Release 提供，不会直接提交到源码仓库：
+
+| 平台 | Release 资源 | 说明 |
+| --- | --- | --- |
+| Windows x64 | `DubboTester-Windows-x64-<版本号>.zip` | 自包含免安装版本，解压后运行 |
+| macOS Intel / Apple Silicon | `DubboTester-macOS-universal-<版本号>.zip` | ad-hoc 签名的 Universal App，解压后运行 |
+| 完整性校验 | `SHA256SUMS.txt` | 两个平台压缩包的 SHA-256 摘要 |
+
+当前 macOS 桌面包仅使用本地 ad-hoc 签名，尚未进行 Developer ID 签名和 Apple 公证，首次运行可能需要在
+“系统设置 → 隐私与安全性”中确认打开。需要容器部署时，可使用
+[`ghcr.io/lulianqi/dubbo-tester`](https://github.com/lulianqi/DubboTester/pkgs/container/dubbo-tester)
+或 [`lulianqi/dubbo-tester`](https://hub.docker.com/r/lulianqi/dubbo-tester)。
+
 ## 技术与调用方式
 
 - .NET 10 / Blazor Interactive Server
@@ -70,12 +87,23 @@ Windows 使用同一个项目，目标框架会自动切换为
 仓库中的 `Build desktop apps` GitHub Actions 工作流会在 `release1.3` 分支更新、
 相关 Pull Request 或手动触发时分别构建：
 
-- 同时支持 Intel 与 Apple Silicon 的未签名 macOS `.app` 压缩包。
+- 同时支持 Intel 与 Apple Silicon、经过架构校验和 ad-hoc 签名的 macOS `.app` 压缩包。
 - 包含 .NET 与 Windows App SDK 运行组件的 Windows x64 免安装压缩包。
 
-未签名产物用于开发验证。面向普通用户正式发布 macOS 版本时，仍需要 Apple Developer
+macOS 的 ad-hoc 签名产物用于开发验证。面向普通用户正式发布 macOS 版本时，仍需要 Apple Developer
 证书、Developer ID 签名和公证；Windows 后续也可以在该工作流基础上增加证书签名或
 MSIX 打包。
+
+普通提交和手动运行产生的平台 ZIP 会作为单层 Actions artifact 保留 14 天，可以直接
+下载和解压。推送与桌面项目
+`ApplicationDisplayVersion` 基础版本一致的标签（例如 `v1.3.0`）后，工作流会自动汇总
+两个平台的压缩包、生成 `SHA256SUMS.txt`，并创建对应的 GitHub Release。带连字符的标签
+（例如 `v1.3.0-beta.1`）会发布为预发行版本，其他 `v*` 标签会标记为最新版。
+
+```bash
+git tag -a v1.3.0 -m "DubboTester v1.3.0"
+git push origin v1.3.0
+```
 
 ### Docker
 

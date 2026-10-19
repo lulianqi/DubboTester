@@ -56,7 +56,7 @@ src/apps/DubboTester.Desktop (MAUI)
 - 接入进程内 MCP Endpoint，桌面 UI 与 MCP 调用共享同一服务实例。
 - 在 macOS 上生成并启动 Mac Catalyst Debug 应用，验证共享页面导航和配置持久化。
 - 验证桌面进程内 MCP Endpoint 的鉴权、`initialize` 与 `tools/list` Streamable HTTP 请求。
-- 增加 GitHub Actions 桌面构建工作流，生成 macOS universal `.app` 和 Windows x64
+- 增加 GitHub Actions 桌面构建工作流，生成经过架构校验和 ad-hoc 签名的 macOS universal `.app` 和 Windows x64
   self-contained 免安装压缩包。
 - 已在 GitHub Actions 中完成 Windows x64 与 macOS universal Release 构建及产物上传验证。
 
