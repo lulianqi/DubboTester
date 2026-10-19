@@ -15,7 +15,7 @@
         <div class="mcp-state @(IsGatewayEnabled ? "enabled" : null)">
             <i></i>
             <strong>@(IsGatewayEnabled ? "服务已启用" : "服务未启用")</strong>
-            <span>@EnabledMethodCount 个工具</span>
+            <span>@AvailableMethodCount 个可用工具</span>
         </div>
     </header>
 
@@ -46,11 +46,11 @@
             {
                 <div class="mcp-settings-grid @(Config.Enabled ? "settings-locked" : null)">
                     <label><span class="field-label">ZooKeeper 地址 <b>*</b></span><input disabled="@(Config.Enabled || IsSaving)" @bind="Config.ZooKeeperAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="例如：127.0.0.1:2181 或 zk1:2181,zk2:2181" /></label>
-                    <label>注册目录<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.RegistryRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="/dubbo" /></label>
-                    <label>元数据中心地址<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataCenterAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="可选；默认复用 ZooKeeper" /></label>
-                    <label>元数据目录<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="可选；自动推导" /></label>
+                    <label>注册目录<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.RegistryRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="/" /></label>
+                    <label>元数据中心地址（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataCenterAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="默认复用 ZooKeeper" /></label>
+                    <label>元数据目录（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="自动推导" /></label>
                     <label>调用超时（ms）<input disabled="@(Config.Enabled || IsSaving)" type="number" min="100" max="600000" @bind="Config.RequestTimeoutMs" @bind:after="AutoSaveConfigurationAsync" /></label>
-                    <label>内存记录上限<input disabled="@(Config.Enabled || IsSaving)" type="number" min="10" max="2000" @bind="Config.HistoryLimit" @bind:after="AutoSaveConfigurationAsync" /></label>
+                    <label>内存记录上限<input disabled="@(Config.Enabled || IsSaving)" type="number" min="10" max="5000" @bind="Config.HistoryLimit" @bind:after="AutoSaveConfigurationAsync" /></label>
                     <label class="span-two">MCP Endpoint
                         <div class="copy-field"><input readonly value="@Endpoint" /><button @onclick="() => CopyAsync(Endpoint)">复制</button></div>
                     </label>
@@ -69,7 +69,7 @@
             }
         </section>
 
-        <section class="mcp-card service-list-card @(ShowRefreshSettings ? "settings-popover-open" : null)">
+        <section class="mcp-card service-list-card">
             <div class="mcp-card-heading settings-heading service-list-heading expandable-heading" @onclick="ToggleServiceList">
                 <button type="button" class="settings-collapse-button" aria-expanded="@ServiceListExpanded" @onclick="ToggleServiceList" @onclick:stopPropagation="true">
                     <span class="settings-chevron">@(ServiceListExpanded ? "▾" : "›")</span>
@@ -82,16 +82,13 @@
                 </div>
                 <div class="settings-heading-actions" @onclick:stopPropagation="true">
                     <button class="link-button" disabled="@IsBusy" @onclick="RefreshListAsync">@(IsScanning ? "刷新中…" : "刷新列表")</button>
-                    <div class="refresh-settings">
-                        <button type="button" class="refresh-settings-button" title="刷新设置" aria-expanded="@ShowRefreshSettings" @onclick="() => ShowRefreshSettings = !ShowRefreshSettings">⚙</button>
-                        @if (ShowRefreshSettings)
-                        {
-                            <div class="refresh-settings-popover">
-                                <label><input type="checkbox" @bind="Config.OnlyRefreshServiceNames" @bind:after="AutoSaveConfigurationAsync" />仅刷新服务名称</label>
-                                <small>关闭时同时刷新 Provider 与方法信息</small>
-                            </div>
-                        }
-                    </div>
+                    <details class="refresh-settings" data-dismiss-on-outside>
+                        <summary class="refresh-settings-button" title="刷新设置" aria-label="刷新设置">⚙</summary>
+                        <div class="refresh-settings-popover">
+                            <label><input type="checkbox" @bind="Config.OnlyRefreshServiceNames" @bind:after="AutoSaveConfigurationAsync" />仅刷新服务名称</label>
+                            <small>关闭时同时刷新 Provider 与方法信息</small>
+                        </div>
+                    </details>
                 </div>
             </div>
             @if (ServiceListExpanded)
@@ -154,7 +151,7 @@
                                                                                 <div class="method-config-inline" @key="configuredMethod.Id">
                                                                                     <code title="@configuredMethod.Signature">@configuredMethod.ToolName</code>
                                                                                     <span title="@configuredMethod.Description">@configuredMethod.Description</span>
-                                                                                    <em class="@(configuredMethod.Enabled ? "enabled" : null)">@(configuredMethod.Enabled ? "已启用" : "未启用")</em>
+                                                                                    <em class="@(configuredMethod.IsAvailableForMcp ? "enabled" : null)" title="@GetValidationTitle(configuredMethod)">@GetRuntimeStateText(configuredMethod)</em>
                                                                                     <span class="method-config-actions">
                                                                                         <button class="link-button" @onclick="() => OpenDetailsDialog(configuredMethod)">查看配置</button>
                                                                                         <button class="link-button" @onclick="() => OpenEditDialogAsync(configuredMethod)">编辑配置</button>
@@ -185,7 +182,7 @@
         </section>
 
         <section class="mcp-card enabled-card">
-            <div class="mcp-card-heading compact"><div><h2>已配置工具</h2><p>每个签名对应一个独立 MCP 工具</p></div><div class="configured-heading-actions"><strong>@Config.Methods.Count 个配置</strong><button class="primary small-button" @onclick="OpenAddDialog">＋ 添加配置</button></div></div>
+            <div class="mcp-card-heading compact"><div><h2>已配置工具</h2><p>配置会保留；只有在当前连接环境校验通过的工具才会对 MCP 暴露</p></div><div class="configured-heading-actions"><strong>@AvailableConfigurationCount / @Config.Methods.Count 可用</strong><button class="secondary small-button" disabled="@(IsBusy || Config.Methods.Count == 0 || string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))" @onclick="RevalidateToolsAsync">@(IsValidatingTools ? "校验中…" : "重新校验")</button><button class="primary small-button" @onclick="OpenAddDialog">＋ 添加配置</button></div></div>
             <div class="configured-list">
                 @if (Config.Methods.Count == 0)
                 {
@@ -193,7 +190,7 @@
                 }
                 else
                 {
-                    <div class="configured-row configured-table-head"><span>工具名</span><span>注册目录</span><span>服务 / 方法</span><span>方法描述</span><span>启用</span><span>操作</span></div>
+                    <div class="configured-row configured-table-head"><span>工具名</span><span>注册目录</span><span>服务 / 方法</span><span>方法描述</span><span>当前环境</span><span>启用意图</span><span>操作</span></div>
                     @foreach (McpDubboMethodConfiguration method in Config.Methods.OrderBy(item => item.ToolName, StringComparer.Ordinal))
                     {
                         <div class="configured-row" @key="method.Id">
@@ -201,6 +198,7 @@
                             <code title="@method.RegistryRootPath">@method.RegistryRootPath</code>
                             <span class="configured-method" title="@method.Signature"><b>@method.ServiceName</b><small>#@method.MethodName</small></span>
                             <span class="configured-description" title="@method.Description">@(string.IsNullOrWhiteSpace(method.Description) ? "—" : method.Description)</span>
+                            <span class="validation-status @GetValidationStatusClass(method)" title="@GetValidationTitle(method)">@GetValidationStatusText(method)</span>
                             <label class="mcp-switch compact-switch"><input type="checkbox" checked="@method.Enabled" @onchange="() => ToggleConfiguredMethodAsync(method)" /><span></span>@(method.Enabled ? "已启用" : "未启用")</label>
                             <span class="configured-actions"><button class="link-button" @onclick="() => OpenDetailsDialog(method)">详情</button><button class="link-button" @onclick="() => OpenEditDialogAsync(method)">编辑</button><button class="link-button danger" @onclick="() => DeleteConfiguredMethodAsync(method)">删除</button></span>
                         </div>
@@ -243,7 +241,7 @@
 
 @if (DialogMode != MethodDialogMode.None)
 {
-    <div class="mcp-modal-backdrop" role="presentation" @onclick="CloseMethodDialog">
+    <div class="mcp-modal-backdrop" role="presentation">
         <section class="mcp-modal" role="dialog" aria-modal="true" aria-labelledby="method-dialog-title" @onclick:stopPropagation="true">
             <header>
                 <div>
@@ -261,7 +259,9 @@
                         <dt>注册目录</dt><dd><code>@DialogEditor.RegistryRootPath</code></dd>
                         <dt>服务方法</dt><dd>@DialogEditor.ServiceName#@DialogEditor.MethodName</dd>
                         <dt>Java 签名</dt><dd><code>@DialogEditor.Signature</code></dd>
-                        <dt>状态</dt><dd>@(DialogEditor.Enabled ? "已启用" : "未启用")</dd>
+                        <dt>启用意图</dt><dd>@(DialogEditor.Enabled ? "已启用" : "未启用")</dd>
+                        <dt>当前环境校验</dt><dd>@GetValidationStatusText(DialogEditor)@(string.IsNullOrWhiteSpace(DialogEditor.ValidationMessage) ? string.Empty : $"：{DialogEditor.ValidationMessage}")</dd>
+                        <dt>最近校验时间</dt><dd>@(DialogEditor.ValidatedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "尚未校验")</dd>
                         <dt>方法描述</dt><dd>@DialogEditor.Description</dd>
                         <dt>适用/触发条件</dt><dd>@DialogEditor.TriggerCondition</dd>
                         <dt>参数要求</dt><dd>@DialogEditor.ParameterGuidance</dd>
@@ -277,7 +277,7 @@
                     {
                         <div class="dialog-source-selectors">
                             <label><span class="field-label">注册目录 <b>*</b></span>
-                                <select value="@DialogRegistryRoot" @onchange="DialogRegistryRootChanged">
+                                <select required aria-required="true" value="@DialogRegistryRoot" @onchange="DialogRegistryRootChanged">
                                     <option value="">请选择注册目录</option>
                                     @foreach (string root in RegistryRoots)
                                     {
@@ -286,7 +286,7 @@
                                 </select>
                             </label>
                             <label><span class="field-label">服务 <b>*</b></span>
-                                <select value="@DialogServiceName" disabled="@(string.IsNullOrWhiteSpace(DialogRegistryRoot) || IsDialogBusy)" @onchange="DialogServiceChangedAsync">
+                                <select required aria-required="true" value="@DialogServiceName" disabled="@(string.IsNullOrWhiteSpace(DialogRegistryRoot) || IsDialogBusy)" @onchange="DialogServiceChangedAsync">
                                     <option value="">请选择服务</option>
                                     @foreach (DubboServiceItem service in DialogServices)
                                     {
@@ -295,7 +295,7 @@
                                 </select>
                             </label>
                             <label><span class="field-label">方法 <b>*</b></span>
-                                <select value="@DialogMethodName" disabled="@(DialogSelectedService is null || IsDialogBusy)" @onchange="DialogMethodChangedAsync">
+                                <select required aria-required="true" value="@DialogMethodName" disabled="@(DialogSelectedService is null || IsDialogBusy)" @onchange="DialogMethodChangedAsync">
                                     <option value="">请选择方法</option>
                                     @foreach (string method in DialogSelectedService?.Methods ?? [])
                                     {
@@ -340,6 +340,8 @@
                                 <div class="manual-signature-input">
                                     <label><span class="field-label">Java 参数类型 <b>*</b></span>
                                         <input value="@DialogJavaParameterTypes"
+                                               required
+                                               aria-required="true"
                                                disabled="@DialogManualNoParameters"
                                                @oninput="DialogJavaParameterTypesChanged"
                                                placeholder="例如：java.lang.String, java.lang.Integer" />
@@ -363,10 +365,10 @@
                                 </label>
                             }
                             <div class="signature-view"><span>Java 签名</span><code>@DialogEditor.Signature</code></div>
-                            <label><span class="field-label">MCP 工具名 <b>*</b></span><input @bind="DialogEditor.ToolName" /></label>
-                            <label><span class="field-label">方法描述 <b>*</b></span><textarea @bind="DialogEditor.Description" placeholder="这个工具会完成什么操作、返回什么结果"></textarea></label>
-                            <label><span class="field-label">适用/触发条件 <b>*</b></span><textarea @bind="DialogEditor.TriggerCondition" placeholder="用户提出什么需求时 Agent 应调用这个工具"></textarea></label>
-                            <label><span class="field-label">参数要求 <b>*</b></span><textarea @bind="DialogEditor.ParameterGuidance" placeholder="arguments 数组中每个位置的含义、格式、范围和示例"></textarea></label>
+                            <label><span class="field-label">MCP 工具名 <b>*</b></span><input required aria-required="true" @bind="DialogEditor.ToolName" @bind:event="oninput" /></label>
+                            <label><span class="field-label">方法描述 <b>*</b></span><textarea required aria-required="true" @bind="DialogEditor.Description" @bind:event="oninput" placeholder="这个工具会完成什么操作、返回什么结果"></textarea></label>
+                            <label><span class="field-label">适用/触发条件 <b>*</b></span><textarea required aria-required="true" @bind="DialogEditor.TriggerCondition" @bind:event="oninput" placeholder="用户提出什么需求时 Agent 应调用这个工具"></textarea></label>
+                            <label><span class="field-label">参数要求 <b>*</b></span><textarea required aria-required="true" @bind="DialogEditor.ParameterGuidance" @bind:event="oninput" placeholder="arguments 数组中每个位置的含义、格式、范围和示例"></textarea></label>
                             <div class="request-example-block">
                                 <span>请求示例</span>
                                 <pre>@DialogEditor.ExampleRequestJson</pre>
@@ -379,9 +381,13 @@
                     @if (DialogEditor is not null)
                     {
                         <label class="mcp-switch dialog-enabled"><input type="checkbox" @bind="DialogEditor.Enabled" /><span></span><em>启用该方法</em></label>
+                        @if (!string.IsNullOrEmpty(DialogValidationMessage))
+                        {
+                            <span class="dialog-validation-message" role="status">@DialogValidationMessage</span>
+                        }
                     }
                     <button class="secondary" @onclick="CloseMethodDialog">取消</button>
-                    <button class="primary" disabled="@(DialogEditor is null || IsSaving || IsDialogBusy || (DialogRequiresManualSignature && !DialogManualNoParameters && string.IsNullOrWhiteSpace(DialogJavaParameterTypes)))" @onclick="SaveDialogConfigurationAsync">保存配置</button>
+                    <button class="primary" disabled="@(!CanSaveDialogConfiguration)" @onclick="SaveDialogConfigurationAsync">保存配置</button>
                 </footer>
             }
         </section>
@@ -390,7 +396,7 @@
 
 @if (DebugMethod is not null)
 {
-    <div class="mcp-modal-backdrop debug-modal-backdrop" role="presentation" @onclick="CloseDebugDialog">
+    <div class="mcp-modal-backdrop debug-modal-backdrop" role="presentation">
         <section class="mcp-modal debug-modal" role="dialog" aria-modal="true" aria-labelledby="debug-dialog-title" @onclick:stopPropagation="true">
             <header>
                 <div>
@@ -459,8 +465,8 @@
     private bool NoticeIsWarning { get; set; }
     private bool IsScanning { get; set; }
     private bool IsSaving { get; set; }
+    private bool IsValidatingTools { get; set; }
     private bool ShowToken { get; set; }
-    private bool ShowRefreshSettings { get; set; }
     private bool GlobalSettingsExpanded { get; set; }
     private bool ServiceListExpanded { get; set; }
     private bool IsDialogBusy { get; set; }
@@ -486,11 +492,13 @@
     private InvocationOutput? DebugOutput { get; set; }
     private string DebugFailure { get; set; } = string.Empty;
 
-    private bool IsBusy => IsScanning || LoadingServiceKeys.Count > 0 || IsSaving || IsDialogBusy;
+    private bool IsBusy => IsScanning || LoadingServiceKeys.Count > 0 || IsSaving || IsValidatingTools || IsDialogBusy;
     private bool IsGatewayEnabled => Gateway.IsEnabled;
     private string Endpoint => EndpointAddressProvider.EndpointOverride
         ?? Navigation.ToAbsoluteUri("mcp").ToString();
-    private int EnabledMethodCount => Config.Methods.Count(method => method.Enabled);
+    private int AvailableMethodCount => Config.Methods.Count(method => method.IsAvailableForMcp);
+    private int AvailableConfigurationCount => Config.Methods.Count(method =>
+        method.ValidationStatus == McpToolValidationStatus.Available);
     private int RegistryRootCount => Services.Select(service => NormalizeRegistryRoot(service.RegistryRootPath)).Distinct(StringComparer.Ordinal).Count();
     private IEnumerable<DubboServiceItem> FilteredServices => string.IsNullOrWhiteSpace(SearchText)
         ? Services
@@ -514,6 +522,30 @@
         MethodDialogMode.Details => "MCP 工具配置详情",
         _ => string.Empty
     };
+    private IReadOnlyList<string> DialogMissingRequiredFields => DialogEditor is null
+        ? []
+        : McpGatewayService.GetMissingRequiredMethodFields(DialogEditor);
+    private string DialogValidationMessage
+    {
+        get
+        {
+            var missingFields = DialogMissingRequiredFields.ToList();
+            if (DialogRequiresManualSignature
+                && !DialogManualNoParameters
+                && string.IsNullOrWhiteSpace(DialogJavaParameterTypes))
+            {
+                missingFields.Add("Java 参数类型");
+            }
+
+            return missingFields.Count == 0
+                ? string.Empty
+                : $"请填写必填项：{string.Join("、", missingFields)}";
+        }
+    }
+    private bool CanSaveDialogConfiguration => DialogEditor is not null
+        && !IsSaving
+        && !IsDialogBusy
+        && string.IsNullOrEmpty(DialogValidationMessage);
 
     private void ToggleGlobalSettings() =>
         GlobalSettingsExpanded = !GlobalSettingsExpanded;
@@ -521,7 +553,6 @@
     private void ToggleServiceList()
     {
         ServiceListExpanded = !ServiceListExpanded;
-        if (!ServiceListExpanded) ShowRefreshSettings = false;
     }
 
     protected override async Task OnInitializedAsync()
@@ -554,19 +585,40 @@
 
     private async Task AutoSaveConfigurationAsync()
     {
+        McpGatewayConfiguration previous = Gateway.GetConfiguration();
         bool isEnablingGateway = Config.Enabled && !Gateway.IsEnabled;
+        bool connectionContextChanged = !McpGatewayService.IsConnectionContextEquivalent(previous, Config);
         IsSaving = true;
-        SetNotice(isEnablingGateway ? "正在检测 ZooKeeper 连接…" : "正在自动保存配置…", false);
+        SetNotice(
+            isEnablingGateway || connectionContextChanged
+                ? "正在检测新的连接环境…"
+                : "正在自动保存配置…",
+            false);
         try
         {
-            if (isEnablingGateway)
+            if ((isEnablingGateway || connectionContextChanged)
+                && !string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))
             {
                 await DubboSession.TestZooKeeperAsync(Config.ZooKeeperAddress);
             }
 
             await Gateway.SaveConfigurationAsync(Config);
             Config = Gateway.GetConfiguration();
-            SetNotice(Config.Enabled ? "配置已自动保存，MCP 服务已启用。" : "配置已自动保存，MCP 服务当前关闭。", false);
+            if ((isEnablingGateway || connectionContextChanged) && Config.Methods.Count > 0)
+            {
+                SetNotice("连接配置已保存，正在校验现有 MCP 工具…", false);
+                McpToolValidationSummary summary = await Gateway.RevalidateConfiguredToolsAsync();
+                Config = Gateway.GetConfiguration();
+                await LoadServiceListAsync(forceRefresh: false, refreshDetails: false);
+                SetNotice(
+                    $"连接环境已更新：{summary.AvailableCount}/{summary.TotalCount} 个工具配置校验通过，未通过的配置已保留但不会对 MCP 暴露。",
+                    false,
+                    warning: summary.UnavailableCount > 0);
+            }
+            else
+            {
+                SetNotice(Config.Enabled ? "配置已自动保存，MCP 服务已启用。" : "配置已自动保存，MCP 服务当前关闭。", false);
+            }
         }
         catch (Exception exception)
         {
@@ -581,6 +633,33 @@
         finally
         {
             IsSaving = false;
+        }
+    }
+
+    private async Task RevalidateToolsAsync()
+    {
+        if (IsValidatingTools || Config.Methods.Count == 0) return;
+
+        IsValidatingTools = true;
+        SetNotice("正在当前连接环境中重新校验所有 MCP 工具…", false);
+        try
+        {
+            McpToolValidationSummary summary = await Gateway.RevalidateConfiguredToolsAsync();
+            Config = Gateway.GetConfiguration();
+            await LoadServiceListAsync(forceRefresh: false, refreshDetails: false);
+            SetNotice(
+                $"校验完成：{summary.AvailableCount}/{summary.TotalCount} 个工具配置可用；其余配置已保留但不会对 MCP 暴露。",
+                false,
+                warning: summary.UnavailableCount > 0);
+        }
+        catch (Exception exception)
+        {
+            Config = Gateway.GetConfiguration();
+            SetNotice($"重新校验失败：{exception.Message}", true);
+        }
+        finally
+        {
+            IsValidatingTools = false;
         }
     }
 
@@ -713,7 +792,17 @@
         {
             await Gateway.SaveConfigurationAsync(Config);
             Config = Gateway.GetConfiguration();
-            SetNotice(method.Enabled ? $"已启用 {method.ToolName}。" : $"已停用 {method.ToolName}。", false);
+            if (method.Enabled && method.ValidationStatus != McpToolValidationStatus.Available)
+            {
+                SetNotice(
+                    $"已保留 {method.ToolName} 的启用意图；当前环境校验通过前不会对 MCP 暴露。",
+                    false,
+                    warning: true);
+            }
+            else
+            {
+                SetNotice(method.Enabled ? $"已启用 {method.ToolName}。" : $"已停用 {method.ToolName}。", false);
+            }
         }
         catch (Exception exception)
         {
@@ -794,6 +883,9 @@
             {
                 DialogEditorParameters = DubboTypeStructureBuilder.Build(signature);
                 DialogMetadataUnavailable = false;
+                DialogEditor.ValidationStatus = McpToolValidationStatus.Available;
+                DialogEditor.ValidationMessage = "已在当前注册中心匹配到服务、方法和精确签名。";
+                DialogEditor.ValidatedAt = DateTimeOffset.Now;
             }
             else
             {
@@ -941,7 +1033,10 @@
             Version = signature.Version ?? string.Empty,
             Group = signature.Group ?? string.Empty,
             ParameterTypesManuallyConfigured = false,
-            ExampleRequestJson = DubboTypeStructureBuilder.GenerateExampleJson(DialogEditorParameters)
+            ExampleRequestJson = DubboTypeStructureBuilder.GenerateExampleJson(DialogEditorParameters),
+            ValidationStatus = McpToolValidationStatus.Available,
+            ValidationMessage = "配置基于当前注册中心读取的方法签名。",
+            ValidatedAt = DateTimeOffset.Now
         };
     }
 
@@ -960,7 +1055,10 @@
             ParameterTypes = [],
             ParameterTypesManuallyConfigured = true,
             InputSchemaJson = McpToolSchemaBuilder.BuildInputSchema([], string.Empty),
-            ExampleRequestJson = "[]"
+            ExampleRequestJson = "[]",
+            ValidationStatus = McpToolValidationStatus.Available,
+            ValidationMessage = "已确认服务与方法存在；Java 参数类型使用手动配置。",
+            ValidatedAt = DateTimeOffset.Now
         };
         ApplyManualSignature();
     }
@@ -1086,6 +1184,20 @@
     private async Task SaveDialogConfigurationAsync()
     {
         if (DialogEditor is null) return;
+        if (!CanSaveDialogConfiguration)
+        {
+            SetNotice(DialogValidationMessage, true);
+            return;
+        }
+        try
+        {
+            McpGatewayService.ValidateMethodConfiguration(DialogEditor);
+        }
+        catch (ArgumentException exception)
+        {
+            SetNotice(exception.Message, true);
+            return;
+        }
 
         if (DialogMode == MethodDialogMode.Add)
         {
@@ -1203,17 +1315,56 @@
         _ => string.IsNullOrWhiteSpace(address) ? "未知来源" : address
     };
 
+    private static string GetValidationStatusText(McpDubboMethodConfiguration method) =>
+        method.ValidationStatus switch
+        {
+            McpToolValidationStatus.Available when method.ValidatedAt is null => "兼容可用",
+            McpToolValidationStatus.Available => "校验通过",
+            McpToolValidationStatus.PendingValidation => "等待校验",
+            McpToolValidationStatus.ServiceMissing => "服务不存在",
+            McpToolValidationStatus.MethodMissing => "方法不存在",
+            McpToolValidationStatus.SignatureMismatch => "签名不匹配",
+            McpToolValidationStatus.ValidationFailed => "校验失败",
+            _ => "状态未知"
+        };
+
+    private static string GetValidationStatusClass(McpDubboMethodConfiguration method) =>
+        method.ValidationStatus switch
+        {
+            McpToolValidationStatus.Available => "available",
+            McpToolValidationStatus.PendingValidation => "pending",
+            _ => "unavailable"
+        };
+
+    private static string GetValidationTitle(McpDubboMethodConfiguration method)
+    {
+        string timestamp = method.ValidatedAt is null
+            ? "尚未校验"
+            : $"校验时间：{method.ValidatedAt.Value.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
+        return string.IsNullOrWhiteSpace(method.ValidationMessage)
+            ? timestamp
+            : $"{method.ValidationMessage} {timestamp}";
+    }
+
+    private static string GetRuntimeStateText(McpDubboMethodConfiguration method)
+    {
+        if (!method.Enabled) return "未启用";
+        return method.ValidationStatus == McpToolValidationStatus.Available
+            ? "可用"
+            : "已启用 · 不可用";
+    }
+
     private async Task CopyAsync(string value)
     {
         await JS.InvokeVoidAsync("dubboTester.copy", value);
         SetNotice("已复制到剪贴板。", false);
     }
 
-    private void SetNotice(string message, bool isError)
+    private void SetNotice(string message, bool isError, bool warning = false)
     {
         Notice = message;
         NoticeIsError = isError;
-        NoticeIsWarning = false;
+        NoticeIsWarning = !isError && warning;
     }
 
     private void SetWarning(string message)

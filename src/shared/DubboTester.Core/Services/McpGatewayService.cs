@@ -79,6 +79,205 @@ public sealed class McpGatewayService : IDisposable
             registryRootPath,
             cancellationToken);
 
+    public static bool IsConnectionContextEquivalent(
+        McpGatewayConfiguration left,
+        McpGatewayConfiguration right)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+        return string.Equals(
+                left.ZooKeeperAddress.Trim(),
+                right.ZooKeeperAddress.Trim(),
+                StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                RegistryRootPaths.Parse(left.RegistryRootPath).CacheKey,
+                RegistryRootPaths.Parse(right.RegistryRootPath).CacheKey,
+                StringComparison.Ordinal)
+            && string.Equals(
+                left.MetadataCenterAddress.Trim(),
+                right.MetadataCenterAddress.Trim(),
+                StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                NormalizeOptionalRoot(left.MetadataRootPath),
+                NormalizeOptionalRoot(right.MetadataRootPath),
+                StringComparison.Ordinal);
+    }
+
+    public async Task<McpToolValidationSummary> RevalidateConfiguredToolsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        McpGatewayConfiguration snapshot = GetConfiguration();
+        if (snapshot.Methods.Count == 0)
+            return new McpToolValidationSummary(0, 0, 0);
+        if (string.IsNullOrWhiteSpace(snapshot.ZooKeeperAddress))
+            throw new ArgumentException("重新校验 MCP 工具前必须填写 ZooKeeper 地址。");
+
+        var results = new Dictionary<string, ToolValidationResult>(StringComparer.Ordinal);
+        DateTimeOffset validatedAt = DateTimeOffset.Now;
+        try
+        {
+            DubboCatalogLoadResult catalog = await _runtimeSession.LoadServicesAsync(
+                snapshot.ToTesterSettings(),
+                forceRefresh: true,
+                cancellationToken);
+            var detailErrors = new Dictionary<string, string?>(StringComparer.Ordinal);
+            var signatureResults = new Dictionary<string, SignatureLoadResult>(StringComparer.Ordinal);
+
+            foreach (McpDubboMethodConfiguration method in snapshot.Methods)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                string root = RegistryRootPaths.NormalizeRoot(method.RegistryRootPath);
+                DubboServiceItem? service = catalog.Services.FirstOrDefault(candidate =>
+                    string.Equals(
+                        RegistryRootPaths.NormalizeRoot(candidate.RegistryRootPath),
+                        root,
+                        StringComparison.Ordinal)
+                    && string.Equals(candidate.Name, method.ServiceName, StringComparison.Ordinal));
+                if (service is null)
+                {
+                    results[method.Id] = new ToolValidationResult(
+                        McpToolValidationStatus.ServiceMissing,
+                        $"当前注册中心的 {root} 中未找到服务 {method.ServiceName}。",
+                        validatedAt);
+                    continue;
+                }
+
+                string serviceKey = $"{root}\n{service.Name}";
+                if (!detailErrors.TryGetValue(serviceKey, out string? detailError))
+                {
+                    try
+                    {
+                        await _runtimeSession.LoadServiceDetailsAsync(
+                            snapshot.ToTesterSettings(),
+                            service,
+                            forceRefresh: true,
+                            cancellationToken);
+                        detailErrors[serviceKey] = null;
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        detailError = exception.Message;
+                        detailErrors[serviceKey] = detailError;
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(detailError))
+                {
+                    results[method.Id] = new ToolValidationResult(
+                        McpToolValidationStatus.ValidationFailed,
+                        $"读取服务 {method.ServiceName} 失败：{detailError}",
+                        validatedAt);
+                    continue;
+                }
+                if (!service.Methods.Contains(method.MethodName, StringComparer.Ordinal))
+                {
+                    results[method.Id] = new ToolValidationResult(
+                        McpToolValidationStatus.MethodMissing,
+                        $"当前服务 {method.ServiceName} 中未找到方法 {method.MethodName}。",
+                        validatedAt);
+                    continue;
+                }
+
+                if (method.ParameterTypesManuallyConfigured)
+                {
+                    results[method.Id] = new ToolValidationResult(
+                        McpToolValidationStatus.Available,
+                        "已确认服务与方法存在；Java 参数类型沿用手动配置。",
+                        validatedAt);
+                    continue;
+                }
+
+                string signatureKey = $"{serviceKey}\n{method.MethodName}";
+                if (!signatureResults.TryGetValue(signatureKey, out SignatureLoadResult? loaded))
+                {
+                    try
+                    {
+                        IReadOnlyList<MethodSignatureItem> signatures =
+                            await _runtimeSession.LoadMethodSignaturesAsync(
+                                snapshot.ToTesterSettings(),
+                                method.ServiceName,
+                                method.MethodName,
+                                method.RegistryRootPath,
+                                cancellationToken);
+                        loaded = new SignatureLoadResult(signatures, string.Empty);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        loaded = new SignatureLoadResult([], exception.Message);
+                    }
+                    signatureResults[signatureKey] = loaded;
+                }
+
+                if (!string.IsNullOrWhiteSpace(loaded.Error))
+                {
+                    results[method.Id] = new ToolValidationResult(
+                        McpToolValidationStatus.ValidationFailed,
+                        $"读取方法签名失败：{loaded.Error}",
+                        validatedAt);
+                    continue;
+                }
+
+                bool signatureMatches = loaded.Signatures.Any(signature =>
+                    signature.ParameterTypes.SequenceEqual(method.ParameterTypes, StringComparer.Ordinal)
+                    && string.Equals(signature.Version?.Trim() ?? string.Empty, method.Version, StringComparison.Ordinal)
+                    && string.Equals(signature.Group?.Trim() ?? string.Empty, method.Group, StringComparison.Ordinal));
+                results[method.Id] = signatureMatches
+                    ? new ToolValidationResult(
+                        McpToolValidationStatus.Available,
+                        "已在当前注册中心匹配到服务、方法和精确签名。",
+                        validatedAt)
+                    : new ToolValidationResult(
+                        McpToolValidationStatus.SignatureMismatch,
+                        loaded.Signatures.Count == 0
+                            ? "已找到服务和方法，但未读取到可校验的方法签名。"
+                            : $"方法 {method.MethodName} 存在，但当前签名与已保存配置不一致。",
+                        validatedAt);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            foreach (McpDubboMethodConfiguration method in snapshot.Methods)
+            {
+                results[method.Id] = new ToolValidationResult(
+                    McpToolValidationStatus.ValidationFailed,
+                    $"连接当前注册中心并校验工具失败：{exception.Message}",
+                    validatedAt);
+            }
+        }
+
+        McpGatewayConfiguration latest = GetConfiguration();
+        if (!IsConnectionContextEquivalent(snapshot, latest))
+            throw new InvalidOperationException("校验期间连接环境再次发生变化，请重新校验。");
+        foreach (McpDubboMethodConfiguration method in latest.Methods)
+        {
+            if (!results.TryGetValue(method.Id, out ToolValidationResult? result)) continue;
+            method.ValidationStatus = result.Status;
+            method.ValidationMessage = result.Message;
+            method.ValidatedAt = result.ValidatedAt;
+        }
+        await SaveConfigurationAsync(latest, cancellationToken);
+
+        int availableCount = results.Values.Count(result =>
+            result.Status == McpToolValidationStatus.Available);
+        return new McpToolValidationSummary(
+            results.Count,
+            availableCount,
+            results.Count - availableCount);
+    }
+
     public Task<InvocationOutput> DebugInvokeAsync(
         McpDubboMethodConfiguration method,
         string requestJson,
@@ -157,12 +356,21 @@ public sealed class McpGatewayService : IDisposable
         ArgumentNullException.ThrowIfNull(configuration);
 
         McpGatewayConfiguration normalized = Normalize(configuration.Clone());
-        Validate(normalized);
-        string json = JsonSerializer.Serialize(normalized, ConfigurationJsonOptions);
 
         await _saveGate.WaitAsync(cancellationToken);
         try
         {
+            McpGatewayConfiguration current;
+            lock (_sync) current = _configuration.Clone();
+            if (!IsConnectionContextEquivalent(current, normalized))
+            {
+                MarkToolsPendingValidation(
+                    normalized.Methods,
+                    "连接环境已更改，等待在新的注册中心重新校验。");
+            }
+
+            Validate(normalized);
+            string json = JsonSerializer.Serialize(normalized, ConfigurationJsonOptions);
             string? directory = Path.GetDirectoryName(_configurationPath);
             Directory.CreateDirectory(directory!);
             string temporaryPath = _configurationPath + ".tmp";
@@ -202,7 +410,7 @@ public sealed class McpGatewayService : IDisposable
         if (!configuration.Enabled) return [];
 
         return configuration.Methods
-            .Where(method => method.Enabled)
+            .Where(method => method.IsAvailableForMcp)
             .OrderBy(method => method.ToolName, StringComparer.Ordinal)
             .Select(method => new Tool
             {
@@ -227,6 +435,13 @@ public sealed class McpGatewayService : IDisposable
             item.Enabled && string.Equals(item.ToolName, request.Name, StringComparison.Ordinal));
         if (method is null)
             return ErrorResult($"工具 {request.Name} 不存在或未启用。");
+        if (method.ValidationStatus != McpToolValidationStatus.Available)
+        {
+            string reason = string.IsNullOrWhiteSpace(method.ValidationMessage)
+                ? "尚未在当前连接环境中校验通过。"
+                : method.ValidationMessage;
+            return ErrorResult($"工具 {request.Name} 当前不可用：{reason}");
+        }
 
         var stopwatch = Stopwatch.StartNew();
         string requestJson = "[]";
@@ -364,7 +579,7 @@ public sealed class McpGatewayService : IDisposable
 
     private void TrimHistoryCore(int limit)
     {
-        limit = Math.Clamp(limit, 10, 2_000);
+        limit = Math.Clamp(limit, 10, 5_000);
         if (_history.Count > limit) _history.RemoveRange(limit, _history.Count - limit);
     }
 
@@ -392,12 +607,12 @@ public sealed class McpGatewayService : IDisposable
     {
         configuration.ZooKeeperAddress = configuration.ZooKeeperAddress.Trim();
         configuration.RegistryRootPath = string.IsNullOrWhiteSpace(configuration.RegistryRootPath)
-            ? "/dubbo"
+            ? "/"
             : RegistryRootPaths.NormalizeRoot(configuration.RegistryRootPath);
         configuration.MetadataCenterAddress = configuration.MetadataCenterAddress.Trim();
         configuration.MetadataRootPath = configuration.MetadataRootPath.Trim();
         configuration.RequestTimeoutMs = Math.Clamp(configuration.RequestTimeoutMs, 100, 600_000);
-        configuration.HistoryLimit = Math.Clamp(configuration.HistoryLimit, 10, 2_000);
+        configuration.HistoryLimit = Math.Clamp(configuration.HistoryLimit, 10, 5_000);
         if (configuration.AuthenticationEnabled
             && string.IsNullOrWhiteSpace(configuration.AccessToken))
             configuration.AccessToken = GenerateAccessToken();
@@ -419,9 +634,33 @@ public sealed class McpGatewayService : IDisposable
             method.Description = method.Description.Trim();
             method.TriggerCondition = method.TriggerCondition.Trim();
             method.ParameterGuidance = method.ParameterGuidance.Trim();
+            method.ValidationMessage = method.ValidationMessage.Trim();
+            if (!Enum.IsDefined(method.ValidationStatus))
+            {
+                method.ValidationStatus = McpToolValidationStatus.PendingValidation;
+                method.ValidationMessage = "工具校验状态无效，等待重新校验。";
+                method.ValidatedAt = null;
+            }
         }
         return configuration;
     }
+
+    private static void MarkToolsPendingValidation(
+        IEnumerable<McpDubboMethodConfiguration> methods,
+        string message)
+    {
+        foreach (McpDubboMethodConfiguration method in methods)
+        {
+            method.ValidationStatus = McpToolValidationStatus.PendingValidation;
+            method.ValidationMessage = message;
+            method.ValidatedAt = null;
+        }
+    }
+
+    private static string NormalizeOptionalRoot(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : RegistryRootPaths.NormalizeRoot(value);
 
     public static void Validate(McpGatewayConfiguration configuration)
     {
@@ -436,15 +675,7 @@ public sealed class McpGatewayService : IDisposable
         foreach (McpDubboMethodConfiguration method in configuration.Methods)
         {
             if (!method.Enabled) continue;
-            if (string.IsNullOrWhiteSpace(method.Description)
-                || string.IsNullOrWhiteSpace(method.TriggerCondition)
-                || string.IsNullOrWhiteSpace(method.ParameterGuidance))
-            {
-                throw new ArgumentException(
-                    $"启用 {method.ServiceName}#{method.MethodName} 前，请完整填写方法描述、触发条件和参数要求。");
-            }
-            if (!IsValidToolName(method.ToolName))
-                throw new ArgumentException($"MCP 工具名 {method.ToolName} 无效；仅支持 1-64 个字母、数字、下划线或连字符。");
+            ValidateMethodConfiguration(method);
             if (!enabledToolNames.Add(method.ToolName))
                 throw new ArgumentException($"MCP 工具名 {method.ToolName} 重复。");
             try
@@ -460,12 +691,48 @@ public sealed class McpGatewayService : IDisposable
         }
     }
 
+    public static void ValidateMethodConfiguration(McpDubboMethodConfiguration method)
+    {
+        IReadOnlyList<string> missingFields = GetMissingRequiredMethodFields(method);
+        if (missingFields.Count > 0)
+        {
+            throw new ArgumentException(
+                $"{method.ServiceName}#{method.MethodName} 缺少必填项：{string.Join("、", missingFields)}。");
+        }
+        if (!IsValidToolName(method.ToolName))
+            throw new ArgumentException($"MCP 工具名 {method.ToolName} 无效；仅支持 1-64 个字母、数字、下划线或连字符。");
+    }
+
+    public static IReadOnlyList<string> GetMissingRequiredMethodFields(
+        McpDubboMethodConfiguration method)
+    {
+        ArgumentNullException.ThrowIfNull(method);
+        var missingFields = new List<string>(7);
+        if (string.IsNullOrWhiteSpace(method.RegistryRootPath)) missingFields.Add("注册目录");
+        if (string.IsNullOrWhiteSpace(method.ServiceName)) missingFields.Add("服务");
+        if (string.IsNullOrWhiteSpace(method.MethodName)) missingFields.Add("方法");
+        if (string.IsNullOrWhiteSpace(method.ToolName)) missingFields.Add("MCP 工具名");
+        if (string.IsNullOrWhiteSpace(method.Description)) missingFields.Add("方法描述");
+        if (string.IsNullOrWhiteSpace(method.TriggerCondition)) missingFields.Add("适用/触发条件");
+        if (string.IsNullOrWhiteSpace(method.ParameterGuidance)) missingFields.Add("参数要求");
+        return missingFields;
+    }
+
     private static bool IsValidToolName(string name) =>
         name.Length is >= 1 and <= 64
         && name.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-');
 
     private static string GenerateAccessToken() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+
+    private sealed record ToolValidationResult(
+        McpToolValidationStatus Status,
+        string Message,
+        DateTimeOffset ValidatedAt);
+
+    private sealed record SignatureLoadResult(
+        IReadOnlyList<MethodSignatureItem> Signatures,
+        string Error);
 
     public void Dispose()
     {

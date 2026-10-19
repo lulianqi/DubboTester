@@ -1,15 +1,25 @@
 namespace DubboTester.Models;
 
+public enum McpToolValidationStatus
+{
+    Available = 0,
+    PendingValidation = 1,
+    ServiceMissing = 2,
+    MethodMissing = 3,
+    SignatureMismatch = 4,
+    ValidationFailed = 5
+}
+
 public sealed class McpGatewayConfiguration
 {
     public bool Enabled { get; set; }
     public string ZooKeeperAddress { get; set; } = string.Empty;
-    public string RegistryRootPath { get; set; } = "/dubbo";
+    public string RegistryRootPath { get; set; } = "/";
     public string MetadataCenterAddress { get; set; } = string.Empty;
     public string MetadataRootPath { get; set; } = string.Empty;
     public int RequestTimeoutMs { get; set; } = 60_000;
-    public int HistoryLimit { get; set; } = 200;
-    public bool AuthenticationEnabled { get; set; } = true;
+    public int HistoryLimit { get; set; } = 5_000;
+    public bool AuthenticationEnabled { get; set; }
     public bool OnlyRefreshServiceNames { get; set; }
     public string AccessToken { get; set; } = string.Empty;
     public List<McpDubboMethodConfiguration> Methods { get; set; } = [];
@@ -44,7 +54,7 @@ public sealed class McpDubboMethodConfiguration
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public bool Enabled { get; set; }
     public string ToolName { get; set; } = string.Empty;
-    public string RegistryRootPath { get; set; } = "/dubbo";
+    public string RegistryRootPath { get; set; } = "/";
     public string ServiceName { get; set; } = string.Empty;
     public string MethodName { get; set; } = string.Empty;
     public string[] ParameterTypes { get; set; } = [];
@@ -57,6 +67,12 @@ public sealed class McpDubboMethodConfiguration
     public string ParameterGuidance { get; set; } = string.Empty;
     public string InputSchemaJson { get; set; } = "{\"type\":\"object\"}";
     public string ExampleRequestJson { get; set; } = "[]";
+    public McpToolValidationStatus ValidationStatus { get; set; } = McpToolValidationStatus.Available;
+    public string ValidationMessage { get; set; } = string.Empty;
+    public DateTimeOffset? ValidatedAt { get; set; }
+
+    public bool IsAvailableForMcp =>
+        Enabled && ValidationStatus == McpToolValidationStatus.Available;
 
     public string ConfigurationKey => BuildConfigurationKey(
         RegistryRootPath,
@@ -86,7 +102,10 @@ public sealed class McpDubboMethodConfiguration
         TriggerCondition = TriggerCondition,
         ParameterGuidance = ParameterGuidance,
         InputSchemaJson = InputSchemaJson,
-        ExampleRequestJson = ExampleRequestJson
+        ExampleRequestJson = ExampleRequestJson,
+        ValidationStatus = ValidationStatus,
+        ValidationMessage = ValidationMessage,
+        ValidatedAt = ValidatedAt
     };
 
     public static string BuildConfigurationKey(
@@ -104,6 +123,11 @@ public sealed class McpDubboMethodConfiguration
             version?.Trim() ?? string.Empty,
             group?.Trim() ?? string.Empty);
 }
+
+public sealed record McpToolValidationSummary(
+    int TotalCount,
+    int AvailableCount,
+    int UnavailableCount);
 
 public sealed class McpCallRecord
 {

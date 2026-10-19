@@ -8,6 +8,106 @@ namespace DubboTester.Tests;
 public sealed class McpGatewayTests
 {
     [Fact]
+    public void Defaults_DisableAuthenticationAndUseAutomaticRegistryDiscovery()
+    {
+        var configuration = new McpGatewayConfiguration();
+
+        Assert.False(configuration.AuthenticationEnabled);
+        Assert.Equal("/", configuration.RegistryRootPath);
+        Assert.Equal(5_000, configuration.HistoryLimit);
+    }
+
+    [Fact]
+    public void LegacyToolWithoutValidationFields_RemainsAvailableUntilEnvironmentChanges()
+    {
+        var method = new McpDubboMethodConfiguration { Enabled = true };
+
+        Assert.Equal(McpToolValidationStatus.Available, method.ValidationStatus);
+        Assert.True(method.IsAvailableForMcp);
+
+        method.ValidationStatus = McpToolValidationStatus.PendingValidation;
+
+        Assert.False(method.IsAvailableForMcp);
+    }
+
+    [Fact]
+    public void ConnectionContextComparison_TracksRegistryAndMetadataEnvironmentOnly()
+    {
+        var original = new McpGatewayConfiguration
+        {
+            ZooKeeperAddress = "zk.example:2181",
+            RegistryRootPath = "/dubbo-a, /dubbo-b",
+            MetadataCenterAddress = "metadata.example:2181",
+            MetadataRootPath = "/metadata",
+            RequestTimeoutMs = 10_000,
+            HistoryLimit = 100
+        };
+        McpGatewayConfiguration reorderedRoots = original.Clone();
+        reorderedRoots.RegistryRootPath = "/dubbo-b; /dubbo-a";
+        reorderedRoots.RequestTimeoutMs = 20_000;
+        reorderedRoots.HistoryLimit = 5_000;
+
+        Assert.True(McpGatewayService.IsConnectionContextEquivalent(original, reorderedRoots));
+
+        McpGatewayConfiguration changedZooKeeper = original.Clone();
+        changedZooKeeper.ZooKeeperAddress = "zk-new.example:2181";
+        Assert.False(McpGatewayService.IsConnectionContextEquivalent(original, changedZooKeeper));
+
+        McpGatewayConfiguration changedMetadataRoot = original.Clone();
+        changedMetadataRoot.MetadataRootPath = "/metadata-v2";
+        Assert.False(McpGatewayService.IsConnectionContextEquivalent(original, changedMetadataRoot));
+    }
+
+    [Fact]
+    public async Task SavingChangedConnectionContext_PreservesToolButStopsAdvertisingIt()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"dubbo-tester-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var gateway = new McpGatewayService(
+                new TestAppDataDirectoryProvider(directory),
+                new DubboCatalogCache(),
+                new TestRequestContextAccessor());
+            var configuration = new McpGatewayConfiguration
+            {
+                Enabled = true,
+                ZooKeeperAddress = "zk-old.example:2181"
+            };
+            await gateway.SaveConfigurationAsync(configuration);
+
+            configuration = gateway.GetConfiguration();
+            configuration.Methods.Add(new McpDubboMethodConfiguration
+            {
+                Enabled = true,
+                ToolName = "dubbo_run",
+                RegistryRootPath = "/dubbo",
+                ServiceName = "com.example.Service",
+                MethodName = "run",
+                Description = "运行服务",
+                TriggerCondition = "需要运行服务时",
+                ParameterGuidance = "arguments 为空数组"
+            });
+            await gateway.SaveConfigurationAsync(configuration);
+            Assert.Single(gateway.GetTools());
+
+            configuration = gateway.GetConfiguration();
+            configuration.ZooKeeperAddress = "zk-new.example:2181";
+            await gateway.SaveConfigurationAsync(configuration);
+
+            McpDubboMethodConfiguration preserved = Assert.Single(
+                gateway.GetConfiguration().Methods);
+            Assert.True(preserved.Enabled);
+            Assert.Equal(McpToolValidationStatus.PendingValidation, preserved.ValidationStatus);
+            Assert.Empty(gateway.GetTools());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void BuildInputSchema_UsesExactOrderedArgumentCountAndJavaShapes()
     {
         var parameters = new MethodParameterStructure[]
@@ -152,7 +252,60 @@ public sealed class McpGatewayTests
 
         ArgumentException exception = Assert.Throws<ArgumentException>(() =>
             McpGatewayService.Validate(configuration));
-        Assert.Contains("方法描述、触发条件和参数要求", exception.Message);
+        Assert.Contains("方法描述", exception.Message);
+        Assert.Contains("适用/触发条件", exception.Message);
+        Assert.Contains("参数要求", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("RegistryRootPath", "注册目录")]
+    [InlineData("ServiceName", "服务")]
+    [InlineData("MethodName", "方法")]
+    [InlineData("ToolName", "MCP 工具名")]
+    [InlineData("Description", "方法描述")]
+    [InlineData("TriggerCondition", "适用/触发条件")]
+    [InlineData("ParameterGuidance", "参数要求")]
+    public void ValidateMethodConfiguration_RejectsEveryMissingRequiredField(
+        string propertyName,
+        string expectedFieldName)
+    {
+        var method = new McpDubboMethodConfiguration
+        {
+            Enabled = false,
+            RegistryRootPath = "/dubbo",
+            ServiceName = "com.example.Service",
+            MethodName = "run",
+            ToolName = "dubbo_tool",
+            Description = "运行服务",
+            TriggerCondition = "需要运行服务时",
+            ParameterGuidance = "arguments 为空数组"
+        };
+        typeof(McpDubboMethodConfiguration)
+            .GetProperty(propertyName)!
+            .SetValue(method, string.Empty);
+        ArgumentException exception = Assert.Throws<ArgumentException>(() =>
+            McpGatewayService.ValidateMethodConfiguration(method));
+
+        Assert.Contains(expectedFieldName, exception.Message);
+    }
+
+    [Fact]
+    public void Validate_AllowsLegacyIncompleteMethodWhileItRemainsDisabled()
+    {
+        var configuration = new McpGatewayConfiguration
+        {
+            Methods =
+            [
+                new McpDubboMethodConfiguration
+                {
+                    Enabled = false,
+                    ServiceName = "com.example.Service",
+                    MethodName = "run"
+                }
+            ]
+        };
+
+        McpGatewayService.Validate(configuration);
     }
 
     [Fact]
@@ -192,5 +345,16 @@ public sealed class McpGatewayTests
             DubboSession.TestZooKeeperAsync(" ", 1_000));
 
         Assert.Contains("ZooKeeper 地址", exception.Message);
+    }
+
+    private sealed class TestAppDataDirectoryProvider(string directoryPath)
+        : IAppDataDirectoryProvider
+    {
+        public string DirectoryPath { get; } = directoryPath;
+    }
+
+    private sealed class TestRequestContextAccessor : IMcpRequestContextAccessor
+    {
+        public string GetRemoteAddress() => "127.0.0.1";
     }
 }

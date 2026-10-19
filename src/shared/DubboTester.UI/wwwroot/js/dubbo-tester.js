@@ -81,3 +81,21 @@ window.dubboTester = {
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 };
+
+// Small anchored popovers should behave like transient UI: clicking anywhere
+// outside the active popover, or pressing Escape, dismisses it. The listener is
+// delegated so it also covers popovers rendered later by Blazor.
+const closeDismissiblePopovers = target => {
+    document.querySelectorAll("details[data-dismiss-on-outside][open]").forEach(popover => {
+        if (!target || !popover.contains(target)) {
+            popover.open = false;
+        }
+    });
+};
+
+document.addEventListener("click", event => closeDismissiblePopovers(event.target));
+document.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+        closeDismissiblePopovers(null);
+    }
+});

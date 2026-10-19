@@ -8,8 +8,8 @@ public sealed class HistoryRetentionPolicyTests
 {
     [Theory]
     [InlineData(0, HistoryRetentionPolicy.MinimumLimit)]
-    [InlineData(500, 500)]
-    [InlineData(2_001, HistoryRetentionPolicy.MaximumLimit)]
+    [InlineData(5_000, 5_000)]
+    [InlineData(5_001, HistoryRetentionPolicy.MaximumLimit)]
     public void NormalizeLimit_ClampsToSupportedRange(int configured, int expected)
     {
         Assert.Equal(expected, HistoryRetentionPolicy.NormalizeLimit(configured));

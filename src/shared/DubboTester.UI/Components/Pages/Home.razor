@@ -57,20 +57,15 @@
                 </div>
                 <div class="catalog-heading-actions">
                     <button class="subtle-button" title="忽略缓存并刷新" disabled="@IsCatalogActive" @onclick="() => RefreshCatalogAsync(true)">刷新</button>
-                    <div class="catalog-refresh-settings">
-                        <button type="button"
-                                class="catalog-refresh-settings-button"
-                                title="刷新设置"
-                                aria-expanded="@ShowCatalogRefreshSettings"
-                                @onclick="() => ShowCatalogRefreshSettings = !ShowCatalogRefreshSettings">⚙</button>
-                        @if (ShowCatalogRefreshSettings)
-                        {
-                            <div class="catalog-refresh-settings-popover">
-                                <label><input type="checkbox" @bind="Settings.OnlyRefreshServiceNames" @bind:after="PersistCatalogRefreshModeAsync" />仅刷新服务名称</label>
-                                <small>关闭时同时刷新 Provider 与方法信息</small>
-                            </div>
-                        }
-                    </div>
+                    <details class="catalog-refresh-settings" data-dismiss-on-outside>
+                        <summary class="catalog-refresh-settings-button"
+                                 title="刷新设置"
+                                 aria-label="刷新设置">⚙</summary>
+                        <div class="catalog-refresh-settings-popover">
+                            <label><input type="checkbox" @bind="Settings.OnlyRefreshServiceNames" @bind:after="PersistCatalogRefreshModeAsync" />仅刷新服务名称</label>
+                            <small>关闭时同时刷新 Provider 与方法信息</small>
+                        </div>
+                    </details>
                 </div>
             </div>
 
@@ -287,7 +282,7 @@
             </section>
 
             <div class="action-row">
-                <details class="advanced-options">
+                <details class="advanced-options" data-dismiss-on-outside>
                     <summary>高级选项</summary>
                     <div class="advanced-popover">
                         <label>服务版本<input @bind="Input.Version" placeholder="可选" /></label>
@@ -323,7 +318,7 @@
                             <span>▷</span><span>发送</span>
                         }
                     </button>
-                    <details class="send-more">
+                    <details class="send-more" data-dismiss-on-outside>
                         <summary title="更多发送方式" aria-label="更多发送方式">▾</summary>
                         <div class="send-more-menu">
                             <button @onclick="OpenPressureTest">
@@ -428,7 +423,7 @@
 
 @if (AboutVisible)
 {
-    <div class="modal-backdrop" @onclick="CloseAbout">
+    <div class="modal-backdrop">
         <section class="settings-modal about-modal" role="dialog" aria-modal="true" aria-labelledby="about-dialog-title" @onclick:stopPropagation="true">
             <header>
                 <div>
@@ -470,7 +465,7 @@
 
 @if (SignatureInfoVisible)
 {
-    <div class="modal-backdrop" @onclick="CloseSignatureInfo">
+    <div class="modal-backdrop">
         <section class="type-structure-modal signature-info-modal" @onclick:stopPropagation="true">
             <header>
                 <div>
@@ -535,7 +530,7 @@
 
 @if (TypeStructureVisible)
 {
-    <div class="modal-backdrop" @onclick="CloseTypeStructure">
+    <div class="modal-backdrop">
         <section class="type-structure-modal" @onclick:stopPropagation="true">
             <header>
                 <div>
@@ -571,7 +566,7 @@
 
 @if (SettingsVisible)
 {
-    <div class="modal-backdrop" @onclick="CloseSettings">
+    <div class="modal-backdrop">
         <section class="settings-modal" @onclick:stopPropagation="true">
             <header>
                 <div><h2>连接与页面设置</h2><p>设置会保存在当前浏览器中</p></div>
@@ -592,9 +587,9 @@
                     <label><span>请求超时（ms）</span><input type="number" min="100" max="600000" @bind="SettingsDraft.RequestTimeoutMs" /></label>
                 </div>
                 <div class="settings-grid">
-                    <label><span>元数据中心地址</span><input @bind="SettingsDraft.MetadataCenterAddress" placeholder="留空则复用注册中心" /></label>
+                    <label><span>元数据中心地址（选填）</span><input @bind="SettingsDraft.MetadataCenterAddress" placeholder="留空则复用注册中心" /></label>
                     <label>
-                        <span>元数据目录</span>
+                        <span>元数据目录（选填）</span>
                         <input @bind="SettingsDraft.MetadataRootPath"
                                @bind:event="oninput"
                                placeholder="留空则复用当前服务的注册目录" />
@@ -624,7 +619,7 @@
                                min="@HistoryRetentionPolicy.MinimumLimit"
                                max="@HistoryRetentionPolicy.MaximumLimit"
                                @bind="SettingsDraft.HistoryLimit" />
-                        <small>默认 500，最高 2000；自动清理时优先保留收藏记录</small>
+                        <small>默认 5000，最高 5000；自动清理时优先保留收藏记录</small>
                     </label>
                 </div>
                 <div class="setting-checks">
@@ -687,7 +682,6 @@
     private bool SignatureInfoVisible { get; set; }
     private bool FavoritesOnly { get; set; }
     private bool HistoryCollapsed { get; set; }
-    private bool ShowCatalogRefreshSettings { get; set; }
     private bool IsCatalogBusy { get; set; }
     private CancellationTokenSource? CatalogLoadCancellation { get; set; }
     private CancellationTokenSource? CatalogPreloadTrackingCancellation { get; set; }
