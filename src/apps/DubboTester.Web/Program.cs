@@ -7,7 +7,8 @@ builder.Configuration.AddJsonFile("version.json", optional: false, reloadOnChang
 
 builder.Services
     .AddRazorComponents()
-    .AddInteractiveServerComponents();
+    .AddInteractiveServerComponents()
+    .AddHubOptions(options => options.MaximumReceiveMessageSize = 256 * 1024);
 builder.Services.AddDubboTesterWebServices();
 builder.Services.AddDubboTesterMcpServer();
 

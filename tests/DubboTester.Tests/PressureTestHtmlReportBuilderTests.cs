@@ -35,6 +35,7 @@ public sealed class PressureTestHtmlReportBuilderTests
             FailureCount = 1,
             AverageMilliseconds = 20,
             Tps = 50,
+            PeakTps = 55,
             SuccessRate = 50,
             P95Milliseconds = 30,
             P99Milliseconds = 30,
@@ -44,8 +45,8 @@ public sealed class PressureTestHtmlReportBuilderTests
             RecordsRequestResponse = true,
             Timeline =
             [
-                new PressureTestPoint(.02, 50, 10, 10, 10),
-                new PressureTestPoint(.04, 50, 20, 30, 30)
+                new PressureTestPoint(.02, 50, 45, 1, 10, 10, 10, 1, 8, 9, 10),
+                new PressureTestPoint(.04, 50, 55, 2, 20, 30, 30, 2, 18, 28, 29)
             ],
             RequestResults =
             [
@@ -67,7 +68,9 @@ public sealed class PressureTestHtmlReportBuilderTests
             snapshot,
             DateTimeOffset.Parse("2026-09-30T10:00:00+08:00"),
             DateTimeOffset.Parse("2026-09-30T10:00:01+08:00"),
-            includeAllRequests: false);
+            includeAllRequests: false,
+            throughputSmoothingSeconds: 10,
+            useRecentLatency: true);
 
         Assert.StartsWith("<!doctype html>", html);
         Assert.Contains("com.foo.&lt;script&gt;alert(1)&lt;/script&gt;", html);
@@ -75,6 +78,11 @@ public sealed class PressureTestHtmlReportBuilderTests
         Assert.Contains("125 ms", html);
         Assert.Contains("3 s", html);
         Assert.Contains("阶梯用户数", html);
+        Assert.Contains("最高 TPS", html);
+        Assert.Contains("10 秒滑动平均", html);
+        Assert.Contains("即时（最近 5 秒）", html);
+        Assert.Contains("活跃用户", html);
+        Assert.Contains("<td>10:00:00</td>", html);
         Assert.Contains("bad &lt;value&gt;", html);
         Assert.Contains("&lt;request&gt;", html);
         Assert.Contains("&lt;response&gt;", html);

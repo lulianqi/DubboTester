@@ -48,9 +48,19 @@ public sealed class McpGatewayService : IDisposable
         lock (_sync) return _configuration.Clone();
     }
 
-    public IReadOnlyList<McpCallRecord> GetHistory()
+    public McpCallRecordPage GetHistoryPage(int pageNumber, int pageSize = 100)
     {
-        lock (_sync) return _history.ToArray();
+        int normalizedPage = Math.Max(1, pageNumber);
+        int normalizedPageSize = Math.Clamp(pageSize, 1, 100);
+        lock (_sync)
+        {
+            return new McpCallRecordPage(
+                _history
+                    .Skip((normalizedPage - 1) * normalizedPageSize)
+                    .Take(normalizedPageSize)
+                    .ToArray(),
+                _history.Count);
+        }
     }
 
     public Task<DubboCatalogLoadResult> LoadServicesAsync(

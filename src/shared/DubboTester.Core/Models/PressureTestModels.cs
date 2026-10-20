@@ -92,9 +92,15 @@ public sealed class PressureTestPageDraft
 public sealed record PressureTestPoint(
     double ElapsedSeconds,
     double InstantTps,
+    double SmoothedTps,
+    int ActiveUsers,
     double AverageMilliseconds,
     double P95Milliseconds,
-    double P99Milliseconds);
+    double P99Milliseconds,
+    int CompletedRequests = 0,
+    double RecentAverageMilliseconds = 0,
+    double RecentP95Milliseconds = 0,
+    double RecentP99Milliseconds = 0);
 
 public readonly record struct PressureTestRequestResult(
     int UserIndex,
@@ -109,6 +115,7 @@ public readonly record struct PressureTestRequestResult(
 
 public sealed class PressureTestSnapshot
 {
+    public DateTimeOffset StartedAt { get; init; }
     public int TotalRequests { get; init; }
     public int DurationLimitSeconds { get; init; }
     public int CompletedRequests { get; init; }
@@ -118,6 +125,7 @@ public sealed class PressureTestSnapshot
     public double ElapsedSeconds { get; init; }
     public double AverageMilliseconds { get; init; }
     public double Tps { get; init; }
+    public double PeakTps { get; init; }
     public double SuccessRate { get; init; }
     public double P95Milliseconds { get; init; }
     public double P99Milliseconds { get; init; }

@@ -14,7 +14,9 @@ public static class PressureTestHtmlReportBuilder
         PressureTestSnapshot snapshot,
         DateTimeOffset startedAt,
         DateTimeOffset finishedAt,
-        bool includeAllRequests)
+        bool includeAllRequests,
+        int throughputSmoothingSeconds = 5,
+        bool useRecentLatency = false)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -69,9 +71,12 @@ public static class PressureTestHtmlReportBuilder
             .Append(Encode(configuration.Invocation.RequestJson))
             .Append("</pre></section>");
 
+        double peakTps = PressureTestChartMetrics.CalculatePeakSmoothedTps(
+            snapshot.Timeline,
+            throughputSmoothingSeconds);
         html.Append("<section class=\"metrics\">")
             .Append(Metric("平均响应", $"{snapshot.AverageMilliseconds:F2} ms", "所有已完成请求"))
-            .Append(Metric("TPS", snapshot.Tps.ToString("F2", CultureInfo.InvariantCulture), "完成数 / 实际墙钟时间"))
+            .Append(Metric("TPS", snapshot.Tps.ToString("F2", CultureInfo.InvariantCulture), $"最高 TPS {peakTps:F2}（{throughputSmoothingSeconds} 秒滑动平均峰值）"))
             .Append(Metric("成功率", $"{snapshot.SuccessRate:F2}%", $"{snapshot.SuccessCount:N0} 成功 / {snapshot.FailureCount:N0} 失败"))
             .Append(Metric("P95", $"{snapshot.P95Milliseconds:F2} ms", "最终精确分位数"))
             .Append(Metric("P99", $"{snapshot.P99Milliseconds:F2} ms", "最终精确分位数"))
@@ -79,8 +84,8 @@ public static class PressureTestHtmlReportBuilder
             .Append("</section>");
 
         html.Append("<section class=\"charts\">")
-            .Append(ThroughputChart(snapshot.Timeline))
-            .Append(LatencyChart(snapshot.Timeline))
+            .Append(ThroughputChart(snapshot.Timeline, configuration.UserCount, throughputSmoothingSeconds))
+            .Append(LatencyChart(snapshot.Timeline, configuration.UserCount, useRecentLatency))
             .Append("</section>");
 
         html.Append("<section class=\"card details\"><div class=\"section-title\"><div><h2>运行明细</h2><p>")
@@ -118,7 +123,7 @@ public static class PressureTestHtmlReportBuilder
                 html.Append("<tr><td>").Append(index + 1)
                     .Append("</td><td>").Append(item.UserIndex)
                     .Append("</td><td>").Append(item.IterationIndex)
-                    .Append("</td><td>").Append(item.CompletedAtSeconds.ToString("F3", CultureInfo.InvariantCulture)).Append(" s")
+                    .Append("</td><td>").Append(startedAt.AddSeconds(Math.Max(0, item.CompletedAtSeconds)).ToString("HH:mm:ss", CultureInfo.InvariantCulture))
                     .Append("</td><td>").Append(item.ElapsedMilliseconds.ToString("F2", CultureInfo.InvariantCulture)).Append(" ms")
                     .Append("</td><td><span class=\"").Append(item.Success ? "success" : "failure").Append("\">")
                     .Append(item.Success ? "成功" : "失败")
@@ -147,23 +152,46 @@ public static class PressureTestHtmlReportBuilder
         return html.ToString();
     }
 
-    private static string ThroughputChart(IReadOnlyList<PressureTestPoint> points)
+    private static string ThroughputChart(
+        IReadOnlyList<PressureTestPoint> points,
+        int configuredUserCount,
+        int smoothingSeconds)
     {
-        double maximum = Math.Max(1, points.Count == 0 ? 0 : points.Max(point => point.InstantTps));
-        return Chart("吞吐趋势", "即时 TPS", [
-            (BuildPolyline(points, point => point.InstantTps, maximum), "blue")
+        double[] smoothedTps = points
+            .Select((_, index) => PressureTestChartMetrics.CalculateSmoothedTps(points, index, smoothingSeconds))
+            .ToArray();
+        double maximum = Math.Max(1, smoothedTps.DefaultIfEmpty(0).Max());
+        double userMaximum = Math.Max(1, configuredUserCount);
+        return Chart("吞吐趋势", $"500 ms 采样 · {smoothingSeconds} 秒滑动平均 TPS / 活跃用户", [
+            (BuildPolyline(points, (_, index) => smoothedTps[index], maximum), "blue"),
+            (BuildPolyline(points, point => point.ActiveUsers, userMaximum), "purple")
         ]);
     }
 
-    private static string LatencyChart(IReadOnlyList<PressureTestPoint> points)
+    private static string LatencyChart(
+        IReadOnlyList<PressureTestPoint> points,
+        int configuredUserCount,
+        bool useRecentLatency)
     {
+        double Average(PressureTestPoint point) => useRecentLatency
+            ? point.RecentAverageMilliseconds
+            : point.AverageMilliseconds;
+        double P95(PressureTestPoint point) => useRecentLatency
+            ? point.RecentP95Milliseconds
+            : point.P95Milliseconds;
+        double P99(PressureTestPoint point) => useRecentLatency
+            ? point.RecentP99Milliseconds
+            : point.P99Milliseconds;
         double maximum = Math.Max(1, points.Count == 0
             ? 0
-            : points.Max(point => Math.Max(point.AverageMilliseconds, Math.Max(point.P95Milliseconds, point.P99Milliseconds))));
-        return Chart("响应时间趋势", "平均 / P95 / P99（ms）", [
-            (BuildPolyline(points, point => point.AverageMilliseconds, maximum), "green"),
-            (BuildPolyline(points, point => point.P95Milliseconds, maximum), "orange"),
-            (BuildPolyline(points, point => point.P99Milliseconds, maximum), "red")
+            : points.Max(point => Math.Max(Average(point), Math.Max(P95(point), P99(point)))));
+        double userMaximum = Math.Max(1, configuredUserCount);
+        string mode = useRecentLatency ? "即时（最近 5 秒）" : "累计";
+        return Chart("响应时间趋势", $"{mode}平均 / P95 / P99（ms）/ 活跃用户", [
+            (BuildPolyline(points, Average, maximum), "green"),
+            (BuildPolyline(points, P95, maximum), "orange"),
+            (BuildPolyline(points, P99, maximum), "red"),
+            (BuildPolyline(points, point => point.ActiveUsers, userMaximum), "purple")
         ]);
     }
 
@@ -183,10 +211,15 @@ public static class PressureTestHtmlReportBuilder
     private static string BuildPolyline(
         IReadOnlyList<PressureTestPoint> points,
         Func<PressureTestPoint, double> selector,
+        double maximum) => BuildPolyline(points, (point, _) => selector(point), maximum);
+
+    private static string BuildPolyline(
+        IReadOnlyList<PressureTestPoint> points,
+        Func<PressureTestPoint, int, double> selector,
         double maximum) => string.Join(' ', points.Select((point, index) =>
     {
         double x = points.Count <= 1 ? 360 : index * 720d / (points.Count - 1);
-        double y = 170 - Math.Clamp(selector(point) / maximum, 0, 1) * 160;
+        double y = 170 - Math.Clamp(selector(point, index) / maximum, 0, 1) * 160;
         return $"{x.ToString("F1", CultureInfo.InvariantCulture)},{y.ToString("F1", CultureInfo.InvariantCulture)}";
     }));
 
@@ -212,6 +245,6 @@ public static class PressureTestHtmlReportBuilder
     private static string Encode(string? value) => WebUtility.HtmlEncode(value ?? string.Empty);
 
     private const string Styles = """
-        :root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:#172033;background:#f3f6fb}*{box-sizing:border-box}body{margin:0}main{max-width:1440px;margin:auto;padding:24px}header{display:flex;align-items:center;gap:14px;margin-bottom:18px}.logo{width:46px;height:46px;display:grid;place-items:center;border-radius:13px;color:#fff;background:linear-gradient(145deg,#2488ff,#075ee5);font-size:25px;font-weight:800;font-style:italic}h1{margin:0;font-size:23px}header p,.chart p,.section-title p{margin:4px 0 0;color:#8993a1;font-size:12px}.status{margin-left:auto;padding:7px 13px;border-radius:999px;font-size:12px;font-weight:700}.status.ok{color:#087f58;background:#dcf8ed}.status.warn{color:#b92b3d;background:#ffe7ea}.card{overflow:hidden;border:1px solid #e0e6ef;border-radius:11px;background:#fff;box-shadow:0 3px 12px rgba(26,47,76,.04)}.card h2{margin:0;font-size:16px}.config{padding:18px}.config-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:15px 0}.config-grid div{min-width:0;padding:10px;border-radius:8px;background:#f7f9fc}.config-grid span,.metrics span{display:block;color:#8993a1;font-size:11px}.config-grid b{display:block;margin-top:5px;overflow-wrap:anywhere;font-size:13px}.config h3{margin:18px 0 8px;font-size:13px}pre{max-height:300px;overflow:auto;margin:0;padding:13px;border-radius:8px;color:#33435a;background:#f7f9fc;white-space:pre-wrap;overflow-wrap:anywhere}.metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin:14px 0}.metrics article{padding:15px;border:1px solid #e0e6ef;border-radius:10px;background:#fff}.metrics b{display:block;margin:8px 0 4px;font-size:20px}.metrics small{color:#8d97a5}.charts{display:grid;grid-template-columns:1fr 1fr;gap:14px}.chart{padding:16px}.chart svg{width:100%;height:260px;margin-top:8px}.grid{fill:none;stroke:#edf1f6;stroke-width:1}.chart polyline{fill:none;stroke-width:2.2;vector-effect:non-scaling-stroke}.blue{stroke:#1677ff}.green{stroke:#13a274}.orange{stroke:#ee9826}.red{stroke:#d83b4e}.details{margin-top:14px}.section-title{display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid #eef1f5}.section-title b{font-size:12px;color:#526176}.empty{min-height:120px;display:grid;place-items:center;color:#8fa297}table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:9px 11px;border-bottom:1px solid #eef1f5;text-align:left;vertical-align:top}th{position:sticky;top:0;color:#66758a;background:#f8fafc}.success,.failure{display:inline-block;padding:2px 7px;border-radius:999px;font-weight:700}.success{color:#087f58;background:#dcf8ed}.failure{color:#b92b3d;background:#ffe7ea}.payload-cell{min-width:80px}.payload-cell summary{color:#0958d9;cursor:pointer}.payload-cell h4{margin:10px 0 5px}.payload-cell pre{min-width:320px;max-width:680px}.truncated{padding:12px 18px;color:#9a6a2b;background:#fff8e9;font-size:11px}footer{padding:22px;text-align:center;color:#949ca8;font-size:11px}@media(max-width:900px){.config-grid{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(3,1fr)}.charts{grid-template-columns:1fr}}@media print{body{background:#fff}main{max-width:none;padding:0}.card,.metrics article{box-shadow:none}.chart svg{height:210px}}
+        :root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:#172033;background:#f3f6fb}*{box-sizing:border-box}body{margin:0}main{max-width:1440px;margin:auto;padding:24px}header{display:flex;align-items:center;gap:14px;margin-bottom:18px}.logo{width:46px;height:46px;display:grid;place-items:center;border-radius:13px;color:#fff;background:linear-gradient(145deg,#2488ff,#075ee5);font-size:25px;font-weight:800;font-style:italic}h1{margin:0;font-size:23px}header p,.chart p,.section-title p{margin:4px 0 0;color:#8993a1;font-size:12px}.status{margin-left:auto;padding:7px 13px;border-radius:999px;font-size:12px;font-weight:700}.status.ok{color:#087f58;background:#dcf8ed}.status.warn{color:#b92b3d;background:#ffe7ea}.card{overflow:hidden;border:1px solid #e0e6ef;border-radius:11px;background:#fff;box-shadow:0 3px 12px rgba(26,47,76,.04)}.card h2{margin:0;font-size:16px}.config{padding:18px}.config-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:15px 0}.config-grid div{min-width:0;padding:10px;border-radius:8px;background:#f7f9fc}.config-grid span,.metrics span{display:block;color:#8993a1;font-size:11px}.config-grid b{display:block;margin-top:5px;overflow-wrap:anywhere;font-size:13px}.config h3{margin:18px 0 8px;font-size:13px}pre{max-height:300px;overflow:auto;margin:0;padding:13px;border-radius:8px;color:#33435a;background:#f7f9fc;white-space:pre-wrap;overflow-wrap:anywhere}.metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin:14px 0}.metrics article{padding:15px;border:1px solid #e0e6ef;border-radius:10px;background:#fff}.metrics b{display:block;margin:8px 0 4px;font-size:20px}.metrics small{color:#8d97a5}.charts{display:grid;grid-template-columns:1fr 1fr;gap:14px}.chart{padding:16px}.chart svg{width:100%;height:260px;margin-top:8px}.grid{fill:none;stroke:#edf1f6;stroke-width:1}.chart polyline{fill:none;stroke-width:2.2;vector-effect:non-scaling-stroke}.blue{stroke:#1677ff}.green{stroke:#13a274}.orange{stroke:#ee9826}.red{stroke:#d83b4e}.purple{stroke:#7458c4;stroke-dasharray:5 4}.details{margin-top:14px}.section-title{display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid #eef1f5}.section-title b{font-size:12px;color:#526176}.empty{min-height:120px;display:grid;place-items:center;color:#8fa297}table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:9px 11px;border-bottom:1px solid #eef1f5;text-align:left;vertical-align:top}th{position:sticky;top:0;color:#66758a;background:#f8fafc}.success,.failure{display:inline-block;padding:2px 7px;border-radius:999px;font-weight:700}.success{color:#087f58;background:#dcf8ed}.failure{color:#b92b3d;background:#ffe7ea}.payload-cell{min-width:80px}.payload-cell summary{color:#0958d9;cursor:pointer}.payload-cell h4{margin:10px 0 5px}.payload-cell pre{min-width:320px;max-width:680px}.truncated{padding:12px 18px;color:#9a6a2b;background:#fff8e9;font-size:11px}footer{padding:22px;text-align:center;color:#949ca8;font-size:11px}@media(max-width:900px){.config-grid{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(3,1fr)}.charts{grid-template-columns:1fr}}@media print{body{background:#fff}main{max-width:none;padding:0}.card,.metrics article{box-shadow:none}.chart svg{height:210px}}
         """;
 }

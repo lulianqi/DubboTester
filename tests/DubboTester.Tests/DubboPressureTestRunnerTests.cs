@@ -121,6 +121,78 @@ public sealed class DubboPressureTestRunnerTests
     }
 
     [Fact]
+    public void ThroughputWindow_RecordsZeroRawSamplesAndSmoothsFromStart()
+    {
+        var window = new PressureTestThroughputWindow(5);
+
+        PressureTestThroughputSample first = window.AddSample(.5, 0);
+        PressureTestThroughputSample second = window.AddSample(1, 1);
+        PressureTestThroughputSample third = window.AddSample(1.5, 1);
+
+        Assert.Equal(0, first.RawTps);
+        Assert.Equal(2, second.RawTps);
+        Assert.Equal(1, second.SmoothedTps);
+        Assert.Equal(0, third.RawTps);
+        Assert.Equal(2d / 3, third.SmoothedTps, precision: 10);
+    }
+
+    [Fact]
+    public void ThroughputWindow_UsesFiveSecondSlidingWindowAndTracksPeak()
+    {
+        var window = new PressureTestThroughputWindow(5);
+        PressureTestThroughputSample sample = default;
+        for (int index = 1; index <= 10; index++)
+        {
+            sample = window.AddSample(index * .5, index * 10);
+        }
+
+        Assert.Equal(20, sample.SmoothedTps);
+        Assert.Equal(20, window.PeakSmoothedTps);
+
+        sample = window.AddSample(5.5, 100);
+
+        Assert.Equal(0, sample.RawTps);
+        Assert.Equal(18, sample.SmoothedTps);
+        Assert.Equal(20, window.PeakSmoothedTps);
+    }
+
+    [Fact]
+    public void ChartMetrics_RecalculatesThroughputForSelectedWindow()
+    {
+        PressureTestPoint[] points =
+        [
+            new(.5, 0, 0, 1, 10, 10, 10, 0),
+            new(1, 10, 10, 1, 10, 10, 10, 5),
+            new(1.5, 10, 10, 1, 10, 10, 10, 10),
+            new(2, 20, 10, 1, 10, 10, 10, 20)
+        ];
+
+        Assert.Equal(15, PressureTestChartMetrics.CalculateSmoothedTps(points, 3, 1));
+        Assert.Equal(10, PressureTestChartMetrics.CalculateSmoothedTps(points, 3, 5));
+        Assert.Equal(15, PressureTestChartMetrics.CalculatePeakSmoothedTps(points, 1));
+    }
+
+    [Fact]
+    public void LatencyWindow_UsesOnlyRequestsCompletedInRecentFiveSeconds()
+    {
+        var window = new PressureTestLatencyWindow(5);
+        window.Add(0, 10);
+        window.Add(1, 20);
+        window.Add(4.9, 30);
+
+        PressureTestLatencyStatistics first = window.GetStatistics(5);
+        Assert.Equal(20, first.AverageMilliseconds);
+        Assert.Equal(30, first.P95Milliseconds);
+        Assert.Equal(30, first.P99Milliseconds);
+
+        window.Add(5.1, 40);
+        PressureTestLatencyStatistics second = window.GetStatistics(5.1);
+        Assert.Equal(30, second.AverageMilliseconds);
+        Assert.Equal(40, second.P95Milliseconds);
+        Assert.Equal(40, second.P99Milliseconds);
+    }
+
+    [Fact]
     public void PayloadRetention_DiscardsSuccessfulPayloadBeforeFailedPayloads()
     {
         string request = new('q', 20);

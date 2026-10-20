@@ -144,3 +144,7 @@ public sealed class McpCallRecord
     public long ElapsedMs { get; init; }
     public string Error { get; init; } = string.Empty;
 }
+
+public sealed record McpCallRecordPage(
+    IReadOnlyList<McpCallRecord> Items,
+    int TotalCount);

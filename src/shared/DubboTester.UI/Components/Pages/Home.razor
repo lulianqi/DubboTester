@@ -383,7 +383,7 @@
                 {
                     <div>
                         <h2>历史记录</h2>
-                        <span>@VisibleHistory.Count() 条</span>
+                        <span>@HistoryTotalCount 条</span>
                     </div>
                     <div class="history-actions">
                         <button class="heart-filter @(FavoritesOnly ? "active" : null)" title="只看收藏" @onclick="ToggleFavoritesOnly">♥</button>
@@ -415,7 +415,7 @@
                     </label>
                 </div>
                 <div class="history-list" @onscroll="CloseHistoryDetails">
-                    @foreach (InvocationHistory item in VisibleHistory)
+                    @foreach (InvocationHistory item in History)
                     {
                         <article id="@HistoryElementId(item)"
                                  class="history-card @(item.Success ? null : "failed") @(DetailedHistory?.Id == item.Id ? "selected" : null)"
@@ -450,13 +450,21 @@
                             </div>
                         </article>
                     }
-                    @if (!VisibleHistory.Any())
+                    @if (History.Count == 0)
                     {
                         <div class="empty-state compact">
                             <span>@(string.IsNullOrWhiteSpace(HistorySearchText) ? "暂无历史记录" : "没有匹配的历史记录")</span>
                         </div>
                     }
                 </div>
+                @if (HistoryPageCount > 1)
+                {
+                    <nav class="history-pagination" aria-label="调用历史分页">
+                        <button type="button" disabled="@(HistoryPageNumber <= 1)" @onclick="() => ChangeHistoryPageAsync(HistoryPageNumber - 1)">上一页</button>
+                        <span>第 @HistoryPageNumber / @HistoryPageCount 页</span>
+                        <button type="button" disabled="@(HistoryPageNumber >= HistoryPageCount)" @onclick="() => ChangeHistoryPageAsync(HistoryPageNumber + 1)">下一页</button>
+                    </nav>
+                }
             }
         </aside>
     </main>
@@ -761,6 +769,7 @@
     private const string LegacyRequestDraftStorageKey = "dubbo-tester.request-drafts.v1";
     private const string HistoryCollapsedStorageKey = "dubbo-tester.history-collapsed.v1";
     private const string CatalogWidthStorageKey = "dubbo-tester.catalog-width.v1";
+    private const int HistoryPageSize = 100;
     private static readonly JsonSerializerOptions StorageJsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions MetadataJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -784,6 +793,9 @@
     private ResponseResultHistoryBuffer RetainedResultHistory { get; } = new();
     private string SearchText { get; set; } = string.Empty;
     private string HistorySearchText { get; set; } = string.Empty;
+    private int HistoryPageNumber { get; set; } = 1;
+    private int HistoryTotalCount { get; set; }
+    private int HistoryLoadVersion { get; set; }
     private string ResultText { get; set; } = string.Empty;
     private bool KeepResultHistory { get; set; }
     private long ResultContextVersion { get; set; }
@@ -857,22 +869,8 @@
             .GroupBy(service => service.RegistryRootPath, StringComparer.Ordinal)
             .OrderBy(group => group.Key, StringComparer.Ordinal);
 
-    private IEnumerable<InvocationHistory> VisibleHistory
-    {
-        get
-        {
-            IEnumerable<InvocationHistory> items = FavoritesOnly
-                ? History.Where(item => item.Favorite)
-                : History;
-            if (string.IsNullOrWhiteSpace(HistorySearchText))
-            {
-                return items;
-            }
-
-            string searchText = HistorySearchText.Trim();
-            return items.Where(item => HistoryMatchesSearch(item, searchText));
-        }
-    }
+    private int HistoryPageCount => Math.Max(1,
+        (int)Math.Ceiling(HistoryTotalCount / (double)HistoryPageSize));
 
     private string HistoryDetailStyle => HistoryDetailPlacement is null
         ? string.Empty
@@ -946,6 +944,7 @@
             if (hasPressureDraft) Input = pressureInvocation;
             HistoryCollapsed = bool.TryParse(historyCollapsed, out bool collapsed) && collapsed;
 
+            Settings.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(Settings.HistoryLimit);
             string? historyJson = null;
             Exception? indexedDbError = null;
             for (int attempt = 1; attempt <= 3; attempt++)
@@ -956,7 +955,15 @@
                         "dubboTester.indexedDb.initialize",
                         LegacyHistoryStorageKey,
                         LegacyRequestDraftStorageKey);
-                    historyJson = await JS.InvokeAsync<string?>("dubboTester.indexedDb.loadHistory");
+                    await JS.InvokeVoidAsync(
+                        "dubboTester.indexedDb.trimHistory",
+                        Settings.HistoryLimit);
+                    historyJson = await JS.InvokeAsync<string?>(
+                        "dubboTester.indexedDb.loadHistoryPage",
+                        HistoryPageNumber,
+                        HistoryPageSize,
+                        HistorySearchText,
+                        FavoritesOnly);
                     IndexedDbAvailable = true;
                     indexedDbError = null;
                     break;
@@ -980,19 +987,31 @@
             bool historyWasInvalid = false;
             try
             {
-                History = string.IsNullOrWhiteSpace(historyJson)
-                    ? []
-                    : JsonSerializer.Deserialize<List<InvocationHistory>>(historyJson, StorageJsonOptions) ?? [];
+                if (IndexedDbAvailable)
+                {
+                    HistoryPagePayload page = string.IsNullOrWhiteSpace(historyJson)
+                        ? new HistoryPagePayload()
+                        : JsonSerializer.Deserialize<HistoryPagePayload>(historyJson, StorageJsonOptions)
+                            ?? new HistoryPagePayload();
+                    History = page.Items;
+                    HistoryTotalCount = page.TotalCount;
+                }
+                else
+                {
+                    List<InvocationHistory> legacyHistory = string.IsNullOrWhiteSpace(historyJson)
+                        ? []
+                        : JsonSerializer.Deserialize<List<InvocationHistory>>(historyJson, StorageJsonOptions) ?? [];
+                    HistoryRetentionPolicy.TrimToLimit(legacyHistory, Settings.HistoryLimit);
+                    HistoryTotalCount = legacyHistory.Count;
+                    History = legacyHistory.Take(HistoryPageSize).ToList();
+                }
             }
             catch (JsonException)
             {
                 History = [];
+                HistoryTotalCount = 0;
                 historyWasInvalid = true;
             }
-            Settings.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(Settings.HistoryLimit);
-            bool historyTrimmed = HistoryRetentionPolicy.TrimToLimit(
-                History,
-                Settings.HistoryLimit);
             SettingsDraft = Settings.Clone();
             ClientStorageReady = true;
             ClientStorageLoadAttempts = 0;
@@ -1011,15 +1030,17 @@
             }
 
             StateHasChanged();
-            if (historyTrimmed && IndexedDbAvailable)
-            {
-                await ReplaceHistoryAsync();
-            }
 
             if (!string.IsNullOrWhiteSpace(Settings.ZooKeeperAddress))
             {
                 await RefreshCatalogAsync(false);
             }
+        }
+        catch (Exception exception) when (
+            exception is JSDisconnectedException or OperationCanceledException)
+        {
+            ClientStorageLoadFailed = true;
+            SetWarning("页面连接已中断，本地设置和历史记录将在连接恢复后重新读取");
         }
         catch (Exception exception)
         {
@@ -1569,7 +1590,6 @@
     private HistoryMutation AddHistory(InvocationOutput output, string responseText, InvocationInput submittedInput)
     {
         CloseHistoryDetails();
-        string[] previousIds = History.Select(item => item.Id).ToArray();
         var added = new InvocationHistory
         {
             Success = output.Success,
@@ -1587,19 +1607,19 @@
             Response = Settings.SaveResponseInHistory ? responseText : string.Empty,
             ElapsedMs = output.RequestElapsed
         };
-        History.Insert(0, added);
-        HistoryRetentionPolicy.TrimToLimit(History, Settings.HistoryLimit);
-        string[] removedIds = previousIds
-            .Where(id => History.All(item => item.Id != id))
-            .ToArray();
-        return new HistoryMutation(
-            History.Any(item => item.Id == added.Id) ? added : null,
-            removedIds);
+        if (!IndexedDbAvailable)
+        {
+            History.Insert(0, added);
+            HistoryRetentionPolicy.TrimToLimit(History, Math.Min(Settings.HistoryLimit, HistoryPageSize));
+            HistoryTotalCount = History.Count;
+        }
+        return new HistoryMutation(added, []);
     }
 
     private async Task LoadHistoryAsync(InvocationHistory item)
     {
         CloseHistoryDetails();
+        item = await LoadFullHistoryAsync(item);
         await PersistCurrentRequestDraftAsync();
         ResultContextVersion++;
         ClearResult();
@@ -1697,6 +1717,101 @@
         RetainedResultHistory.Clear();
     }
 
+    private async Task LoadHistoryPageAsync()
+    {
+        if (!IndexedDbAvailable) return;
+
+        int loadVersion = ++HistoryLoadVersion;
+        try
+        {
+            string? json = await JS.InvokeAsync<string?>(
+                "dubboTester.indexedDb.loadHistoryPage",
+                HistoryPageNumber,
+                HistoryPageSize,
+                HistorySearchText,
+                FavoritesOnly);
+            HistoryPagePayload page = string.IsNullOrWhiteSpace(json)
+                ? new HistoryPagePayload()
+                : JsonSerializer.Deserialize<HistoryPagePayload>(json, StorageJsonOptions)
+                    ?? new HistoryPagePayload();
+            if (loadVersion != HistoryLoadVersion) return;
+            HistoryTotalCount = page.TotalCount;
+            int pageCount = HistoryPageCount;
+            if (HistoryPageNumber > pageCount)
+            {
+                HistoryPageNumber = pageCount;
+                await LoadHistoryPageAsync();
+                return;
+            }
+            History = page.Items;
+            StateHasChanged();
+        }
+        catch (OperationCanceledException)
+        {
+            SetWarning("页面连接已中断，连接恢复后可重新读取调用历史");
+        }
+        catch (JSException exception)
+        {
+            SetWarning($"读取调用历史失败：{GetErrorMessage(exception)}");
+        }
+    }
+
+    private async Task ChangeHistoryPageAsync(int pageNumber)
+    {
+        int target = Math.Clamp(pageNumber, 1, HistoryPageCount);
+        if (target == HistoryPageNumber) return;
+        CloseHistoryDetails();
+        HistoryPageNumber = target;
+        await LoadHistoryPageAsync();
+    }
+
+    private async Task<InvocationHistory> LoadFullHistoryAsync(InvocationHistory summary)
+    {
+        if (!IndexedDbAvailable) return summary;
+
+        try
+        {
+            string? metadataJson = await JS.InvokeAsync<string?>(
+                "dubboTester.indexedDb.getHistoryMetadata",
+                summary.Id);
+            InvocationHistory item = string.IsNullOrWhiteSpace(metadataJson)
+                ? summary
+                : JsonSerializer.Deserialize<InvocationHistory>(metadataJson, StorageJsonOptions)
+                    ?? summary;
+            item.RequestJson = await LoadHistoryFieldAsync(item.Id, "requestJson");
+            item.AttachmentsJson = await LoadHistoryFieldAsync(item.Id, "attachmentsJson");
+            item.Response = await LoadHistoryFieldAsync(item.Id, "response");
+            return item;
+        }
+        catch (OperationCanceledException)
+        {
+            SetWarning("页面连接已中断，暂时无法读取历史详情");
+            return summary;
+        }
+        catch (JSException exception)
+        {
+            SetWarning($"读取历史详情失败：{GetErrorMessage(exception)}");
+            return summary;
+        }
+    }
+
+    private async Task<string> LoadHistoryFieldAsync(string id, string fieldName)
+    {
+        const int chunkSize = 16_384;
+        var builder = new System.Text.StringBuilder();
+        while (true)
+        {
+            string chunk = await JS.InvokeAsync<string>(
+                "dubboTester.indexedDb.getHistoryFieldChunk",
+                id,
+                fieldName,
+                builder.Length,
+                chunkSize);
+            builder.Append(chunk);
+            if (chunk.Length < chunkSize) return builder.ToString();
+        }
+    }
+
     private async Task ShowHistoryDetailsAsync(InvocationHistory item)
     {
         if (DetailedHistory?.Id == item.Id)
@@ -1719,7 +1834,7 @@
             placement = new AnchoredPopoverPlacement();
         }
 
-        DetailedHistory = item;
+        DetailedHistory = await LoadFullHistoryAsync(item);
         HistoryDetailPlacement = placement;
     }
 
@@ -1729,22 +1844,28 @@
         HistoryDetailPlacement = null;
     }
 
-    private void HistorySearchChanged(ChangeEventArgs args)
+    private async Task HistorySearchChanged(ChangeEventArgs args)
     {
         HistorySearchText = args.Value?.ToString() ?? string.Empty;
         CloseHistoryDetails();
+        HistoryPageNumber = 1;
+        await LoadHistoryPageAsync();
     }
 
-    private void ClearHistorySearch()
+    private async Task ClearHistorySearch()
     {
         HistorySearchText = string.Empty;
         CloseHistoryDetails();
+        HistoryPageNumber = 1;
+        await LoadHistoryPageAsync();
     }
 
-    private void ToggleFavoritesOnly()
+    private async Task ToggleFavoritesOnly()
     {
         FavoritesOnly = !FavoritesOnly;
         CloseHistoryDetails();
+        HistoryPageNumber = 1;
+        await LoadHistoryPageAsync();
     }
 
     private async Task ToggleFavoriteAsync(InvocationHistory item)
@@ -1753,6 +1874,22 @@
         if (FavoritesOnly && !item.Favorite)
         {
             CloseHistoryDetails();
+        }
+        if (IndexedDbAvailable)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync(
+                    "dubboTester.indexedDb.setHistoryFavorite",
+                    item.Id,
+                    item.Favorite);
+                await LoadHistoryPageAsync();
+                return;
+            }
+            catch (JSException exception)
+            {
+                await FallBackFromIndexedDbAsync(exception);
+            }
         }
         await PutHistoryAsync(item);
     }
@@ -1763,14 +1900,20 @@
         {
             CloseHistoryDetails();
         }
-        History.Remove(item);
         await DeleteHistoryAsync([item.Id]);
+        if (HistoryPageNumber > 1 && History.Count <= 1)
+        {
+            HistoryPageNumber--;
+        }
+        await LoadHistoryPageAsync();
     }
 
     private async Task ClearHistoryAsync()
     {
         CloseHistoryDetails();
         History.Clear();
+        HistoryTotalCount = 0;
+        HistoryPageNumber = 1;
         if (!IndexedDbAvailable)
         {
             await PersistLegacyHistoryAsync();
@@ -1921,15 +2064,21 @@
         SettingsDraft.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(SettingsDraft.HistoryLimit);
         Settings = SettingsDraft.Clone();
         SettingsVisible = false;
-        string[] previousIds = History.Select(item => item.Id).ToArray();
-        HistoryRetentionPolicy.TrimToLimit(History, Settings.HistoryLimit);
-        string[] removedIds = previousIds
-            .Where(id => History.All(item => item.Id != id))
-            .ToArray();
         await PersistSettingsAsync();
-        if (removedIds.Length > 0)
+        if (IndexedDbAvailable)
         {
-            await DeleteHistoryAsync(removedIds);
+            try
+            {
+                await JS.InvokeVoidAsync(
+                    "dubboTester.indexedDb.trimHistory",
+                    Settings.HistoryLimit);
+                HistoryPageNumber = Math.Min(HistoryPageNumber, HistoryPageCount);
+                await LoadHistoryPageAsync();
+            }
+            catch (JSException exception)
+            {
+                await FallBackFromIndexedDbAsync(exception);
+            }
         }
         await RefreshCatalogAsync(false);
     }
@@ -1961,26 +2110,6 @@
         await PersistSettingsAsync();
     }
 
-    private async Task ReplaceHistoryAsync()
-    {
-        if (!IndexedDbAvailable)
-        {
-            await PersistLegacyHistoryAsync();
-            return;
-        }
-
-        try
-        {
-            await JS.InvokeVoidAsync(
-                "dubboTester.indexedDb.replaceHistory",
-                JsonSerializer.Serialize(History, StorageJsonOptions));
-        }
-        catch (JSException exception)
-        {
-            await FallBackFromIndexedDbAsync(exception);
-        }
-    }
-
     private async Task PersistHistoryMutationAsync(HistoryMutation mutation)
     {
         if (!IndexedDbAvailable)
@@ -1996,7 +2125,10 @@
                 mutation.Added is null
                     ? null
                     : JsonSerializer.Serialize(mutation.Added, StorageJsonOptions),
-                mutation.RemovedIds);
+                mutation.RemovedIds,
+                Settings.HistoryLimit);
+            HistoryPageNumber = 1;
+            await LoadHistoryPageAsync();
         }
         catch (JSException exception)
         {
@@ -2016,7 +2148,8 @@
         {
             await JS.InvokeVoidAsync(
                 "dubboTester.indexedDb.putHistory",
-                JsonSerializer.Serialize(item, StorageJsonOptions));
+                JsonSerializer.Serialize(item, StorageJsonOptions),
+                Settings.HistoryLimit);
         }
         catch (JSException exception)
         {
@@ -2083,7 +2216,13 @@
         NoticeIsError = false;
         NoticeIsWarning = true;
     }
-    private int HistoryNumber(InvocationHistory item) { int index = History.IndexOf(item); return index < 0 ? 0 : History.Count - index; }
+    private int HistoryNumber(InvocationHistory item)
+    {
+        int index = History.FindIndex(candidate => candidate.Id == item.Id);
+        return index < 0
+            ? 0
+            : Math.Max(1, HistoryTotalCount - ((HistoryPageNumber - 1) * HistoryPageSize + index));
+    }
     private static string HistoryElementId(InvocationHistory item) => $"history-{item.Id}";
     private static string HistoryRouteText(InvocationHistory item) =>
         item.Route == InvocationRoute.Registry ? "注册中心" : "直连 Provider";
@@ -2091,27 +2230,6 @@
         item.Route == InvocationRoute.Registry
             ? $"注册目录 {(!string.IsNullOrWhiteSpace(item.RegistryRootPath) ? item.RegistryRootPath : "/")}"
             : $"{item.Host}:{item.Port}";
-
-    private static bool HistoryMatchesSearch(InvocationHistory item, string searchText)
-    {
-        const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
-        bool Matches(string? value) => value?.Contains(searchText, comparison) == true;
-
-        return Matches(item.Endpoint)
-            || Matches(item.RequestJson)
-            || Matches(item.Response)
-            || Matches(item.JavaParameterTypes)
-            || Matches(item.AttachmentsJson)
-            || Matches(item.RegistryRootPath)
-            || Matches(item.Host)
-            || Matches(item.Port.ToString())
-            || Matches(item.Version)
-            || Matches(item.Group)
-            || Matches(item.ElapsedMs.ToString())
-            || Matches(item.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"))
-            || Matches(item.Success ? "成功" : "失败")
-            || Matches(HistoryRouteText(item));
-    }
 
     private static string OneLine(string value) => value.Replace("\r", string.Empty).Replace("\n", " ").Trim();
     private static string GetErrorMessage(Exception exception)
@@ -2136,6 +2254,12 @@
         public double Height { get; set; } = 520;
         public double ArrowTop { get; set; } = 24;
         public string ArrowSide { get; set; } = "right";
+    }
+
+    private sealed class HistoryPagePayload
+    {
+        public List<InvocationHistory> Items { get; set; } = [];
+        public int TotalCount { get; set; }
     }
 
     private sealed record HistoryMutation(

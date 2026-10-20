@@ -254,6 +254,9 @@ body.resizing-catalog { cursor: col-resize; user-select: none; }
 .history-search-box button { width: 17px; height: 17px; flex: 0 0 17px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; color: #98a0ad; background: transparent; cursor: pointer; line-height: 1; }
 .history-search-box button:hover { color: #687386; background: #f0f3f7; }
 .history-list { flex: 1 1 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 6px 8px 20px; }
+.history-pagination { flex: 0 0 auto; min-height: 38px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 5px 8px; border-top: 1px solid var(--soft-line); color: #7b8798; background: #fafbfd; font-size: 9px; }
+.history-pagination button { height: 26px; padding: 0 9px; border: 1px solid #d9e2ee; border-radius: 5px; color: #44607e; background: #fff; cursor: pointer; font-size: 9px; }
+.history-pagination button:disabled { color: #b5bdc8; background: #f4f6f9; cursor: not-allowed; }
 .history-card { position: relative; display: flex; margin-bottom: 7px; border: 1px solid var(--soft-line); border-left: 3px solid var(--green); border-radius: 7px; background: white; cursor: pointer; transition: .15s ease; }
 .history-card:hover { border-color: #cedcf0; box-shadow: 0 3px 10px rgba(30, 55, 85, .06); }
 .history-card.selected { border-color: #8ab9f5; background: #f8fbff; box-shadow: 0 0 0 2px rgba(22,119,255,.08); }

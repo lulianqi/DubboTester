@@ -101,6 +101,74 @@ const writeIndexedDbRecord = async (storeName, value) => {
     await indexedDbTransaction(transaction);
 };
 
+const historySearchText = value => `${value ?? ""}`.toLocaleLowerCase();
+
+const historyMatchesSearch = (item, searchText) => {
+    if (!searchText) return true;
+
+    const routeText = Number(item?.route) === 0 ? "注册中心" : "直连 provider";
+    const values = [
+        `${item?.serviceName ?? ""}#${item?.methodName ?? ""}`,
+        item?.requestJson,
+        item?.response,
+        item?.javaParameterTypes,
+        item?.attachmentsJson,
+        item?.registryRootPath,
+        item?.host,
+        item?.port,
+        item?.version,
+        item?.group,
+        item?.elapsedMs,
+        item?.createdAt,
+        item?.success ? "成功" : "失败",
+        routeText
+    ];
+    return values.some(value => historySearchText(value).includes(searchText));
+};
+
+const historySummary = item => ({
+    ...item,
+    // The list only needs a short request preview. Full request, attachments and
+    // response are fetched by id when the user opens or loads a record.
+    requestJson: `${item?.requestJson ?? ""}`.slice(0, 200),
+    attachmentsJson: "",
+    response: ""
+});
+
+const deleteOldestHistoryRecords = (store, maximum, favorite) =>
+    new Promise((resolve, reject) => {
+        if (maximum <= 0) {
+            resolve(0);
+            return;
+        }
+
+        let removed = 0;
+        const request = store.index("createdAt").openCursor(null, "next");
+        request.onerror = () => reject(request.error ?? new Error("清理调用历史失败"));
+        request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor || removed >= maximum) {
+                resolve(removed);
+                return;
+            }
+            if ((cursor.value?.favorite === true) === favorite) {
+                cursor.delete();
+                removed++;
+            }
+            cursor.continue();
+        };
+    });
+
+const trimHistoryStore = async (store, configuredLimit) => {
+    const limit = Math.max(10, Math.min(5000, Number(configuredLimit) || 5000));
+    const count = await indexedDbRequest(store.count());
+    if (count <= limit) return;
+
+    const removeCount = count - limit;
+    const removedNonFavorites = await deleteOldestHistoryRecords(store, removeCount, false);
+    await deleteOldestHistoryRecords(store, removeCount - removedNonFavorites, true);
+};
+
 const migrateLegacyHistory = async legacyStorageKey => {
     const migrationKey = "migration.history.local-storage.v1";
     const migration = await readIndexedDbRecord(dubboTesterStores.metadata, migrationKey);
@@ -164,33 +232,87 @@ window.dubboTester = {
                 }
             }
         },
-        loadHistory: async () => {
+        loadHistoryPage: async (pageNumber, pageSize, searchText, favoritesOnly) => {
             const database = await openDubboTesterDatabase();
             const transaction = database.transaction(dubboTesterStores.history, "readonly");
-            const items = await indexedDbRequest(
-                transaction.objectStore(dubboTesterStores.history).getAll());
-            items.sort((left, right) =>
-                Date.parse(right.createdAt ?? 0) - Date.parse(left.createdAt ?? 0));
-            return JSON.stringify(items);
+            const store = transaction.objectStore(dubboTesterStores.history);
+            const index = store.index("createdAt");
+            const requestedPage = Math.max(1, Number(pageNumber) || 1);
+            const requestedPageSize = Math.max(1, Math.min(100, Number(pageSize) || 100));
+            const offset = (requestedPage - 1) * requestedPageSize;
+            const normalizedSearch = historySearchText(searchText).trim();
+            const items = [];
+            let totalCount = 0;
+
+            await new Promise((resolve, reject) => {
+                const request = index.openCursor(null, "prev");
+                request.onerror = () => reject(request.error ?? new Error("读取调用历史失败"));
+                request.onsuccess = () => {
+                    const cursor = request.result;
+                    if (!cursor) {
+                        resolve();
+                        return;
+                    }
+
+                    const item = cursor.value;
+                    const matches = (!favoritesOnly || item?.favorite === true)
+                        && historyMatchesSearch(item, normalizedSearch);
+                    if (matches) {
+                        if (totalCount >= offset && items.length < requestedPageSize) {
+                            items.push(historySummary(item));
+                        }
+                        totalCount++;
+                    }
+                    cursor.continue();
+                };
+            });
+
+            return JSON.stringify({ items, totalCount });
         },
-        replaceHistory: async json => {
-            const items = JSON.parse(json ?? "[]");
-            if (!Array.isArray(items)) throw new Error("调用历史格式无效");
+        getHistoryMetadata: async id => {
+            const item = await readIndexedDbRecord(dubboTesterStores.history, id);
+            return item ? JSON.stringify({
+                ...item,
+                requestJson: "",
+                attachmentsJson: "",
+                response: ""
+            }) : null;
+        },
+        getHistoryFieldChunk: async (id, fieldName, offset, length) => {
+            if (!["requestJson", "attachmentsJson", "response"].includes(fieldName)) {
+                throw new Error("不支持读取该调用历史字段");
+            }
+            const item = await readIndexedDbRecord(dubboTesterStores.history, id);
+            const value = `${item?.[fieldName] ?? ""}`;
+            const start = Math.max(0, Number(offset) || 0);
+            const size = Math.max(1, Math.min(16384, Number(length) || 16384));
+            return value.slice(start, start + size);
+        },
+        trimHistory: async configuredLimit => {
+            const database = await openDubboTesterDatabase();
+            const transaction = database.transaction(dubboTesterStores.history, "readwrite");
+            await trimHistoryStore(transaction.objectStore(dubboTesterStores.history), configuredLimit);
+            await indexedDbTransaction(transaction);
+        },
+        putHistory: async (json, configuredLimit) => {
+            const item = JSON.parse(json);
+            if (!item?.id) throw new Error("调用历史缺少 id");
             const database = await openDubboTesterDatabase();
             const transaction = database.transaction(dubboTesterStores.history, "readwrite");
             const store = transaction.objectStore(dubboTesterStores.history);
-            store.clear();
-            for (const item of items) {
-                if (item?.id) store.put(item);
-            }
+            store.put(item);
+            await trimHistoryStore(store, configuredLimit);
             await indexedDbTransaction(transaction);
         },
-        putHistory: async json => {
-            const item = JSON.parse(json);
-            if (!item?.id) throw new Error("调用历史缺少 id");
-            await writeIndexedDbRecord(dubboTesterStores.history, item);
+        setHistoryFavorite: async (id, favorite) => {
+            const database = await openDubboTesterDatabase();
+            const transaction = database.transaction(dubboTesterStores.history, "readwrite");
+            const store = transaction.objectStore(dubboTesterStores.history);
+            const item = await indexedDbRequest(store.get(id));
+            if (item) store.put({ ...item, favorite: favorite === true });
+            await indexedDbTransaction(transaction);
         },
-        applyHistoryMutation: async (json, removedIds) => {
+        applyHistoryMutation: async (json, removedIds, configuredLimit) => {
             const item = json ? JSON.parse(json) : null;
             if (item && !item.id) throw new Error("调用历史缺少 id");
             const database = await openDubboTesterDatabase();
@@ -198,6 +320,7 @@ window.dubboTester = {
             const store = transaction.objectStore(dubboTesterStores.history);
             for (const id of removedIds ?? []) store.delete(id);
             if (item) store.put(item);
+            await trimHistoryStore(store, configuredLimit);
             await indexedDbTransaction(transaction);
         },
         deleteHistory: async ids => {

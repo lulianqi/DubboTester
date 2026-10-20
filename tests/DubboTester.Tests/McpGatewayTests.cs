@@ -59,6 +59,40 @@ public sealed class McpGatewayTests
     }
 
     [Fact]
+    public void HistoryPaging_ReturnsOneHundredRecordsAndTheFullCount()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"dubbo-tester-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var gateway = new McpGatewayService(
+                new TestAppDataDirectoryProvider(directory),
+                new DubboCatalogCache(),
+                new TestRequestContextAccessor());
+            var historyField = typeof(McpGatewayService).GetField(
+                "_history",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var history = Assert.IsType<List<McpCallRecord>>(historyField?.GetValue(gateway));
+            history.AddRange(Enumerable.Range(1, 250).Select(index => new McpCallRecord
+            {
+                Id = index.ToString(),
+                ToolName = $"tool-{index}"
+            }));
+
+            McpCallRecordPage page = gateway.GetHistoryPage(2, 500);
+
+            Assert.Equal(250, page.TotalCount);
+            Assert.Equal(100, page.Items.Count);
+            Assert.Equal("101", page.Items[0].Id);
+            Assert.Equal("200", page.Items[^1].Id);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task SavingChangedConnectionContext_PreservesToolButStopsAdvertisingIt()
     {
         string directory = Path.Combine(Path.GetTempPath(), $"dubbo-tester-{Guid.NewGuid():N}");

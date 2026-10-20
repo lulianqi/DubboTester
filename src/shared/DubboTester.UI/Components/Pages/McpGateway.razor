@@ -208,9 +208,9 @@
         </section>
 
         <section class="mcp-card history-card-mcp">
-            <div class="mcp-card-heading compact"><div><h2>MCP 调用记录</h2><p>仅保存在内存，最多保留 @Config.HistoryLimit 条</p></div><button class="link-button danger" disabled="@(History.Count == 0)" @onclick="Gateway.ClearHistory">清空</button></div>
+            <div class="mcp-card-heading compact"><div><h2>MCP 调用记录</h2><p>共 @McpHistoryTotalCount 条，仅保存在内存，最多保留 @Config.HistoryLimit 条</p></div><button class="link-button danger" disabled="@(McpHistoryTotalCount == 0)" @onclick="ClearMcpHistory">清空</button></div>
             <div class="mcp-history">
-                @if (History.Count == 0)
+                @if (McpHistoryTotalCount == 0)
                 {
                     <div class="mcp-empty small">暂无 MCP 调用</div>
                 }
@@ -218,8 +218,8 @@
                 {
                     @foreach (McpCallRecord record in History)
                     {
-                        <details class="mcp-record @(record.Success ? "success" : "failed")">
-                            <summary>
+                        <article class="mcp-record @(record.Success ? "success" : "failed")" @key="record.Id">
+                            <button type="button" class="mcp-record-summary" aria-expanded="@(ExpandedMcpRecordId == record.Id)" @onclick="() => ToggleMcpRecord(record.Id)">
                                 <span>@record.StartedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</span>
                                 <b>@record.ToolName</b>
                                 <span class="mcp-record-target" title="@FormatRecordTarget(record)">
@@ -229,12 +229,23 @@
                                 <em>@(record.Success ? "成功" : "失败")</em>
                                 <span>@record.ElapsedMs ms</span>
                                 <span title="调用方地址">@DisplayRemoteAddress(record.RemoteAddress)</span>
-                            </summary>
-                            <div><h3>请求参数</h3><pre>@record.RequestJson</pre><h3>响应 / 错误</h3><pre>@record.Response</pre></div>
-                        </details>
+                            </button>
+                            @if (ExpandedMcpRecordId == record.Id)
+                            {
+                                <div><h3>请求参数</h3><pre>@record.RequestJson</pre><h3>响应 / 错误</h3><pre>@record.Response</pre></div>
+                            }
+                        </article>
                     }
                 }
             </div>
+            @if (McpHistoryPageCount > 1)
+            {
+                <nav class="mcp-history-pagination" aria-label="MCP 调用记录分页">
+                    <button type="button" disabled="@(McpHistoryPageNumber <= 1)" @onclick="() => ChangeMcpHistoryPage(McpHistoryPageNumber - 1)">上一页</button>
+                    <span>第 @McpHistoryPageNumber / @McpHistoryPageCount 页</span>
+                    <button type="button" disabled="@(McpHistoryPageNumber >= McpHistoryPageCount)" @onclick="() => ChangeMcpHistoryPage(McpHistoryPageNumber + 1)">下一页</button>
+                </nav>
+            }
         </section>
     </main>
 </div>
@@ -453,12 +464,16 @@
 }
 
 @code {
+    private const int McpHistoryPageSize = 100;
     private McpGatewayConfiguration Config { get; set; } = new();
     private List<DubboServiceItem> Services { get; set; } = [];
     private HashSet<string> ExpandedRegistryRoots { get; } = new(StringComparer.Ordinal);
     private HashSet<string> ExpandedServiceKeys { get; } = new(StringComparer.Ordinal);
     private HashSet<string> LoadingServiceKeys { get; } = new(StringComparer.Ordinal);
     private IReadOnlyList<McpCallRecord> History { get; set; } = [];
+    private int McpHistoryPageNumber { get; set; } = 1;
+    private int McpHistoryTotalCount { get; set; }
+    private string? ExpandedMcpRecordId { get; set; }
     private string SearchText { get; set; } = string.Empty;
     private string Notice { get; set; } = "配置 ZooKeeper 并扫描服务，然后为需要暴露的方法启用 MCP。";
     private bool NoticeIsError { get; set; }
@@ -546,6 +561,8 @@
         && !IsSaving
         && !IsDialogBusy
         && string.IsNullOrEmpty(DialogValidationMessage);
+    private int McpHistoryPageCount => Math.Max(1,
+        (int)Math.Ceiling(McpHistoryTotalCount / (double)McpHistoryPageSize));
 
     private void ToggleGlobalSettings() =>
         GlobalSettingsExpanded = !GlobalSettingsExpanded;
@@ -558,7 +575,7 @@
     protected override async Task OnInitializedAsync()
     {
         Config = Gateway.GetConfiguration();
-        History = Gateway.GetHistory();
+        RefreshMcpHistoryPage();
         Gateway.Changed += GatewayChanged;
         if (!string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))
         {
@@ -573,7 +590,7 @@
             await InvokeAsync(() =>
             {
                 Config = Gateway.GetConfiguration();
-                History = Gateway.GetHistory();
+                RefreshMcpHistoryPage();
                 StateHasChanged();
             });
         }
@@ -581,6 +598,46 @@
         {
             // The page was disposed while a background MCP call completed.
         }
+    }
+
+    private void RefreshMcpHistoryPage()
+    {
+        McpCallRecordPage page = Gateway.GetHistoryPage(
+            McpHistoryPageNumber,
+            McpHistoryPageSize);
+        McpHistoryTotalCount = page.TotalCount;
+        int pageCount = McpHistoryPageCount;
+        if (McpHistoryPageNumber > pageCount)
+        {
+            McpHistoryPageNumber = pageCount;
+            page = Gateway.GetHistoryPage(McpHistoryPageNumber, McpHistoryPageSize);
+        }
+        History = page.Items;
+        if (ExpandedMcpRecordId is not null
+            && History.All(record => record.Id != ExpandedMcpRecordId))
+        {
+            ExpandedMcpRecordId = null;
+        }
+    }
+
+    private void ChangeMcpHistoryPage(int pageNumber)
+    {
+        int target = Math.Clamp(pageNumber, 1, McpHistoryPageCount);
+        if (target == McpHistoryPageNumber) return;
+        McpHistoryPageNumber = target;
+        ExpandedMcpRecordId = null;
+        RefreshMcpHistoryPage();
+    }
+
+    private void ToggleMcpRecord(string id) =>
+        ExpandedMcpRecordId = ExpandedMcpRecordId == id ? null : id;
+
+    private void ClearMcpHistory()
+    {
+        Gateway.ClearHistory();
+        McpHistoryPageNumber = 1;
+        ExpandedMcpRecordId = null;
+        RefreshMcpHistoryPage();
     }
 
     private async Task AutoSaveConfigurationAsync()
