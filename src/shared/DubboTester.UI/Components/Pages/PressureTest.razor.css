@@ -20,17 +20,20 @@
 .target-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; padding: 14px 15px 16px; }
 .target-grid label, .load-fields label { min-width: 0; display: grid; gap: 6px; color: #586679; font-size: 10px; }
 .target-grid label small { color: #969eaa; font-weight: 400; }
-.target-grid input, .target-grid select, .load-fields input { min-width: 0; width: 100%; height: 37px; padding: 0 10px; border: 1px solid #dfe5ee; border-radius: 7px; color: #25344a; background: #fff; }
+.target-grid input, .target-grid select, .load-fields input, .load-fields select { min-width: 0; width: 100%; height: 37px; padding: 0 10px; border: 1px solid #dfe5ee; border-radius: 7px; color: #25344a; background: #fff; }
 .target-grid .span-two { grid-column: span 2; }
 .target-grid .span-three { grid-column: 1 / -1; }
-.load-fields { min-height: 225px; display: grid; grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr) minmax(130px, .8fr); grid-template-rows: auto auto; align-items: center; gap: 16px; padding: 20px; }
+.load-fields { min-height: 305px; display: grid; grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr) minmax(130px, .8fr); grid-template-rows: repeat(3, auto); align-items: center; gap: 14px 16px; padding: 20px; }
 .load-fields small { color: #969eaa; }
 .users-field { grid-column: 1; grid-row: 1; }
 .multiply { grid-column: 2; grid-row: 1; color: #a1a9b5; font-size: 22px; }
-.iterations-field { grid-column: 3; grid-row: 1; }
-.ramp-field { grid-column: 1; grid-row: 2; }
+.limit-field { grid-column: 3; grid-row: 1; }
+.limit-control { min-width: 0; display: grid; grid-template-columns: minmax(82px, .8fr) minmax(76px, 1fr); gap: 7px; }
+.user-start-interval-field { grid-column: 1; grid-row: 2; }
 .request-interval-field { grid-column: 3; grid-row: 2; }
-.load-summary { grid-column: 4; grid-row: 1 / 3; height: 112px; display: grid; place-items: center; align-content: center; border-radius: 9px; color: #0958d9; background: #f0f6ff; }
+.step-interval-field { grid-column: 1; grid-row: 3; }
+.step-users-field { grid-column: 3; grid-row: 3; }
+.load-summary { grid-column: 4; grid-row: 1 / 4; height: 168px; display: grid; place-items: center; align-content: center; border-radius: 9px; color: #0958d9; background: #f0f6ff; }
 .load-summary b { font-size: 23px; }
 .load-summary span { color: #75859a; font-size: 10px; }
 .template-card { grid-column: 1 / -1; }
@@ -148,7 +151,7 @@
     .target-grid { grid-template-columns: 1fr; }
     .target-grid .span-two, .target-grid .span-three { grid-column: 1; }
     .load-fields { grid-template-columns: 1fr; }
-    .users-field, .iterations-field, .ramp-field, .request-interval-field, .load-summary { grid-column: 1; grid-row: auto; }
+    .users-field, .limit-field, .user-start-interval-field, .request-interval-field, .step-interval-field, .step-users-field, .load-summary { grid-column: 1; grid-row: auto; }
     .multiply { display: none; }
     .metric-grid { grid-template-columns: repeat(2, 1fr); }
     .chart-grid { grid-template-columns: 1fr; }

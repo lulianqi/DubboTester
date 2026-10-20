@@ -13,7 +13,7 @@ public sealed class TesterSettings
     public int HistoryLimit { get; set; } = 5_000;
     public DubboClient.LoadBalanceMode LoadBalanceMode { get; set; } =
         DubboClient.LoadBalanceMode.Random;
-    public bool SaveResponseInHistory { get; set; }
+    public bool SaveResponseInHistory { get; set; } = true;
     public bool HideUnmatched { get; set; }
     public bool SearchMethodsOnly { get; set; }
     public bool CaseSensitiveSearch { get; set; }

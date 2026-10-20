@@ -13,7 +13,9 @@ public sealed class PressureTestHtmlReportBuilderTests
         {
             UserCount = 2,
             IterationsPerUser = 3,
-            RampUpIntervalMs = 125,
+            UserStartIntervalMs = 125,
+            StepStartIntervalSeconds = 3,
+            StepUserCount = 2,
             RequestIntervalMs = 50,
             RecordRequestResponse = true,
             Settings = new TesterSettings { ZooKeeperAddress = "127.0.0.1:2181" },
@@ -71,6 +73,8 @@ public sealed class PressureTestHtmlReportBuilderTests
         Assert.Contains("com.foo.&lt;script&gt;alert(1)&lt;/script&gt;", html);
         Assert.DoesNotContain("com.foo.<script>", html);
         Assert.Contains("125 ms", html);
+        Assert.Contains("3 s", html);
+        Assert.Contains("阶梯用户数", html);
         Assert.Contains("bad &lt;value&gt;", html);
         Assert.Contains("&lt;request&gt;", html);
         Assert.Contains("&lt;response&gt;", html);
@@ -86,5 +90,73 @@ public sealed class PressureTestHtmlReportBuilderTests
             DateTimeOffset.Parse("2026-09-30T10:00:01+08:00"),
             includeAllRequests: true);
         Assert.Contains("<td>999</td>", allRequestsHtml);
+    }
+
+    [Fact]
+    public void Build_ExplainsPayloadsDiscardedByMemoryLimit()
+    {
+        var configuration = new PressureTestConfiguration
+        {
+            RecordRequestResponse = true,
+            Settings = new TesterSettings(),
+            Invocation = new InvocationInput
+            {
+                ServiceName = "com.foo.DemoService",
+                MethodName = "echo"
+            }
+        };
+        var snapshot = new PressureTestSnapshot
+        {
+            TotalRequests = 1,
+            CompletedRequests = 1,
+            SuccessCount = 1,
+            RecordsRequestResponse = true,
+            DiscardedPayloadCount = 1,
+            RequestResults =
+            [
+                new PressureTestRequestResult(
+                    1,
+                    1,
+                    1,
+                    .001,
+                    true,
+                    null,
+                    PayloadDiscarded: true)
+            ]
+        };
+
+        string html = PressureTestHtmlReportBuilder.Build(
+            configuration,
+            snapshot,
+            DateTimeOffset.Now,
+            DateTimeOffset.Now,
+            includeAllRequests: true);
+
+        Assert.Contains("约 200 MB 内存上限清理", html);
+        Assert.Contains("已因运行明细内存达到上限而清理", html);
+    }
+
+    [Fact]
+    public void Build_DescribesDurationLimitMode()
+    {
+        var configuration = new PressureTestConfiguration
+        {
+            LimitMode = PressureTestLimitMode.Duration,
+            DurationLimitSeconds = 90,
+            Settings = new TesterSettings(),
+            Invocation = new InvocationInput()
+        };
+
+        string html = PressureTestHtmlReportBuilder.Build(
+            configuration,
+            new PressureTestSnapshot { DurationLimitSeconds = 90 },
+            DateTimeOffset.Now,
+            DateTimeOffset.Now,
+            includeAllRequests: false);
+
+        Assert.Contains("时间上限", html);
+        Assert.Contains("执行时长上限", html);
+        Assert.Contains("90 s", html);
+        Assert.DoesNotContain("每用户发送</span>", html);
     }
 }

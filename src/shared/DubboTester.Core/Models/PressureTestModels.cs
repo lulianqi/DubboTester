@@ -26,6 +26,12 @@ public enum BusinessAssertionOperator
     LessThanOrEqual
 }
 
+public enum PressureTestLimitMode
+{
+    RequestCount,
+    Duration
+}
+
 public sealed class BusinessAssertionCondition
 {
     public BusinessAssertionType Type { get; set; } = BusinessAssertionType.ResponseContains;
@@ -51,15 +57,36 @@ public sealed class BusinessAssertionConfiguration
 public sealed class PressureTestConfiguration
 {
     public int UserCount { get; set; } = 10;
+    public PressureTestLimitMode LimitMode { get; set; } = PressureTestLimitMode.RequestCount;
     public int IterationsPerUser { get; set; } = 10;
-    public int RampUpIntervalMs { get; set; }
+    public int DurationLimitSeconds { get; set; } = 60;
+    public int UserStartIntervalMs { get; set; }
+    public int StepStartIntervalSeconds { get; set; }
+    public int StepUserCount { get; set; }
     public int RequestIntervalMs { get; set; }
     public bool RecordRequestResponse { get; set; }
     public BusinessAssertionConfiguration BusinessAssertion { get; set; } = new();
     public required TesterSettings Settings { get; init; }
     public required InvocationInput Invocation { get; init; }
 
-    public int TotalRequests => checked(UserCount * IterationsPerUser);
+    public int TotalRequests => LimitMode == PressureTestLimitMode.RequestCount
+        ? checked(UserCount * IterationsPerUser)
+        : 0;
+}
+
+public sealed class PressureTestPageDraft
+{
+    public InvocationInput Invocation { get; set; } = new();
+    public int UserCount { get; set; } = 10;
+    public PressureTestLimitMode LimitMode { get; set; } = PressureTestLimitMode.RequestCount;
+    public int IterationsPerUser { get; set; } = 10;
+    public int DurationLimitSeconds { get; set; } = 60;
+    public int UserStartIntervalMs { get; set; }
+    public int StepStartIntervalSeconds { get; set; }
+    public int StepUserCount { get; set; }
+    public int RequestIntervalMs { get; set; }
+    public bool RecordRequestResponse { get; set; }
+    public BusinessAssertionConfiguration BusinessAssertion { get; set; } = new();
 }
 
 public sealed record PressureTestPoint(
@@ -77,11 +104,13 @@ public readonly record struct PressureTestRequestResult(
     bool Success,
     string? Error,
     string? Request = null,
-    string? Response = null);
+    string? Response = null,
+    bool PayloadDiscarded = false);
 
 public sealed class PressureTestSnapshot
 {
     public int TotalRequests { get; init; }
+    public int DurationLimitSeconds { get; init; }
     public int CompletedRequests { get; init; }
     public int SuccessCount { get; init; }
     public int FailureCount { get; init; }
@@ -98,10 +127,14 @@ public sealed class PressureTestSnapshot
     public bool IsCancelled { get; init; }
     public bool RecordsRequestResponse { get; init; }
     public bool PercentilesAreSampled { get; init; }
+    public long ApproximatePayloadBytes { get; init; }
+    public int DiscardedPayloadCount { get; init; }
     public IReadOnlyList<PressureTestPoint> Timeline { get; init; } = [];
     public IReadOnlyList<PressureTestRequestResult> RequestResults { get; init; } = [];
 
-    public double ProgressPercent => TotalRequests == 0
-        ? 0
-        : Math.Clamp(CompletedRequests * 100d / TotalRequests, 0, 100);
+    public double ProgressPercent => DurationLimitSeconds > 0
+        ? Math.Clamp(ElapsedSeconds * 100d / DurationLimitSeconds, 0, 100)
+        : TotalRequests == 0
+            ? 0
+            : Math.Clamp(CompletedRequests * 100d / TotalRequests, 0, 100);
 }

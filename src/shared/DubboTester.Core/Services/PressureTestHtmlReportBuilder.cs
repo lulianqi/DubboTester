@@ -51,8 +51,15 @@ public static class PressureTestHtmlReportBuilder
             .Append(Item("Java 参数类型", configuration.Invocation.JavaParameterTypes))
             .Append(Item("版本 / 分组", $"{EmptyAsDash(configuration.Invocation.Version)} / {EmptyAsDash(configuration.Invocation.Group)}"))
             .Append(Item("并发用户", configuration.UserCount.ToString("N0", CultureInfo.InvariantCulture)))
-            .Append(Item("每用户发送", configuration.IterationsPerUser.ToString("N0", CultureInfo.InvariantCulture)))
-            .Append(Item("阶梯启动间隔", $"{configuration.RampUpIntervalMs:N0} ms"))
+            .Append(Item("终止方式", configuration.LimitMode == PressureTestLimitMode.RequestCount ? "次数上限" : "时间上限"))
+            .Append(configuration.LimitMode == PressureTestLimitMode.RequestCount
+                ? Item("每用户发送", configuration.IterationsPerUser.ToString("N0", CultureInfo.InvariantCulture))
+                : Item("执行时长上限", $"{configuration.DurationLimitSeconds:N0} s"))
+            .Append(Item("用户启动间隔", $"{configuration.UserStartIntervalMs:N0} ms"))
+            .Append(Item("阶梯启动间隔", $"{configuration.StepStartIntervalSeconds:N0} s"))
+            .Append(Item("阶梯用户数", configuration.StepUserCount == 0
+                ? "全部用户"
+                : configuration.StepUserCount.ToString("N0", CultureInfo.InvariantCulture)))
             .Append(Item("请求间隔", $"{configuration.RequestIntervalMs:N0} ms"))
             .Append(Item("记录请求与响应", configuration.RecordRequestResponse ? "开启" : "关闭"))
             .Append(Item("业务断言", PressureTestBusinessAssertionEvaluator.Describe(configuration.BusinessAssertion)))
@@ -78,8 +85,14 @@ public static class PressureTestHtmlReportBuilder
 
         html.Append("<section class=\"card details\"><div class=\"section-title\"><div><h2>运行明细</h2><p>")
             .Append(includeAllRequests ? "全部请求" : "仅失败请求")
-            .Append(snapshot.RecordsRequestResponse ? "；包含已记录的完整请求与响应" : "；未记录请求与响应正文")
-            .Append("</p></div><b>Min ")
+            .Append(snapshot.RecordsRequestResponse ? "；包含当前保留的请求与响应" : "；未记录请求与响应正文");
+        if (snapshot.DiscardedPayloadCount > 0)
+        {
+            html.Append("；已因约 200 MB 内存上限清理 ")
+                .Append(snapshot.DiscardedPayloadCount.ToString("N0", CultureInfo.InvariantCulture))
+                .Append(" 条较旧正文（失败请求优先保留）");
+        }
+        html.Append("</p></div><b>Min ")
             .Append(snapshot.MinimumMilliseconds.ToString("F2", CultureInfo.InvariantCulture))
             .Append(" ms · Max ")
             .Append(snapshot.MaximumMilliseconds.ToString("F2", CultureInfo.InvariantCulture))
@@ -113,7 +126,7 @@ public static class PressureTestHtmlReportBuilder
                 if (snapshot.RecordsRequestResponse)
                 {
                     html.Append("<td class=\"payload-cell\"><details><summary>查看</summary><h4>请求内容</h4><pre>")
-                        .Append(Encode(item.Request ?? "（未记录请求内容）"))
+                        .Append(Encode(RequestText(item)))
                         .Append("</pre><h4>响应内容</h4><pre>")
                         .Append(Encode(ResponseText(item)))
                         .Append("</pre></details></td>");
@@ -184,8 +197,14 @@ public static class PressureTestHtmlReportBuilder
         $"<article><span>{Encode(label)}</span><b>{Encode(value)}</b><small>{Encode(note)}</small></article>";
 
     private static string EmptyAsDash(string? value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
+    private static string RequestText(PressureTestRequestResult result) =>
+        result.PayloadDiscarded
+            ? "（已因运行明细内存达到上限而清理）"
+            : result.Request ?? "（未记录请求内容）";
     private static string ResponseText(PressureTestRequestResult result) =>
-        !string.IsNullOrEmpty(result.Response)
+        result.PayloadDiscarded
+            ? "（已因运行明细内存达到上限而清理）"
+            : !string.IsNullOrEmpty(result.Response)
             ? result.Response
             : result.Success
                 ? "（空响应）"

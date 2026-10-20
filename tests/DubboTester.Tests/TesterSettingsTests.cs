@@ -21,5 +21,6 @@ public sealed class TesterSettingsTests
 
         Assert.Equal("/", settings.RegistryRootPath);
         Assert.Equal(5_000, settings.HistoryLimit);
+        Assert.True(settings.SaveResponseInHistory);
     }
 }

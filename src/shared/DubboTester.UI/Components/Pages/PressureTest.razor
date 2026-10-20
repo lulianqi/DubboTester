@@ -28,7 +28,7 @@
 
             <div class="target-grid">
                 <label>调用方式
-                    <select @bind="Input.Route" disabled="@IsRunning">
+                    <select @bind="Input.Route" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning">
                         <option value="@InvocationRoute.Registry">注册中心</option>
                         <option value="@InvocationRoute.DirectProvider">直连 Provider</option>
                     </select>
@@ -36,66 +36,87 @@
                 @if (Input.Route == InvocationRoute.Registry)
                 {
                     <label>ZooKeeper
-                        <input @bind="Settings.ZooKeeperAddress" disabled="@IsRunning" placeholder="127.0.0.1:2181" />
+                        <input @bind="Settings.ZooKeeperAddress" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="127.0.0.1:2181" />
                     </label>
                     <label>注册目录
-                        <input @bind="Input.RegistryRootPath" disabled="@IsRunning" placeholder="从请求页选择的服务目录" />
+                        <input @bind="Input.RegistryRootPath" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="从请求页选择的服务目录" />
                     </label>
                 }
                 else
                 {
                     <label>Provider 地址
-                        <input @bind="Input.Host" disabled="@IsRunning" placeholder="10.0.0.10" />
+                        <input @bind="Input.Host" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="10.0.0.10" />
                     </label>
                     <label>端口
-                        <input type="number" min="1" max="65535" @bind="Input.Port" disabled="@IsRunning" />
+                        <input type="number" min="1" max="65535" @bind="Input.Port" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
                     </label>
                 }
                 <label class="span-two">服务
-                    <input @bind="Input.ServiceName" disabled="@IsRunning" placeholder="com.foo.DemoService" />
+                    <input @bind="Input.ServiceName" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="com.foo.DemoService" />
                 </label>
                 <label>方法
-                    <input @bind="Input.MethodName" disabled="@IsRunning" placeholder="methodName" />
+                    <input @bind="Input.MethodName" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="methodName" />
                 </label>
                 <label>Java 参数类型
-                    <input @bind="Input.JavaParameterTypes" disabled="@IsRunning" placeholder="java.lang.String, java.lang.Integer" />
+                    <input @bind="Input.JavaParameterTypes" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="java.lang.String, java.lang.Integer" />
                 </label>
                 <label>服务版本
-                    <input @bind="Input.Version" disabled="@IsRunning" placeholder="可选" />
+                    <input @bind="Input.Version" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="可选" />
                 </label>
                 <label>服务分组
-                    <input @bind="Input.Group" disabled="@IsRunning" placeholder="可选" />
+                    <input @bind="Input.Group" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="可选" />
                 </label>
                 <label class="span-three">
                     <span>Attachments JSON <small>可选，随 RPC 请求传递，类似请求 Header</small></span>
-                    <input @bind="Input.AttachmentsJson" disabled="@IsRunning" placeholder='{"traceId":"..."}' />
+                    <input @bind="Input.AttachmentsJson" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder='{"traceId":"..."}' />
                 </label>
             </div>
         </section>
 
         <section class="pressure-card load-card">
             <div class="card-heading">
-                <div><h2>负载配置</h2><p>N 个并发用户，每个用户顺序发送 M 次</p></div>
-                <strong>@TotalRequests.ToString("N0") 次请求</strong>
+                <div><h2>负载配置</h2><p>@LoadDescription</p></div>
+                <strong>@LoadHeadingSummary</strong>
             </div>
             <div class="load-fields">
                 <label class="users-field">并发用户数 N
-                    <input type="number" min="1" max="500" @bind="UserCount" disabled="@IsRunning" />
+                    <input type="number" min="1" max="500" @bind="UserCount" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
                     <small>每个用户对应一个并发任务</small>
                 </label>
-                <span class="multiply">×</span>
-                <label class="iterations-field">每用户发送 M 次
-                    <input type="number" min="1" max="100000" @bind="IterationsPerUser" disabled="@IsRunning" />
-                    <small>同一用户内按顺序发送</small>
+                <span class="multiply">@(LimitMode == PressureTestLimitMode.RequestCount ? "×" : "⏱")</span>
+                <label class="limit-field">负载上限
+                    <span class="limit-control">
+                        <select aria-label="负载上限模式" @bind="LimitMode" @bind:after="HandleLimitModeChangedAsync" disabled="@IsRunning">
+                            <option value="@PressureTestLimitMode.RequestCount">次数上限</option>
+                            <option value="@PressureTestLimitMode.Duration">时间上限</option>
+                        </select>
+                        @if (LimitMode == PressureTestLimitMode.RequestCount)
+                        {
+                            <input aria-label="每用户发送次数" type="number" min="1" max="100000" @bind="IterationsPerUser" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                        }
+                        else
+                        {
+                            <input aria-label="执行时长（秒）" type="number" min="1" max="86400" @bind="DurationLimitSeconds" @bind:after="HandleDurationLimitChangedAsync" disabled="@IsRunning" />
+                        }
+                    </span>
+                    <small>@(LimitMode == PressureTestLimitMode.RequestCount ? "每个用户顺序发送指定次数" : "从整场压测开始计时，单位为秒")</small>
                 </label>
-                <div class="load-summary"><b>@TotalRequests.ToString("N0")</b><span>计划请求总数</span></div>
-                <label class="ramp-field">阶梯启动间隔（ms）
-                    <input type="number" min="0" max="3600000" @bind="RampUpIntervalMs" disabled="@IsRunning" />
-                    <small>相邻用户启动间隔；0 表示同时启动</small>
+                <div class="load-summary"><b>@LoadSummaryValue</b><span>@LoadSummaryLabel</span></div>
+                <label class="user-start-interval-field">用户启动间隔（ms）
+                    <input type="number" min="0" max="3600000" @bind="UserStartIntervalMs" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                    <small>同一阶梯内相邻用户的启动间隔；0 表示同时启动</small>
                 </label>
                 <label class="request-interval-field">请求间隔（ms）
-                    <input type="number" min="0" max="3600000" @bind="RequestIntervalMs" disabled="@IsRunning" />
+                    <input type="number" min="0" max="3600000" @bind="RequestIntervalMs" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
                     <small>同一用户相邻请求之间等待</small>
+                </label>
+                <label class="step-interval-field">阶梯启动间隔（s）
+                    <input type="number" min="0" max="@StepIntervalMaximum" @bind="StepStartIntervalSeconds" @bind:after="HandleStepStartIntervalChangedAsync" disabled="@IsRunning" />
+                    <small>按固定时间点启动下一阶梯；0 表示不启用阶梯启动</small>
+                </label>
+                <label class="step-users-field">阶梯用户数
+                    <input type="number" min="0" max="@Math.Max(0, UserCount)" @bind="StepUserCount" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                    <small>每个阶梯的用户数；0 表示全部用户在同一阶梯启动</small>
                 </label>
             </div>
         </section>
@@ -113,7 +134,7 @@
                 <code>@GuidToken</code><span>随机 GUID</span>
                 <code>@TimestampToken</code><span>当前时间</span>
             </div>
-            <textarea @bind="Input.RequestJson" disabled="@IsRunning" spellcheck="false"></textarea>
+            <textarea @bind="Input.RequestJson" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" spellcheck="false"></textarea>
             <div class="template-note">序号从 1 开始。字符串变量请放在 JSON 引号内，例如 <code>@($"\"user-{UserToken}-{IterationToken}\"")</code>。</div>
             <section class="assertion-editor">
                 <div class="assertion-heading">
@@ -121,7 +142,7 @@
                     <div class="assertion-actions">
                         @if (BusinessAssertion.Conditions.Count > 1)
                         {
-                            <select aria-label="断言组合方式" @bind="BusinessAssertion.Join" disabled="@IsRunning">
+                            <select aria-label="断言组合方式" @bind="BusinessAssertion.Join" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning">
                                 <option value="@BusinessAssertionJoin.And">全部满足（AND）</option>
                                 <option value="@BusinessAssertionJoin.Or">任一满足（OR）</option>
                             </select>
@@ -139,18 +160,18 @@
                         @foreach (BusinessAssertionCondition condition in BusinessAssertion.Conditions)
                         {
                             <div class="assertion-row" @key="condition">
-                                <select aria-label="断言类型" @bind="condition.Type" disabled="@IsRunning">
+                                <select aria-label="断言类型" @bind="condition.Type" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning">
                                     <option value="@BusinessAssertionType.ResponseContains">响应包含内容</option>
                                     <option value="@BusinessAssertionType.JsonPath">JSONPath 条件</option>
                                 </select>
                                 @if (condition.Type == BusinessAssertionType.ResponseContains)
                                 {
-                                    <input class="assertion-value-wide" aria-label="期望包含内容" @bind="condition.ExpectedValue" disabled="@IsRunning" placeholder="例如 success" />
+                                    <input class="assertion-value-wide" aria-label="期望包含内容" @bind="condition.ExpectedValue" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="例如 success" />
                                 }
                                 else
                                 {
-                                    <input aria-label="JSONPath" @bind="condition.JsonPath" disabled="@IsRunning" placeholder="$.data.code 或 $.items[0].id" />
-                                    <select aria-label="比较条件" @bind="condition.Operator" disabled="@IsRunning">
+                                    <input aria-label="JSONPath" @bind="condition.JsonPath" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="$.data.code 或 $.items[0].id" />
+                                    <select aria-label="比较条件" @bind="condition.Operator" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning">
                                         <option value="@BusinessAssertionOperator.Exists">存在</option>
                                         <option value="@BusinessAssertionOperator.NotExists">不存在</option>
                                         <option value="@BusinessAssertionOperator.Equals">等于</option>
@@ -164,7 +185,7 @@
                                     </select>
                                     @if (PressureTestBusinessAssertionEvaluator.RequiresExpectedValue(condition.Operator))
                                     {
-                                        <input aria-label="期望值" @bind="condition.ExpectedValue" disabled="@IsRunning" placeholder="期望值" />
+                                        <input aria-label="期望值" @bind="condition.ExpectedValue" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="期望值" />
                                     }
                                 }
                                 <button class="assertion-remove" title="删除条件" disabled="@IsRunning" @onclick="() => RemoveAssertion(condition)">×</button>
@@ -177,7 +198,7 @@
 
         <section class="pressure-card control-card">
             <div class="progress-block">
-                <div><span>完成进度</span><b>@Snapshot.CompletedRequests.ToString("N0") / @DisplayedTotalRequests.ToString("N0")</b></div>
+                <div><span>完成进度</span><b>@ProgressDescription</b></div>
                 <div class="progress-track"><span style="width: @($"{Snapshot.ProgressPercent:F2}%")"></span></div>
             </div>
             <div class="control-actions">
@@ -188,7 +209,7 @@
                 }
                 else
                 {
-                    <button class="primary start-button" @onclick="StartAsync">▷ 开始压测</button>
+                    <button class="primary start-button" disabled="@(!DraftStorageReady)" @onclick="StartAsync">▷ 开始压测</button>
                 }
             </div>
         </section>
@@ -297,8 +318,8 @@
             <div class="card-heading">
                 <div><h2>运行明细</h2><p>@DetailsDescription</p></div>
                 <div class="details-heading-actions">
-                    <label class="result-toggle" title="开启后，本次压测会在页面内存中保存每次参数化后的请求和完整响应">
-                        <input type="checkbox" @bind="RecordRequestResponse" disabled="@IsRunning" />
+                    <label class="result-toggle" title="开启后在页面内存中保存请求和响应；约 200 MB 后自动清理较旧正文，失败请求优先保留">
+                        <input type="checkbox" @bind="RecordRequestResponse" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
                         <span>记录请求&amp;响应</span>
                     </label>
                     <label class="result-toggle">
@@ -334,7 +355,7 @@
                                 <p title="@request.Error">@(request.Error ?? "—")</p>
                                 @if (Snapshot.RecordsRequestResponse)
                                 {
-                                    <span class="payload-preview" title="@request.Request">@(request.Request ?? "—")</span>
+                                    <span class="payload-preview" title="@RequestDetailText(request)">@RequestDetailText(request)</span>
                                     <span class="payload-preview" title="@ResponseDetailText(request)">@ResponseDetailText(request)</span>
                                     <button class="detail-link" @onclick="() => ToggleRequestDetail(request)">@(ExpandedResultKey == ResultKey(request) ? "收起" : "详情")</button>
                                 }
@@ -342,7 +363,7 @@
                             @if (Snapshot.RecordsRequestResponse && ExpandedResultKey == ResultKey(request))
                             {
                                 <div class="request-result-detail">
-                                    <section><h3>请求内容</h3><pre>@(request.Request ?? "（本次压测未记录请求内容）")</pre></section>
+                                    <section><h3>请求内容</h3><pre>@RequestDetailText(request)</pre></section>
                                     <section><h3>响应内容</h3><pre>@ResponseDetailText(request)</pre></section>
                                 </div>
                             }
@@ -383,8 +404,12 @@
     private InvocationInput Input { get; set; } = new();
     private PressureTestSnapshot Snapshot { get; set; } = new();
     private int UserCount { get; set; } = 10;
+    private PressureTestLimitMode LimitMode { get; set; } = PressureTestLimitMode.RequestCount;
     private int IterationsPerUser { get; set; } = 10;
-    private int RampUpIntervalMs { get; set; }
+    private int DurationLimitSeconds { get; set; } = 60;
+    private int UserStartIntervalMs { get; set; }
+    private int StepStartIntervalSeconds { get; set; }
+    private int StepUserCount { get; set; }
     private int RequestIntervalMs { get; set; }
     private bool RecordRequestResponse { get; set; }
     private bool ShowAllRequests { get; set; }
@@ -399,6 +424,10 @@
     private bool NoticeIsError { get; set; }
     private bool IsRunning { get; set; }
     private bool _hasDraft;
+    private bool DraftStorageReady { get; set; }
+    private bool DraftStorageLoading { get; set; }
+    private int DraftStorageLoadAttempts { get; set; }
+    private bool IsDisposed { get; set; }
     private CancellationTokenSource? _runCancellation;
     private PressureTestConfiguration? _lastRunConfiguration;
     private DateTimeOffset _runStartedAt;
@@ -407,17 +436,38 @@
     private long TotalRequests => UserCount <= 0 || IterationsPerUser <= 0
         ? 0
         : (long)UserCount * IterationsPerUser;
-    private long DisplayedTotalRequests => Snapshot.TotalRequests > 0
-        ? Snapshot.TotalRequests
-        : TotalRequests;
+    private int StepIntervalMaximum => LimitMode == PressureTestLimitMode.Duration
+        ? Math.Clamp(DurationLimitSeconds, 0, 3_600)
+        : 3_600;
+    private string LoadDescription => LimitMode == PressureTestLimitMode.RequestCount
+        ? "N 个并发用户，每个用户顺序发送 M 次"
+        : "N 个并发用户，在总执行时长内持续发送请求";
+    private string LoadHeadingSummary => LimitMode == PressureTestLimitMode.RequestCount
+        ? $"{TotalRequests:N0} 次请求"
+        : $"{DurationLimitSeconds:N0} 秒";
+    private string LoadSummaryValue => LimitMode == PressureTestLimitMode.RequestCount
+        ? TotalRequests.ToString("N0")
+        : $"{DurationLimitSeconds:N0} s";
+    private string LoadSummaryLabel => LimitMode == PressureTestLimitMode.RequestCount
+        ? "计划请求总数"
+        : "执行时长上限";
+    private string ProgressDescription => Snapshot.DurationLimitSeconds > 0
+        ? $"{Math.Min(Snapshot.ElapsedSeconds, Snapshot.DurationLimitSeconds):F2} / {Snapshot.DurationLimitSeconds:N0} s · {Snapshot.CompletedRequests:N0} 次请求"
+        : Snapshot.TotalRequests > 0
+            ? $"{Snapshot.CompletedRequests:N0} / {Snapshot.TotalRequests:N0}"
+            : LimitMode == PressureTestLimitMode.Duration
+                ? $"0.00 / {DurationLimitSeconds:N0} s · 0 次请求"
+                : $"0 / {TotalRequests:N0}";
     private int ResultsPageCount => Math.Max(1,
         (int)Math.Ceiling(FilteredResultCount / (double)ResultsPerPage));
     private string DetailsDescription => Snapshot.CompletedRequests > 0
         ? Snapshot.RecordsRequestResponse
-            ? "本次压测已在当前页面内存中记录完整请求与响应，不写入历史记录或数据库"
+            ? Snapshot.DiscardedPayloadCount > 0
+                ? $"请求与响应正文当前约占 {FormatMegabytes(Snapshot.ApproximatePayloadBytes)} MB；已按约 200 MB 上限清理 {Snapshot.DiscardedPayloadCount:N0} 条较旧正文，失败请求优先保留"
+                : $"本次压测在当前页面内存中记录请求与响应，当前约 {FormatMegabytes(Snapshot.ApproximatePayloadBytes)} MB，不写入历史记录或数据库"
             : "本次压测未记录请求与响应正文，也不写入历史记录或数据库"
         : RecordRequestResponse
-            ? "压测开始后将在当前页面内存中记录完整请求与响应"
+            ? "压测开始后将在当前页面内存中记录请求与响应；约 200 MB 后自动清理较旧正文，失败请求优先保留"
             : "默认不记录请求与响应正文，也不写入历史记录或数据库";
 
     protected override void OnInitialized()
@@ -430,34 +480,97 @@
         }
     }
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
+    protected override Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender || _hasDraft) return;
+        if (DraftStorageReady || DraftStorageLoading || IsDisposed)
+        {
+            return Task.CompletedTask;
+        }
+
+        return InitializeDraftStorageAsync();
+    }
+
+    private async Task InitializeDraftStorageAsync()
+    {
+        DraftStorageLoading = true;
+        bool shouldRetry = false;
         try
         {
-            string? json = await JS.InvokeAsync<string?>("dubboTester.load", SettingsStorageKey);
-            if (!string.IsNullOrWhiteSpace(json))
+            string? settingsJson = await JS.InvokeAsync<string?>("dubboTester.load", SettingsStorageKey);
+            string? draftJson = await JS.InvokeAsync<string?>("dubboTester.indexedDb.loadPressureDraft");
+            PressureTestPageDraft? persistedDraft = string.IsNullOrWhiteSpace(draftJson)
+                ? null
+                : JsonSerializer.Deserialize<PressureTestPageDraft>(draftJson, StorageJsonOptions);
+
+            if (!_hasDraft)
             {
-                Settings = JsonSerializer.Deserialize<TesterSettings>(json, StorageJsonOptions) ?? new TesterSettings();
-                StateHasChanged();
+                Settings = string.IsNullOrWhiteSpace(settingsJson)
+                        ? new TesterSettings()
+                        : JsonSerializer.Deserialize<TesterSettings>(settingsJson, StorageJsonOptions)
+                            ?? new TesterSettings();
+                if (persistedDraft is not null)
+                {
+                    Input = persistedDraft.Invocation;
+                }
             }
+
+            if (persistedDraft is not null)
+            {
+                UserCount = persistedDraft.UserCount;
+                LimitMode = persistedDraft.LimitMode;
+                IterationsPerUser = persistedDraft.IterationsPerUser;
+                DurationLimitSeconds = persistedDraft.DurationLimitSeconds;
+                UserStartIntervalMs = persistedDraft.UserStartIntervalMs;
+                StepStartIntervalSeconds = persistedDraft.StepStartIntervalSeconds;
+                StepUserCount = persistedDraft.StepUserCount;
+                RequestIntervalMs = persistedDraft.RequestIntervalMs;
+                RecordRequestResponse = persistedDraft.RecordRequestResponse;
+                BusinessAssertion = persistedDraft.BusinessAssertion ?? new BusinessAssertionConfiguration();
+            }
+
+            DraftStorageReady = true;
+            DraftStorageLoadAttempts = 0;
+            StateHasChanged();
         }
         catch (Exception exception)
         {
+            DraftStorageLoadAttempts++;
+            shouldRetry = DraftStorageLoadAttempts < 3;
             SetNotice($"读取本地设置失败：{GetErrorMessage(exception)}", true);
             StateHasChanged();
+            if (!shouldRetry)
+            {
+                // Keep the page usable when IndexedDB is unavailable.
+                DraftStorageReady = true;
+            }
+        }
+        finally
+        {
+            DraftStorageLoading = false;
+        }
+
+        if (shouldRetry && !IsDisposed)
+        {
+            await Task.Delay(DraftStorageLoadAttempts * 250);
+            await InitializeDraftStorageAsync();
         }
     }
 
     private async Task StartAsync()
     {
-        if (IsRunning) return;
+        if (IsRunning || !DraftStorageReady) return;
+        await PersistPressureDraftAsync();
         IsRunning = true;
         NoticeIsError = false;
         Notice = "正在建立连接并启动并发任务…";
         Snapshot = new PressureTestSnapshot
         {
-            TotalRequests = (int)Math.Min(TotalRequests, int.MaxValue),
+            TotalRequests = LimitMode == PressureTestLimitMode.RequestCount
+                ? (int)Math.Min(TotalRequests, int.MaxValue)
+                : 0,
+            DurationLimitSeconds = LimitMode == PressureTestLimitMode.Duration
+                ? DurationLimitSeconds
+                : 0,
             IsRunning = true,
             RecordsRequestResponse = RecordRequestResponse
         };
@@ -472,7 +585,9 @@
             ApplySnapshot(snapshot);
             if (snapshot.IsRunning)
             {
-                Notice = $"压测运行中：{snapshot.CompletedRequests:N0} / {snapshot.TotalRequests:N0}";
+                Notice = snapshot.DurationLimitSeconds > 0
+                    ? $"压测运行中：{snapshot.ElapsedSeconds:F1} / {snapshot.DurationLimitSeconds:N0} 秒，已完成 {snapshot.CompletedRequests:N0} 次请求"
+                    : $"压测运行中：{snapshot.CompletedRequests:N0} / {snapshot.TotalRequests:N0}";
             }
             StateHasChanged();
         });
@@ -482,8 +597,12 @@
             var configuration = new PressureTestConfiguration
             {
                 UserCount = UserCount,
+                LimitMode = LimitMode,
                 IterationsPerUser = IterationsPerUser,
-                RampUpIntervalMs = RampUpIntervalMs,
+                DurationLimitSeconds = DurationLimitSeconds,
+                UserStartIntervalMs = UserStartIntervalMs,
+                StepStartIntervalSeconds = StepStartIntervalSeconds,
+                StepUserCount = StepUserCount,
                 RequestIntervalMs = RequestIntervalMs,
                 RecordRequestResponse = RecordRequestResponse,
                 BusinessAssertion = BusinessAssertion.Clone(),
@@ -560,12 +679,22 @@
     private static string ResultKey(PressureTestRequestResult result) =>
         $"{result.UserIndex}:{result.IterationIndex}";
 
+    private static string RequestDetailText(PressureTestRequestResult result) =>
+        result.PayloadDiscarded
+            ? "（已因运行明细内存达到上限而清理）"
+            : result.Request ?? "（本次压测未记录请求内容）";
+
     private static string ResponseDetailText(PressureTestRequestResult result) =>
-        !string.IsNullOrEmpty(result.Response)
+        result.PayloadDiscarded
+            ? "（已因运行明细内存达到上限而清理）"
+            : !string.IsNullOrEmpty(result.Response)
             ? result.Response
             : result.Success
                 ? "（空响应）"
                 : result.Error ?? "（无响应内容）";
+
+    private static string FormatMegabytes(long bytes) =>
+        (bytes / (1024d * 1024d)).ToString("F1", CultureInfo.InvariantCulture);
 
     private void ApplySnapshot(PressureTestSnapshot snapshot)
     {
@@ -608,25 +737,97 @@
         RebuildDisplayedResults();
     }
 
-    private void AddAssertion() => BusinessAssertion.Conditions.Add(new BusinessAssertionCondition());
-
-    private void RemoveAssertion(BusinessAssertionCondition condition) =>
-        BusinessAssertion.Conditions.Remove(condition);
-
-    private void BackToHome()
+    private async Task AddAssertion()
     {
+        BusinessAssertion.Conditions.Add(new BusinessAssertionCondition());
+        await PersistPressureDraftAsync();
+    }
+
+    private async Task RemoveAssertion(BusinessAssertionCondition condition)
+    {
+        BusinessAssertion.Conditions.Remove(condition);
+        await PersistPressureDraftAsync();
+    }
+
+    private async Task BackToHome()
+    {
+        await PersistPressureDraftAsync();
         DraftStore.Capture(Settings, Input);
         Navigation.NavigateTo("/");
     }
 
-    private void FormatTemplate()
+    private async Task FormatTemplate()
     {
         try
         {
             Input.RequestJson = PressureTestTemplateResolver.FormatJsonTemplate(Input.RequestJson);
+            await PersistPressureDraftAsync();
             SetNotice("参数模板已格式化");
         }
         catch (Exception exception) { SetNotice($"模板格式错误：{GetErrorMessage(exception)}", true); }
+    }
+
+    private async Task HandleLimitModeChangedAsync()
+    {
+        ClampStepIntervalToDuration();
+        await PersistPressureDraftAsync();
+    }
+
+    private async Task HandleDurationLimitChangedAsync()
+    {
+        ClampStepIntervalToDuration();
+        await PersistPressureDraftAsync();
+    }
+
+    private async Task HandleStepStartIntervalChangedAsync()
+    {
+        ClampStepIntervalToDuration();
+        await PersistPressureDraftAsync();
+    }
+
+    private void ClampStepIntervalToDuration()
+    {
+        if (LimitMode == PressureTestLimitMode.Duration
+            && DurationLimitSeconds >= 0
+            && StepStartIntervalSeconds > DurationLimitSeconds)
+        {
+            StepStartIntervalSeconds = DurationLimitSeconds;
+        }
+    }
+
+    private async Task PersistPressureDraftAsync()
+    {
+        if (!DraftStorageReady || IsRunning) return;
+
+        var draft = new PressureTestPageDraft
+        {
+            Invocation = Input.Clone(),
+            UserCount = UserCount,
+            LimitMode = LimitMode,
+            IterationsPerUser = IterationsPerUser,
+            DurationLimitSeconds = DurationLimitSeconds,
+            UserStartIntervalMs = UserStartIntervalMs,
+            StepStartIntervalSeconds = StepStartIntervalSeconds,
+            StepUserCount = StepUserCount,
+            RequestIntervalMs = RequestIntervalMs,
+            RecordRequestResponse = RecordRequestResponse,
+            BusinessAssertion = BusinessAssertion.Clone()
+        };
+
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "dubboTester.indexedDb.savePressureDraft",
+                JsonSerializer.Serialize(draft, StorageJsonOptions));
+            await JS.InvokeVoidAsync(
+                "dubboTester.save",
+                SettingsStorageKey,
+                JsonSerializer.Serialize(Settings, StorageJsonOptions));
+        }
+        catch (JSException exception)
+        {
+            SetNotice($"保存压测草稿失败：{GetErrorMessage(exception)}", true);
+        }
     }
 
     private string BuildPolyline(Func<PressureTestPoint, double> selector, bool shareLatencyScale = false)
@@ -718,6 +919,7 @@
 
     public void Dispose()
     {
+        IsDisposed = true;
         _runCancellation?.Cancel();
         _runCancellation?.Dispose();
     }

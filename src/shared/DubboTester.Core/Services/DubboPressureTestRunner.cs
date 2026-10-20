@@ -5,15 +5,19 @@ namespace DubboTester.Services;
 
 public sealed class DubboPressureTestRunner(DubboSession session)
 {
+    public const long MaximumRetainedPayloadBytes = 200L * 1024 * 1024;
     private const int MaximumTotalRequests = 1_000_000;
     private const int MaximumIntervalMilliseconds = 3_600_000;
+    private const int MaximumStepIntervalSeconds = 3_600;
+    private const int MaximumDurationLimitSeconds = 86_400;
+    private const int MaximumRetainedErrorCharacters = 4_096;
 
     public async Task<PressureTestSnapshot> RunAsync(
         PressureTestConfiguration configuration,
         IProgress<PressureTestSnapshot>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        Validate(configuration);
+        ValidateConfiguration(configuration);
         string sample = PressureTestTemplateResolver.Resolve(
             configuration.Invocation.RequestJson,
             1,
@@ -28,16 +32,23 @@ public sealed class DubboPressureTestRunner(DubboSession session)
 
         var state = new RunState(
             configuration.TotalRequests,
+            configuration.LimitMode == PressureTestLimitMode.Duration
+                ? configuration.DurationLimitSeconds
+                : 0,
             configuration.RecordRequestResponse);
-        state.Start();
+        var startGate = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         Task[] workers = Enumerable.Range(1, configuration.UserCount)
             .Select(userIndex => RunUserAsync(
                 configuration,
                 userIndex,
                 state,
+                startGate.Task,
                 cancellationToken))
             .ToArray();
         Task allWorkers = Task.WhenAll(workers);
+        state.Start();
+        startGate.SetResult(true);
         Task reporter = ReportProgressAsync(allWorkers, state, progress);
 
         bool cancelled = false;
@@ -64,26 +75,41 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         PressureTestConfiguration configuration,
         int userIndex,
         RunState state,
+        Task startSignal,
         CancellationToken cancellationToken)
     {
-        long rampUpDelay = (long)(userIndex - 1) * configuration.RampUpIntervalMs;
-        if (rampUpDelay > 0)
+        await startSignal.WaitAsync(cancellationToken);
+        long userStartDelay = CalculateUserStartDelayMilliseconds(configuration, userIndex);
+        if (!await DelayWithinDurationAsync(
+                userStartDelay,
+                configuration,
+                state,
+                cancellationToken))
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(rampUpDelay), cancellationToken);
+            return;
         }
 
         state.ChangeActiveUsers(1);
         try
         {
             for (int iterationIndex = 1;
-                 iterationIndex <= configuration.IterationsPerUser;
+                 ShouldStartRequest(configuration, iterationIndex, state.ElapsedSeconds);
                  iterationIndex++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (iterationIndex > 1 && configuration.RequestIntervalMs > 0)
                 {
-                    await Task.Delay(configuration.RequestIntervalMs, cancellationToken);
+                    if (!await DelayWithinDurationAsync(
+                            configuration.RequestIntervalMs,
+                            configuration,
+                            state,
+                            cancellationToken))
+                    {
+                        break;
+                    }
                 }
+
+                if (!ShouldStartRequest(configuration, iterationIndex, state.ElapsedSeconds)) break;
 
                 InvocationInput invocation = configuration.Invocation.Clone();
                 invocation.RequestJson = PressureTestTemplateResolver.Resolve(
@@ -158,21 +184,70 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         }
     }
 
-    private static void Validate(PressureTestConfiguration configuration)
+    public static void ValidateConfiguration(PressureTestConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(configuration.Settings);
         ArgumentNullException.ThrowIfNull(configuration.Invocation);
         if (configuration.UserCount is < 1 or > 500)
             throw new ArgumentOutOfRangeException(nameof(configuration.UserCount), "并发用户数必须在 1 到 500 之间。");
-        if (configuration.IterationsPerUser is < 1 or > 100_000)
+        if (!Enum.IsDefined(configuration.LimitMode))
+            throw new ArgumentOutOfRangeException(nameof(configuration.LimitMode), "请选择有效的负载上限模式。");
+        if (configuration.LimitMode == PressureTestLimitMode.RequestCount
+            && configuration.IterationsPerUser is < 1 or > 100_000)
             throw new ArgumentOutOfRangeException(nameof(configuration.IterationsPerUser), "每用户发送次数必须在 1 到 100000 之间。");
-        if (configuration.RampUpIntervalMs is < 0 or > MaximumIntervalMilliseconds)
-            throw new ArgumentOutOfRangeException(nameof(configuration.RampUpIntervalMs), "阶梯启动间隔必须在 0 到 3600000 毫秒之间。");
+        if (configuration.LimitMode == PressureTestLimitMode.Duration
+            && configuration.DurationLimitSeconds is < 1 or > MaximumDurationLimitSeconds)
+            throw new ArgumentOutOfRangeException(nameof(configuration.DurationLimitSeconds), "执行时长必须在 1 到 86400 秒之间。");
+        if (configuration.UserStartIntervalMs is < 0 or > MaximumIntervalMilliseconds)
+            throw new ArgumentOutOfRangeException(nameof(configuration.UserStartIntervalMs), "用户启动间隔必须在 0 到 3600000 毫秒之间。");
+        if (configuration.StepStartIntervalSeconds is < 0 or > MaximumStepIntervalSeconds)
+            throw new ArgumentOutOfRangeException(nameof(configuration.StepStartIntervalSeconds), "阶梯启动间隔必须在 0 到 3600 秒之间。");
+        if (configuration.LimitMode == PressureTestLimitMode.Duration
+            && configuration.StepStartIntervalSeconds > configuration.DurationLimitSeconds)
+            throw new ArgumentOutOfRangeException(nameof(configuration.StepStartIntervalSeconds), "时间上限模式下，阶梯启动间隔不能大于执行时长。");
+        if (configuration.StepUserCount < 0 || configuration.StepUserCount > configuration.UserCount)
+            throw new ArgumentOutOfRangeException(nameof(configuration.StepUserCount), "阶梯用户数必须在 0 到并发用户数之间。");
         if (configuration.RequestIntervalMs is < 0 or > MaximumIntervalMilliseconds)
             throw new ArgumentOutOfRangeException(nameof(configuration.RequestIntervalMs), "请求间隔必须在 0 到 3600000 毫秒之间。");
-        if ((long)configuration.UserCount * configuration.IterationsPerUser > MaximumTotalRequests)
+        if (configuration.LimitMode == PressureTestLimitMode.RequestCount
+            && (long)configuration.UserCount * configuration.IterationsPerUser > MaximumTotalRequests)
             throw new ArgumentOutOfRangeException(nameof(configuration.IterationsPerUser), $"单次压测最多允许 {MaximumTotalRequests:N0} 个请求。");
+    }
+
+    public static bool ShouldStartRequest(
+        PressureTestConfiguration configuration,
+        int iterationIndex,
+        double elapsedSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return configuration.LimitMode switch
+        {
+            PressureTestLimitMode.RequestCount => iterationIndex <= configuration.IterationsPerUser,
+            PressureTestLimitMode.Duration => elapsedSeconds < configuration.DurationLimitSeconds,
+            _ => false
+        };
+    }
+
+    public static long CalculateUserStartDelayMilliseconds(
+        PressureTestConfiguration configuration,
+        int userIndex)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (userIndex < 1 || userIndex > configuration.UserCount)
+            throw new ArgumentOutOfRangeException(nameof(userIndex), "用户序号必须在并发用户范围内。");
+
+        int zeroBasedUserIndex = userIndex - 1;
+        if (configuration.StepStartIntervalSeconds == 0 || configuration.StepUserCount == 0)
+        {
+            return checked((long)zeroBasedUserIndex * configuration.UserStartIntervalMs);
+        }
+
+        int stepIndex = zeroBasedUserIndex / configuration.StepUserCount;
+        int userIndexWithinStep = zeroBasedUserIndex % configuration.StepUserCount;
+        long stepStartDelay = checked((long)stepIndex * configuration.StepStartIntervalSeconds * 1_000);
+        long delayWithinStep = checked((long)userIndexWithinStep * configuration.UserStartIntervalMs);
+        return checked(stepStartDelay + delayWithinStep);
     }
 
     public static double Percentile(IReadOnlyList<double> sortedValues, double percentile)
@@ -185,6 +260,31 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         return sortedValues[index];
     }
 
+    private static async Task<bool> DelayWithinDurationAsync(
+        long delayMilliseconds,
+        PressureTestConfiguration configuration,
+        RunState state,
+        CancellationToken cancellationToken)
+    {
+        if (configuration.LimitMode != PressureTestLimitMode.Duration)
+        {
+            if (delayMilliseconds > 0)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(delayMilliseconds), cancellationToken);
+            }
+            return true;
+        }
+
+        long remainingMilliseconds = state.GetRemainingDurationMilliseconds(
+            configuration.DurationLimitSeconds);
+        if (remainingMilliseconds <= 0) return false;
+        if (delayMilliseconds <= 0) return true;
+
+        long actualDelay = Math.Min(delayMilliseconds, remainingMilliseconds);
+        await Task.Delay(TimeSpan.FromMilliseconds(actualDelay), cancellationToken);
+        return delayMilliseconds < remainingMilliseconds;
+    }
+
     private static string GetErrorMessage(Exception exception)
     {
         Exception current = exception;
@@ -192,7 +292,10 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         return current.Message;
     }
 
-    private sealed class RunState(int totalRequests, bool recordsRequestResponse)
+    private sealed class RunState(
+        int totalRequests,
+        int durationLimitSeconds,
+        bool recordsRequestResponse)
     {
         private const int MaximumTimelinePoints = 600;
         private const int MaximumLiveResults = 200;
@@ -203,6 +306,7 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         private readonly List<double> _percentileSample = [];
         private readonly List<PressureTestPoint> _timeline = [];
         private readonly List<PressureTestRequestResult> _requestResults = [];
+        private readonly PressureTestPayloadRetention _payloadRetention = new(MaximumRetainedPayloadBytes);
         private int _successCount;
         private int _failureCount;
         private int _activeUsers;
@@ -214,6 +318,13 @@ public sealed class DubboPressureTestRunner(DubboSession session)
 
         public void Start() => _stopwatch.Start();
         public void Stop() => _stopwatch.Stop();
+        public double ElapsedSeconds => _stopwatch.Elapsed.TotalSeconds;
+
+        public long GetRemainingDurationMilliseconds(int limitSeconds)
+        {
+            double remaining = limitSeconds - _stopwatch.Elapsed.TotalSeconds;
+            return remaining <= 0 ? 0 : (long)Math.Ceiling(remaining * 1_000);
+        }
 
         public void ChangeActiveUsers(int change)
         {
@@ -263,10 +374,21 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                     elapsed,
                     _stopwatch.Elapsed.TotalSeconds,
                     success,
-                    success ? null : error ?? "请求失败。",
+                    success ? null : RetainErrorSummary(error),
                     recordsRequestResponse ? request : null,
                     recordsRequestResponse ? response : null));
+                _payloadRetention.TrackAndTrim(_requestResults);
             }
+        }
+
+        private static string RetainErrorSummary(string? error)
+        {
+            string value = error ?? "请求失败。";
+            return value.Length <= MaximumRetainedErrorCharacters
+                ? value
+                : string.Concat(
+                    value.AsSpan(0, MaximumRetainedErrorCharacters),
+                    "…（错误信息过长，已截断）");
         }
 
         public PressureTestSnapshot CreateSnapshot(bool isRunning, bool isCancelled, bool addPoint)
@@ -313,6 +435,7 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                 return new PressureTestSnapshot
                 {
                     TotalRequests = totalRequests,
+                    DurationLimitSeconds = durationLimitSeconds,
                     CompletedRequests = completed,
                     SuccessCount = _successCount,
                     FailureCount = _failureCount,
@@ -329,6 +452,8 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                     IsCancelled = isCancelled,
                     RecordsRequestResponse = recordsRequestResponse,
                     PercentilesAreSampled = isRunning && _elapsed.Count > MaximumLivePercentileSamples,
+                    ApproximatePayloadBytes = _payloadRetention.ApproximateBytes,
+                    DiscardedPayloadCount = _payloadRetention.DiscardedCount,
                     Timeline = _timeline.ToArray(),
                     RequestResults = requestResults
                 };

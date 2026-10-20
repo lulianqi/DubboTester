@@ -12,4 +12,8 @@
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="DubboTester.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -36,7 +36,10 @@
                 </svg>
                 <span>MCP 服务</span>
             </a>
-            <button class="icon-button" title="设置" @onclick="OpenSettings">⚙</button>
+            <button class="icon-button"
+                    title="@(ClientStorageReady ? "设置" : "正在读取本地设置")"
+                    disabled="@(!ClientStorageReady)"
+                    @onclick="OpenSettings">⚙</button>
         </div>
         <div class="notice @(NoticeIsError ? "notice-error" : NoticeIsWarning ? "notice-warning" : null)">
             <span class="notice-dot"></span>
@@ -44,6 +47,10 @@
             @if (IsCatalogActive)
             {
                 <button class="text-button notice-cancel" @onclick="StopCatalogLoad">结束加载</button>
+            }
+            else if (ClientStorageLoadFailed)
+            {
+                <button class="text-button notice-cancel" @onclick="RetryClientStorageAsync">重试本地存储</button>
             }
         </div>
     </header>
@@ -224,6 +231,7 @@
                             <select class="overload-picker"
                                     aria-label="选择重载签名"
                                     title="选择重载签名"
+                                    disabled="@IsSignatureBusy"
                                     value="@SelectedSignatureIndex"
                                     @onchange="SignatureChanged">
                                 @for (int index = 0; index < Signatures.Count; index++)
@@ -311,11 +319,11 @@
                     <button class="primary send-button split-send-main" disabled="@(IsInvoking || IsProviderTesting)" @onclick="InvokeAsync">
                         @if (IsInvoking)
                         {
-                            <span class="spinner light"></span><span>发送中</span>
+                            <span class="spinner light send-button-icon"></span><span class="send-button-label">发送中</span>
                         }
                         else
                         {
-                            <span>▷</span><span>发送</span>
+                            <span class="send-button-icon">▷</span><span class="send-button-label">发送</span>
                         }
                     </button>
                     <details class="send-more" data-dismiss-on-outside>
@@ -361,7 +369,8 @@
             </section>
         </section>
 
-        <aside class="history-panel panel @(HistoryCollapsed ? "collapsed" : null)">
+        <aside class="history-panel panel @(HistoryCollapsed ? "collapsed" : null) @(DetailedHistory is not null ? "detail-open" : null)"
+               @onclick="CloseHistoryDetails">
             <div class="panel-heading history-heading">
                 @if (HistoryCollapsed)
                 {
@@ -377,7 +386,7 @@
                         <span>@VisibleHistory.Count() 条</span>
                     </div>
                     <div class="history-actions">
-                        <button class="heart-filter @(FavoritesOnly ? "active" : null)" title="只看收藏" @onclick="() => FavoritesOnly = !FavoritesOnly">♥</button>
+                        <button class="heart-filter @(FavoritesOnly ? "active" : null)" title="只看收藏" @onclick="ToggleFavoritesOnly">♥</button>
                         <button class="subtle-button danger" disabled="@(History.Count == 0)" @onclick="ClearHistoryAsync">清空</button>
                         <button class="history-collapse-button"
                                 title="折叠历史记录"
@@ -388,37 +397,141 @@
             </div>
             @if (!HistoryCollapsed)
             {
-                <label class="save-response-setting">
-                    <input type="checkbox" @bind="Settings.SaveResponseInHistory" @bind:after="PersistSettingsAsync" />
-                    <span>历史中保存响应正文</span>
-                </label>
-                <div class="history-list">
+                <div class="history-filter-bar">
+                    <label class="save-response-setting">
+                        <input type="checkbox" @bind="Settings.SaveResponseInHistory" @bind:after="PersistSettingsAsync" />
+                        <span>历史中保存响应正文</span>
+                    </label>
+                    <label class="history-search-box">
+                        <span aria-hidden="true">⌕</span>
+                        <input value="@HistorySearchText"
+                               @oninput="HistorySearchChanged"
+                               placeholder="搜索历史记录…"
+                               aria-label="搜索历史记录" />
+                        @if (!string.IsNullOrWhiteSpace(HistorySearchText))
+                        {
+                            <button type="button" title="清空历史搜索" aria-label="清空历史搜索" @onclick="ClearHistorySearch">×</button>
+                        }
+                    </label>
+                </div>
+                <div class="history-list" @onscroll="CloseHistoryDetails">
                     @foreach (InvocationHistory item in VisibleHistory)
                     {
-                        <article class="history-card @(item.Success ? null : "failed")" @key="item.Id">
-                            <button class="history-main" @onclick="() => LoadHistoryAsync(item)">
+                        <article id="@HistoryElementId(item)"
+                                 class="history-card @(item.Success ? null : "failed") @(DetailedHistory?.Id == item.Id ? "selected" : null)"
+                                 title="点击查看详情"
+                                 @onclick="() => ShowHistoryDetailsAsync(item)"
+                                 @onclick:stopPropagation="true"
+                                 @key="item.Id">
+                            <div class="history-main">
                                 <div class="history-meta">
                                     <span class="history-id">#@HistoryNumber(item)</span>
                                     <span>@item.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</span>
                                     <span>@item.ElapsedMs ms</span>
+                                    <button type="button"
+                                            class="history-load-link"
+                                            title="载入到发送区域"
+                                            @onclick="() => LoadHistoryAsync(item)"
+                                            @onclick:stopPropagation="true">载入</button>
                                 </div>
                                 <strong title="@item.Endpoint">@item.Endpoint</strong>
                                 <code title="@item.RequestJson">@OneLine(item.RequestJson)</code>
-                            </button>
+                            </div>
                             <div class="history-card-actions">
-                                <button class="favorite @(item.Favorite ? "active" : null)" title="收藏" @onclick="() => ToggleFavoriteAsync(item)">♥</button>
-                                <button title="删除" @onclick="() => DeleteHistoryAsync(item)">×</button>
+                                <button type="button"
+                                        class="favorite @(item.Favorite ? "active" : null)"
+                                        title="收藏"
+                                        @onclick="() => ToggleFavoriteAsync(item)"
+                                        @onclick:stopPropagation="true">♥</button>
+                                <button type="button"
+                                        title="删除"
+                                        @onclick="() => DeleteHistoryAsync(item)"
+                                        @onclick:stopPropagation="true">×</button>
                             </div>
                         </article>
                     }
                     @if (!VisibleHistory.Any())
                     {
-                        <div class="empty-state compact"><span>暂无历史记录</span></div>
+                        <div class="empty-state compact">
+                            <span>@(string.IsNullOrWhiteSpace(HistorySearchText) ? "暂无历史记录" : "没有匹配的历史记录")</span>
+                        </div>
                     }
                 </div>
             }
         </aside>
     </main>
+
+    @if (DetailedHistory is not null && HistoryDetailPlacement is not null)
+    {
+        <button type="button"
+                class="history-detail-dismiss"
+                aria-label="关闭历史详情"
+                @onclick="CloseHistoryDetails"></button>
+        <section class="history-detail-popover arrow-@HistoryDetailPlacement.ArrowSide"
+                 style="@HistoryDetailStyle"
+                 role="dialog"
+                 aria-label="历史记录详情"
+                 @onclick:stopPropagation="true">
+            <header>
+                <div>
+                    <div class="history-detail-heading">
+                        <strong>历史详情 #@HistoryNumber(DetailedHistory)</strong>
+                        <span class="result-state @(DetailedHistory.Success ? "success" : "failed")">
+                            @(DetailedHistory.Success ? "成功" : "失败")
+                        </span>
+                    </div>
+                    <small>@DetailedHistory.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") · @DetailedHistory.ElapsedMs ms</small>
+                </div>
+                <button type="button" title="关闭" aria-label="关闭历史详情" @onclick="CloseHistoryDetails">×</button>
+            </header>
+            <div class="history-detail-content">
+                <div class="history-detail-endpoint" title="@DetailedHistory.Endpoint">@DetailedHistory.Endpoint</div>
+                <dl>
+                    <dt>调用方式</dt>
+                    <dd>@HistoryRouteText(DetailedHistory)</dd>
+                    <dt>目标地址</dt>
+                    <dd>@HistoryTargetText(DetailedHistory)</dd>
+                    @if (!string.IsNullOrWhiteSpace(DetailedHistory.Version))
+                    {
+                        <dt>服务版本</dt>
+                        <dd>@DetailedHistory.Version</dd>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(DetailedHistory.Group))
+                    {
+                        <dt>服务分组</dt>
+                        <dd>@DetailedHistory.Group</dd>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(DetailedHistory.JavaParameterTypes))
+                    {
+                        <dt>Java 类型</dt>
+                        <dd>@DetailedHistory.JavaParameterTypes</dd>
+                    }
+                </dl>
+                <section>
+                    <h3>请求参数</h3>
+                    <pre>@DetailedHistory.RequestJson</pre>
+                </section>
+                @if (!string.IsNullOrWhiteSpace(DetailedHistory.AttachmentsJson))
+                {
+                    <section>
+                        <h3>Attachments</h3>
+                        <pre>@DetailedHistory.AttachmentsJson</pre>
+                    </section>
+                }
+                <section>
+                    <h3>响应正文</h3>
+                    @if (string.IsNullOrWhiteSpace(DetailedHistory.Response))
+                    {
+                        <p class="history-detail-empty">该记录未保存响应正文</p>
+                    }
+                    else
+                    {
+                        <pre class="@(DetailedHistory.Success ? null : "failed")">@DetailedHistory.Response</pre>
+                    }
+                </section>
+            </div>
+        </section>
+    }
 </div>
 
 @if (AboutVisible)
@@ -644,8 +757,8 @@
     private const string DubboNetVersion = "2.0.0";
     private string DubboTesterVersion => Configuration["DubboTester:Version"] ?? "未知";
     private const string SettingsStorageKey = "dubbo-tester.settings.v1";
-    private const string HistoryStorageKey = "dubbo-tester.history.v1";
-    private const string RequestDraftStorageKey = "dubbo-tester.request-drafts.v1";
+    private const string LegacyHistoryStorageKey = "dubbo-tester.history.v1";
+    private const string LegacyRequestDraftStorageKey = "dubbo-tester.request-drafts.v1";
     private const string HistoryCollapsedStorageKey = "dubbo-tester.history-collapsed.v1";
     private const string CatalogWidthStorageKey = "dubbo-tester.catalog-width.v1";
     private static readonly JsonSerializerOptions StorageJsonOptions = new(JsonSerializerDefaults.Web);
@@ -670,6 +783,7 @@
     private InvocationOutput? LastOutput { get; set; }
     private ResponseResultHistoryBuffer RetainedResultHistory { get; } = new();
     private string SearchText { get; set; } = string.Empty;
+    private string HistorySearchText { get; set; } = string.Empty;
     private string ResultText { get; set; } = string.Empty;
     private bool KeepResultHistory { get; set; }
     private long ResultContextVersion { get; set; }
@@ -682,6 +796,8 @@
     private bool SignatureInfoVisible { get; set; }
     private bool FavoritesOnly { get; set; }
     private bool HistoryCollapsed { get; set; }
+    private InvocationHistory? DetailedHistory { get; set; }
+    private AnchoredPopoverPlacement? HistoryDetailPlacement { get; set; }
     private bool IsCatalogBusy { get; set; }
     private CancellationTokenSource? CatalogLoadCancellation { get; set; }
     private CancellationTokenSource? CatalogPreloadTrackingCancellation { get; set; }
@@ -692,9 +808,15 @@
     private bool SignatureReadFailed { get; set; }
     private bool IsProviderTesting { get; set; }
     private bool IsInvoking { get; set; }
+    private bool ClientStorageReady { get; set; }
+    private bool ClientStorageLoading { get; set; }
+    private bool ClientStorageLoadFailed { get; set; }
+    private bool IndexedDbAvailable { get; set; } = true;
+    private int ClientStorageLoadAttempts { get; set; }
     private bool? ProviderTestSucceeded { get; set; }
     private bool IsDirectProviderRoute => Input.Route == InvocationRoute.DirectProvider;
     private int SelectedSignatureIndex { get; set; }
+    private SignatureSelectionPreference? PendingHistorySignaturePreference { get; set; }
     private MethodSignatureItem? SelectedSignature =>
         SelectedSignatureIndex >= 0 && SelectedSignatureIndex < Signatures.Count
             ? Signatures[SelectedSignatureIndex]
@@ -735,8 +857,27 @@
             .GroupBy(service => service.RegistryRootPath, StringComparer.Ordinal)
             .OrderBy(group => group.Key, StringComparer.Ordinal);
 
-    private IEnumerable<InvocationHistory> VisibleHistory =>
-        FavoritesOnly ? History.Where(item => item.Favorite) : History;
+    private IEnumerable<InvocationHistory> VisibleHistory
+    {
+        get
+        {
+            IEnumerable<InvocationHistory> items = FavoritesOnly
+                ? History.Where(item => item.Favorite)
+                : History;
+            if (string.IsNullOrWhiteSpace(HistorySearchText))
+            {
+                return items;
+            }
+
+            string searchText = HistorySearchText.Trim();
+            return items.Where(item => HistoryMatchesSearch(item, searchText));
+        }
+    }
+
+    private string HistoryDetailStyle => HistoryDetailPlacement is null
+        ? string.Empty
+        : FormattableString.Invariant(
+            $"left:{HistoryDetailPlacement.Left}px;top:{HistoryDetailPlacement.Top}px;width:{HistoryDetailPlacement.Width}px;height:{HistoryDetailPlacement.Height}px;--history-detail-arrow-top:{HistoryDetailPlacement.ArrowTop}px;");
 
     private string ProviderTestClass => !IsDirectProviderRoute ? string.Empty : ProviderTestSucceeded switch
     {
@@ -759,41 +900,120 @@
         }
         catch (JSDisconnectedException)
         {
-            return;
+            // The Blazor circuit can reconnect during debugging or deployment.
+            // Client storage initialization below will retry on a later render.
         }
 
-        if (!firstRender)
+        if (ClientStorageReady || ClientStorageLoading)
         {
             return;
         }
 
+        await InitializeClientStorageAsync();
+    }
+
+    private async Task InitializeClientStorageAsync()
+    {
+        ClientStorageLoading = true;
+        bool shouldRetry = false;
         try
         {
             string? settingsJson = await JS.InvokeAsync<string?>("dubboTester.load", SettingsStorageKey);
-            string? historyJson = await JS.InvokeAsync<string?>("dubboTester.load", HistoryStorageKey);
-            string? requestDraftsJson = await JS.InvokeAsync<string?>("dubboTester.loadSession", RequestDraftStorageKey);
             string? historyCollapsed = await JS.InvokeAsync<string?>("dubboTester.load", HistoryCollapsedStorageKey);
             bool hasPressureDraft = PressureDraft.TryGet(
                 out TesterSettings pressureSettings,
                 out InvocationInput pressureInvocation);
-            Settings = hasPressureDraft
-                ? pressureSettings
-                : DeserializeOrDefault(settingsJson, new TesterSettings());
+            bool settingsWereInvalid = false;
+            if (hasPressureDraft)
+            {
+                Settings = pressureSettings;
+            }
+            else
+            {
+                try
+                {
+                    Settings = string.IsNullOrWhiteSpace(settingsJson)
+                        ? new TesterSettings()
+                        : JsonSerializer.Deserialize<TesterSettings>(settingsJson, StorageJsonOptions)
+                            ?? new TesterSettings();
+                }
+                catch (JsonException)
+                {
+                    Settings = new TesterSettings();
+                    settingsWereInvalid = true;
+                }
+            }
             if (hasPressureDraft) Input = pressureInvocation;
-            History = DeserializeOrDefault(historyJson, new List<InvocationHistory>());
-            RequestDrafts = DeserializeOrDefault(
-                requestDraftsJson,
-                new Dictionary<string, string>(StringComparer.Ordinal));
             HistoryCollapsed = bool.TryParse(historyCollapsed, out bool collapsed) && collapsed;
+
+            string? historyJson = null;
+            Exception? indexedDbError = null;
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                try
+                {
+                    await JS.InvokeVoidAsync(
+                        "dubboTester.indexedDb.initialize",
+                        LegacyHistoryStorageKey,
+                        LegacyRequestDraftStorageKey);
+                    historyJson = await JS.InvokeAsync<string?>("dubboTester.indexedDb.loadHistory");
+                    IndexedDbAvailable = true;
+                    indexedDbError = null;
+                    break;
+                }
+                catch (JSException exception)
+                {
+                    indexedDbError = exception;
+                    if (attempt < 3) await Task.Delay(attempt * 200);
+                }
+            }
+
+            if (indexedDbError is not null)
+            {
+                IndexedDbAvailable = false;
+                ClientStorageLoadFailed = true;
+                historyJson = await JS.InvokeAsync<string?>(
+                    "dubboTester.load",
+                    LegacyHistoryStorageKey);
+            }
+
+            bool historyWasInvalid = false;
+            try
+            {
+                History = string.IsNullOrWhiteSpace(historyJson)
+                    ? []
+                    : JsonSerializer.Deserialize<List<InvocationHistory>>(historyJson, StorageJsonOptions) ?? [];
+            }
+            catch (JsonException)
+            {
+                History = [];
+                historyWasInvalid = true;
+            }
             Settings.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(Settings.HistoryLimit);
             bool historyTrimmed = HistoryRetentionPolicy.TrimToLimit(
                 History,
                 Settings.HistoryLimit);
             SettingsDraft = Settings.Clone();
-            StateHasChanged();
-            if (historyTrimmed)
+            ClientStorageReady = true;
+            ClientStorageLoadAttempts = 0;
+
+            if (settingsWereInvalid)
             {
-                await PersistHistoryAsync();
+                SetWarning("浏览器中的连接设置无法解析，当前已使用默认值；只有主动保存时才会覆盖原数据");
+            }
+            else if (historyWasInvalid)
+            {
+                SetWarning("浏览器中的调用历史无法解析，原数据尚未被自动覆盖");
+            }
+            else if (indexedDbError is not null)
+            {
+                SetWarning($"IndexedDB 暂时不可用，调用历史和请求草稿仅在当前页面保留：{GetErrorMessage(indexedDbError)}");
+            }
+
+            StateHasChanged();
+            if (historyTrimmed && IndexedDbAvailable)
+            {
+                await ReplaceHistoryAsync();
             }
 
             if (!string.IsNullOrWhiteSpace(Settings.ZooKeeperAddress))
@@ -803,16 +1023,31 @@
         }
         catch (Exception exception)
         {
+            ClientStorageLoadAttempts++;
+            ClientStorageLoadFailed = ClientStorageLoadAttempts >= 3;
+            shouldRetry = !ClientStorageLoadFailed;
             SetNotice($"读取本地设置失败：{exception.Message}", true);
             StateHasChanged();
         }
+        finally
+        {
+            ClientStorageLoading = false;
+        }
+
+        if (shouldRetry && !IsDisposed)
+        {
+            await Task.Delay(ClientStorageLoadAttempts * 250);
+            await InitializeClientStorageAsync();
+        }
     }
 
-    private static T DeserializeOrDefault<T>(string? json, T fallback)
+    private async Task RetryClientStorageAsync()
     {
-        if (string.IsNullOrWhiteSpace(json)) return fallback;
-        try { return JsonSerializer.Deserialize<T>(json, StorageJsonOptions) ?? fallback; }
-        catch (JsonException) { return fallback; }
+        ClientStorageLoadAttempts = 0;
+        ClientStorageLoadFailed = false;
+        ClientStorageReady = false;
+        IndexedDbAvailable = true;
+        await InitializeClientStorageAsync();
     }
 
     private async Task RefreshCatalogAsync(bool forceRefresh = false)
@@ -1100,11 +1335,13 @@
         TypeStructureVisible = false;
         SignatureInfoVisible = false;
         SelectedSignatureIndex = 0;
+        PendingHistorySignaturePreference = null;
         await LoadSignaturesAsync(false);
     }
 
     private void OnMethodInputChanged()
     {
+        PendingHistorySignaturePreference = null;
         ResultContextVersion++;
         if (!KeepResultHistory) ClearResult();
     }
@@ -1113,6 +1350,8 @@
     {
         if (IsSignatureBusy || string.IsNullOrWhiteSpace(Input.ServiceName) || string.IsNullOrWhiteSpace(Input.MethodName)) return;
         if (showInformationOnSuccess) SignatureInfoVisible = false;
+        SignatureSelectionPreference? preferredSignature = CaptureSignaturePreference();
+        await PersistCurrentRequestDraftAsync();
         IsSignatureBusy = true;
         SignatureReadFailed = false;
         try
@@ -1122,11 +1361,19 @@
                 Input.ServiceName.Trim(),
                 Input.MethodName.Trim(),
                 Input.RegistryRootPath)).ToList();
-            SelectedSignatureIndex = 0;
             if (Signatures.Count > 0)
             {
-                await ApplySignatureAsync(Signatures[0]);
-                SetNotice($"已取得 {Signatures.Count} 个方法签名（来源：{Signatures[0].Source}）");
+                SelectedSignatureIndex = preferredSignature is null
+                    ? 0
+                    : MethodSignatureSelectionResolver.FindBestMatchIndex(
+                        Signatures,
+                        preferredSignature.ParameterTypes,
+                        preferredSignature.Version,
+                        preferredSignature.Group);
+                MethodSignatureItem selectedSignature = Signatures[SelectedSignatureIndex];
+                await ApplySignatureAsync(selectedSignature);
+                PendingHistorySignaturePreference = null;
+                SetNotice($"已取得 {Signatures.Count} 个方法签名（来源：{selectedSignature.Source}）");
                 if (showInformationOnSuccess) SignatureInfoVisible = true;
             }
             else
@@ -1147,6 +1394,38 @@
                 + $"多个类型用英文逗号分隔。详情：{GetErrorMessage(exception)}");
         }
         finally { IsSignatureBusy = false; }
+    }
+
+    private SignatureSelectionPreference? CaptureSignaturePreference()
+    {
+        MethodSignatureItem? selected = SelectedSignature;
+        if (selected is not null
+            && string.Equals(selected.ServiceName, Input.ServiceName.Trim(), StringComparison.Ordinal)
+            && string.Equals(selected.MethodName, Input.MethodName.Trim(), StringComparison.Ordinal))
+        {
+            return new SignatureSelectionPreference(
+                selected.ServiceName,
+                selected.MethodName,
+                selected.ParameterTypes,
+                selected.Version,
+                selected.Group);
+        }
+
+        if (PendingHistorySignaturePreference is not null
+            && string.Equals(PendingHistorySignaturePreference.ServiceName, Input.ServiceName.Trim(), StringComparison.Ordinal)
+            && string.Equals(PendingHistorySignaturePreference.MethodName, Input.MethodName.Trim(), StringComparison.Ordinal))
+        {
+            return PendingHistorySignaturePreference;
+        }
+
+        return string.IsNullOrWhiteSpace(Input.JavaParameterTypes)
+            ? null
+            : new SignatureSelectionPreference(
+                Input.ServiceName.Trim(),
+                Input.MethodName.Trim(),
+                JsonArgumentParser.ParseJavaTypes(Input.JavaParameterTypes),
+                Input.Version,
+                Input.Group);
     }
 
     private async Task SignatureChanged(ChangeEventArgs args)
@@ -1257,8 +1536,8 @@
                 PresentResult(submittedAt, submittedInput, output, responseText);
             }
             SetNotice(output.Success ? $"调用成功，用时 {output.RequestElapsed} ms" : $"调用失败：{output.Error}", !output.Success);
-            AddHistory(output, responseText, submittedInput);
-            await PersistHistoryAsync();
+            HistoryMutation historyMutation = AddHistory(output, responseText, submittedInput);
+            await PersistHistoryMutationAsync(historyMutation);
         }
         catch (Exception exception)
         {
@@ -1272,8 +1551,8 @@
             if (!string.IsNullOrWhiteSpace(submittedInput.ServiceName)
                 && !string.IsNullOrWhiteSpace(submittedInput.MethodName))
             {
-                AddHistory(output, message, submittedInput);
-                await PersistHistoryAsync();
+                HistoryMutation historyMutation = AddHistory(output, message, submittedInput);
+                await PersistHistoryMutationAsync(historyMutation);
             }
         }
         finally { IsInvoking = false; }
@@ -1287,9 +1566,11 @@
         Navigation.NavigateTo("/pressure-test");
     }
 
-    private void AddHistory(InvocationOutput output, string responseText, InvocationInput submittedInput)
+    private HistoryMutation AddHistory(InvocationOutput output, string responseText, InvocationInput submittedInput)
     {
-        History.Insert(0, new InvocationHistory
+        CloseHistoryDetails();
+        string[] previousIds = History.Select(item => item.Id).ToArray();
+        var added = new InvocationHistory
         {
             Success = output.Success,
             Route = submittedInput.Route,
@@ -1305,12 +1586,20 @@
             AttachmentsJson = submittedInput.AttachmentsJson,
             Response = Settings.SaveResponseInHistory ? responseText : string.Empty,
             ElapsedMs = output.RequestElapsed
-        });
+        };
+        History.Insert(0, added);
         HistoryRetentionPolicy.TrimToLimit(History, Settings.HistoryLimit);
+        string[] removedIds = previousIds
+            .Where(id => History.All(item => item.Id != id))
+            .ToArray();
+        return new HistoryMutation(
+            History.Any(item => item.Id == added.Id) ? added : null,
+            removedIds);
     }
 
     private async Task LoadHistoryAsync(InvocationHistory item)
     {
+        CloseHistoryDetails();
         await PersistCurrentRequestDraftAsync();
         ResultContextVersion++;
         ClearResult();
@@ -1330,6 +1619,12 @@
         Input.Version = item.Version;
         Input.Group = item.Group;
         Input.AttachmentsJson = item.AttachmentsJson;
+        PendingHistorySignaturePreference = new SignatureSelectionPreference(
+            item.ServiceName,
+            item.MethodName,
+            JsonArgumentParser.ParseJavaTypes(item.JavaParameterTypes),
+            item.Version,
+            item.Group);
         await PersistCurrentRequestDraftAsync();
         if (!string.IsNullOrWhiteSpace(item.Response))
         {
@@ -1402,12 +1697,99 @@
         RetainedResultHistory.Clear();
     }
 
-    private async Task ToggleFavoriteAsync(InvocationHistory item) { item.Favorite = !item.Favorite; await PersistHistoryAsync(); }
-    private async Task DeleteHistoryAsync(InvocationHistory item) { History.Remove(item); await PersistHistoryAsync(); }
-    private async Task ClearHistoryAsync() { History.Clear(); await PersistHistoryAsync(); }
+    private async Task ShowHistoryDetailsAsync(InvocationHistory item)
+    {
+        if (DetailedHistory?.Id == item.Id)
+        {
+            CloseHistoryDetails();
+            return;
+        }
+
+        AnchoredPopoverPlacement placement;
+        try
+        {
+            placement = await JS.InvokeAsync<AnchoredPopoverPlacement>(
+                "dubboTester.positionPopover",
+                HistoryElementId(item),
+                420,
+                520);
+        }
+        catch (JSException)
+        {
+            placement = new AnchoredPopoverPlacement();
+        }
+
+        DetailedHistory = item;
+        HistoryDetailPlacement = placement;
+    }
+
+    private void CloseHistoryDetails()
+    {
+        DetailedHistory = null;
+        HistoryDetailPlacement = null;
+    }
+
+    private void HistorySearchChanged(ChangeEventArgs args)
+    {
+        HistorySearchText = args.Value?.ToString() ?? string.Empty;
+        CloseHistoryDetails();
+    }
+
+    private void ClearHistorySearch()
+    {
+        HistorySearchText = string.Empty;
+        CloseHistoryDetails();
+    }
+
+    private void ToggleFavoritesOnly()
+    {
+        FavoritesOnly = !FavoritesOnly;
+        CloseHistoryDetails();
+    }
+
+    private async Task ToggleFavoriteAsync(InvocationHistory item)
+    {
+        item.Favorite = !item.Favorite;
+        if (FavoritesOnly && !item.Favorite)
+        {
+            CloseHistoryDetails();
+        }
+        await PutHistoryAsync(item);
+    }
+
+    private async Task DeleteHistoryAsync(InvocationHistory item)
+    {
+        if (DetailedHistory?.Id == item.Id)
+        {
+            CloseHistoryDetails();
+        }
+        History.Remove(item);
+        await DeleteHistoryAsync([item.Id]);
+    }
+
+    private async Task ClearHistoryAsync()
+    {
+        CloseHistoryDetails();
+        History.Clear();
+        if (!IndexedDbAvailable)
+        {
+            await PersistLegacyHistoryAsync();
+            return;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync("dubboTester.indexedDb.clearHistory");
+        }
+        catch (JSException exception)
+        {
+            await FallBackFromIndexedDbAsync(exception);
+        }
+    }
 
     private async Task ToggleHistoryCollapsedAsync()
     {
+        CloseHistoryDetails();
         HistoryCollapsed = !HistoryCollapsed;
         await JS.InvokeVoidAsync(
             "dubboTester.save",
@@ -1426,32 +1808,61 @@
         if (key is null) return;
 
         RequestDrafts[key] = Input.RequestJson;
+        if (!IndexedDbAvailable) return;
         try
         {
             await JS.InvokeVoidAsync(
-                "dubboTester.saveSession",
-                RequestDraftStorageKey,
-                JsonSerializer.Serialize(RequestDrafts, StorageJsonOptions));
+                "dubboTester.indexedDb.putRequestDraft",
+                key,
+                Input.RequestJson);
         }
-        catch (Microsoft.JSInterop.JSException)
+        catch (JSException exception)
         {
-            // Keep the in-memory draft when sessionStorage is unavailable or full.
+            IndexedDbAvailable = false;
+            ClientStorageLoadFailed = true;
+            SetWarning($"请求参数草稿未能写入 IndexedDB，已保留在当前页面内存中：{GetErrorMessage(exception)}");
         }
     }
 
-    private Task RestoreCurrentRequestDraftAsync()
+    private async Task RestoreCurrentRequestDraftAsync()
     {
         string? key = CurrentRequestDraftKey();
-        if (key is not null && RequestDrafts.TryGetValue(key, out string? requestJson))
+        if (key is null)
+        {
+            Input.RequestJson = "{}";
+            return;
+        }
+
+        if (RequestDrafts.TryGetValue(key, out string? requestJson))
         {
             Input.RequestJson = requestJson;
+            return;
         }
-        else
+
+        if (IndexedDbAvailable)
         {
-            // Do not carry another method/overload's arguments into a newly selected method.
-            Input.RequestJson = "{}";
+            try
+            {
+                requestJson = await JS.InvokeAsync<string?>(
+                    "dubboTester.indexedDb.getRequestDraft",
+                    key);
+                if (requestJson is not null)
+                {
+                    RequestDrafts[key] = requestJson;
+                    Input.RequestJson = requestJson;
+                    return;
+                }
+            }
+            catch (JSException exception)
+            {
+                IndexedDbAvailable = false;
+                ClientStorageLoadFailed = true;
+                SetWarning($"读取请求参数草稿失败：{GetErrorMessage(exception)}");
+            }
         }
-        return Task.CompletedTask;
+
+        // Do not carry another method/overload's arguments into a newly selected method.
+        Input.RequestJson = "{}";
     }
 
     private string? CurrentRequestDraftKey()
@@ -1499,22 +1910,50 @@
 
     private async Task SaveSettingsAsync()
     {
+        if (!ClientStorageReady)
+        {
+            SetWarning("本地设置尚未加载完成，请稍后重试");
+            return;
+        }
+
         SettingsDraft.RegistryRootPath = SettingsDraft.RegistryRootPath.Trim();
         SettingsDraft.MetadataRootPath = SettingsDraft.MetadataRootPath.Trim();
         SettingsDraft.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(SettingsDraft.HistoryLimit);
         Settings = SettingsDraft.Clone();
         SettingsVisible = false;
-        bool historyTrimmed = HistoryRetentionPolicy.TrimToLimit(History, Settings.HistoryLimit);
+        string[] previousIds = History.Select(item => item.Id).ToArray();
+        HistoryRetentionPolicy.TrimToLimit(History, Settings.HistoryLimit);
+        string[] removedIds = previousIds
+            .Where(id => History.All(item => item.Id != id))
+            .ToArray();
         await PersistSettingsAsync();
-        if (historyTrimmed)
+        if (removedIds.Length > 0)
         {
-            await PersistHistoryAsync();
+            await DeleteHistoryAsync(removedIds);
         }
         await RefreshCatalogAsync(false);
     }
 
-    private async Task PersistSettingsAsync() =>
-        await JS.InvokeVoidAsync("dubboTester.save", SettingsStorageKey, JsonSerializer.Serialize(Settings, StorageJsonOptions));
+    private async Task PersistSettingsAsync()
+    {
+        if (!ClientStorageReady)
+        {
+            SetWarning("本地设置尚未加载完成，本次修改尚未保存");
+            return;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "dubboTester.save",
+                SettingsStorageKey,
+                JsonSerializer.Serialize(Settings, StorageJsonOptions));
+        }
+        catch (JSException exception)
+        {
+            SetNotice($"保存本地设置失败：{GetErrorMessage(exception)}", true);
+        }
+    }
 
     private async Task PersistCatalogRefreshModeAsync()
     {
@@ -1522,8 +1961,110 @@
         await PersistSettingsAsync();
     }
 
-    private async Task PersistHistoryAsync() =>
-        await JS.InvokeVoidAsync("dubboTester.save", HistoryStorageKey, JsonSerializer.Serialize(History, StorageJsonOptions));
+    private async Task ReplaceHistoryAsync()
+    {
+        if (!IndexedDbAvailable)
+        {
+            await PersistLegacyHistoryAsync();
+            return;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "dubboTester.indexedDb.replaceHistory",
+                JsonSerializer.Serialize(History, StorageJsonOptions));
+        }
+        catch (JSException exception)
+        {
+            await FallBackFromIndexedDbAsync(exception);
+        }
+    }
+
+    private async Task PersistHistoryMutationAsync(HistoryMutation mutation)
+    {
+        if (!IndexedDbAvailable)
+        {
+            await PersistLegacyHistoryAsync();
+            return;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "dubboTester.indexedDb.applyHistoryMutation",
+                mutation.Added is null
+                    ? null
+                    : JsonSerializer.Serialize(mutation.Added, StorageJsonOptions),
+                mutation.RemovedIds);
+        }
+        catch (JSException exception)
+        {
+            await FallBackFromIndexedDbAsync(exception);
+        }
+    }
+
+    private async Task PutHistoryAsync(InvocationHistory item)
+    {
+        if (!IndexedDbAvailable)
+        {
+            await PersistLegacyHistoryAsync();
+            return;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "dubboTester.indexedDb.putHistory",
+                JsonSerializer.Serialize(item, StorageJsonOptions));
+        }
+        catch (JSException exception)
+        {
+            await FallBackFromIndexedDbAsync(exception);
+        }
+    }
+
+    private async Task DeleteHistoryAsync(string[] ids)
+    {
+        if (ids.Length == 0) return;
+        if (!IndexedDbAvailable)
+        {
+            await PersistLegacyHistoryAsync();
+            return;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync("dubboTester.indexedDb.deleteHistory", ids);
+        }
+        catch (JSException exception)
+        {
+            await FallBackFromIndexedDbAsync(exception);
+        }
+    }
+
+    private async Task FallBackFromIndexedDbAsync(JSException exception)
+    {
+        IndexedDbAvailable = false;
+        ClientStorageLoadFailed = true;
+        SetWarning($"IndexedDB 写入失败，已回退到浏览器兼容存储：{GetErrorMessage(exception)}");
+        await PersistLegacyHistoryAsync();
+    }
+
+    private async Task PersistLegacyHistoryAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "dubboTester.save",
+                LegacyHistoryStorageKey,
+                JsonSerializer.Serialize(History, StorageJsonOptions));
+        }
+        catch (JSException exception)
+        {
+            SetNotice($"调用历史未能持久化：{GetErrorMessage(exception)}", true);
+        }
+    }
 
     private async Task CopyResultAsync() { await JS.InvokeVoidAsync("dubboTester.copy", ResultText); SetNotice("响应已复制到剪贴板"); }
     private async Task DownloadResultAsync() =>
@@ -1543,6 +2084,35 @@
         NoticeIsWarning = true;
     }
     private int HistoryNumber(InvocationHistory item) { int index = History.IndexOf(item); return index < 0 ? 0 : History.Count - index; }
+    private static string HistoryElementId(InvocationHistory item) => $"history-{item.Id}";
+    private static string HistoryRouteText(InvocationHistory item) =>
+        item.Route == InvocationRoute.Registry ? "注册中心" : "直连 Provider";
+    private static string HistoryTargetText(InvocationHistory item) =>
+        item.Route == InvocationRoute.Registry
+            ? $"注册目录 {(!string.IsNullOrWhiteSpace(item.RegistryRootPath) ? item.RegistryRootPath : "/")}"
+            : $"{item.Host}:{item.Port}";
+
+    private static bool HistoryMatchesSearch(InvocationHistory item, string searchText)
+    {
+        const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
+        bool Matches(string? value) => value?.Contains(searchText, comparison) == true;
+
+        return Matches(item.Endpoint)
+            || Matches(item.RequestJson)
+            || Matches(item.Response)
+            || Matches(item.JavaParameterTypes)
+            || Matches(item.AttachmentsJson)
+            || Matches(item.RegistryRootPath)
+            || Matches(item.Host)
+            || Matches(item.Port.ToString())
+            || Matches(item.Version)
+            || Matches(item.Group)
+            || Matches(item.ElapsedMs.ToString())
+            || Matches(item.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"))
+            || Matches(item.Success ? "成功" : "失败")
+            || Matches(HistoryRouteText(item));
+    }
+
     private static string OneLine(string value) => value.Replace("\r", string.Empty).Replace("\n", " ").Trim();
     private static string GetErrorMessage(Exception exception)
     {
@@ -1557,4 +2127,25 @@
         CatalogLoadCancellation?.Cancel();
         CatalogPreloadTrackingCancellation?.Cancel();
     }
+
+    private sealed class AnchoredPopoverPlacement
+    {
+        public double Left { get; set; } = 12;
+        public double Top { get; set; } = 84;
+        public double Width { get; set; } = 420;
+        public double Height { get; set; } = 520;
+        public double ArrowTop { get; set; } = 24;
+        public string ArrowSide { get; set; } = "right";
+    }
+
+    private sealed record HistoryMutation(
+        InvocationHistory? Added,
+        string[] RemovedIds);
+
+    private sealed record SignatureSelectionPreference(
+        string ServiceName,
+        string MethodName,
+        string[] ParameterTypes,
+        string? Version,
+        string? Group);
 }
