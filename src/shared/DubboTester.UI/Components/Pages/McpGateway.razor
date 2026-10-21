@@ -182,7 +182,17 @@
         </section>
 
         <section class="mcp-card enabled-card">
-            <div class="mcp-card-heading compact"><div><h2>已配置工具</h2><p>配置会保留；只有在当前连接环境校验通过的工具才会对 MCP 暴露</p></div><div class="configured-heading-actions"><strong>@AvailableConfigurationCount / @Config.Methods.Count 可用</strong><button class="secondary small-button" disabled="@(IsBusy || Config.Methods.Count == 0 || string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))" @onclick="RevalidateToolsAsync">@(IsValidatingTools ? "校验中…" : "重新校验")</button><button class="primary small-button" @onclick="OpenAddDialog">＋ 添加配置</button></div></div>
+            <div class="mcp-card-heading compact">
+                <div><h2>已配置工具</h2><p>配置会保留；只有在当前连接环境校验通过的工具才会对 MCP 暴露</p></div>
+                <div class="configured-heading-actions">
+                    <strong>@AvailableConfigurationCount / @Config.Methods.Count 可用</strong>
+                    <button class="link-button availability-check-link"
+                            title="重新读取当前注册中心的服务、方法和签名，判断各工具是否仍可对 MCP 客户端提供服务；不会删除现有配置。"
+                            disabled="@(IsBusy || Config.Methods.Count == 0 || string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))"
+                            @onclick="RevalidateToolsAsync">@(IsValidatingTools ? "校验中…" : "可用性校验")</button>
+                    <button class="primary small-button" @onclick="OpenAddDialog">＋ 添加配置</button>
+                </div>
+            </div>
             <div class="configured-list">
                 @if (Config.Methods.Count == 0)
                 {
@@ -208,11 +218,38 @@
         </section>
 
         <section class="mcp-card history-card-mcp">
-            <div class="mcp-card-heading compact"><div><h2>MCP 调用记录</h2><p>共 @McpHistoryTotalCount 条，仅保存在内存，最多保留 @Config.HistoryLimit 条</p></div><button class="link-button danger" disabled="@(McpHistoryTotalCount == 0)" @onclick="ClearMcpHistory">清空</button></div>
+            <div class="mcp-card-heading compact mcp-history-heading">
+                <div class="mcp-history-title"><h2>MCP 调用记录</h2><p>@McpHistoryCountText，仅保存在内存，最多保留 @Config.HistoryLimit 条</p></div>
+                <div class="mcp-history-filters" role="search" aria-label="筛选 MCP 调用记录">
+                    <input aria-label="按工具名称筛选"
+                           title="输入工具名称中的任意内容进行筛选"
+                           placeholder="筛选工具名称"
+                           @bind="McpHistoryToolNameFilter"
+                           @bind:event="oninput"
+                           @bind:after="ApplyMcpHistoryFilters" />
+                    <input aria-label="按请求内容筛选"
+                           title="输入请求内容中的任意文本进行筛选"
+                           placeholder="筛选请求内容"
+                           @bind="McpHistoryRequestFilter"
+                           @bind:event="oninput"
+                           @bind:after="ApplyMcpHistoryFilters" />
+                    <input aria-label="按响应内容筛选"
+                           title="输入响应或错误内容中的任意文本进行筛选"
+                           placeholder="筛选响应内容"
+                           @bind="McpHistoryResponseFilter"
+                           @bind:event="oninput"
+                           @bind:after="ApplyMcpHistoryFilters" />
+                    @if (HasMcpHistoryFilters)
+                    {
+                        <button type="button" class="link-button" title="清除全部筛选条件" @onclick="ResetMcpHistoryFilters">重置</button>
+                    }
+                </div>
+                <button class="link-button danger" disabled="@(McpHistoryOverallCount == 0)" @onclick="ClearMcpHistory">清空</button>
+            </div>
             <div class="mcp-history">
                 @if (McpHistoryTotalCount == 0)
                 {
-                    <div class="mcp-empty small">暂无 MCP 调用</div>
+                    <div class="mcp-empty small">@(McpHistoryOverallCount > 0 ? "没有符合筛选条件的 MCP 调用" : "暂无 MCP 调用")</div>
                 }
                 else
                 {
@@ -473,6 +510,10 @@
     private IReadOnlyList<McpCallRecord> History { get; set; } = [];
     private int McpHistoryPageNumber { get; set; } = 1;
     private int McpHistoryTotalCount { get; set; }
+    private int McpHistoryOverallCount { get; set; }
+    private string McpHistoryToolNameFilter { get; set; } = string.Empty;
+    private string McpHistoryRequestFilter { get; set; } = string.Empty;
+    private string McpHistoryResponseFilter { get; set; } = string.Empty;
     private string? ExpandedMcpRecordId { get; set; }
     private string SearchText { get; set; } = string.Empty;
     private string Notice { get; set; } = "配置 ZooKeeper 并扫描服务，然后为需要暴露的方法启用 MCP。";
@@ -563,6 +604,13 @@
         && string.IsNullOrEmpty(DialogValidationMessage);
     private int McpHistoryPageCount => Math.Max(1,
         (int)Math.Ceiling(McpHistoryTotalCount / (double)McpHistoryPageSize));
+    private bool HasMcpHistoryFilters =>
+        !string.IsNullOrWhiteSpace(McpHistoryToolNameFilter)
+        || !string.IsNullOrWhiteSpace(McpHistoryRequestFilter)
+        || !string.IsNullOrWhiteSpace(McpHistoryResponseFilter);
+    private string McpHistoryCountText => HasMcpHistoryFilters
+        ? $"共 {McpHistoryOverallCount} 条，筛选出 {McpHistoryTotalCount} 条"
+        : $"共 {McpHistoryOverallCount} 条";
 
     private void ToggleGlobalSettings() =>
         GlobalSettingsExpanded = !GlobalSettingsExpanded;
@@ -604,13 +652,22 @@
     {
         McpCallRecordPage page = Gateway.GetHistoryPage(
             McpHistoryPageNumber,
-            McpHistoryPageSize);
+            McpHistoryPageSize,
+            McpHistoryToolNameFilter,
+            McpHistoryRequestFilter,
+            McpHistoryResponseFilter);
         McpHistoryTotalCount = page.TotalCount;
+        McpHistoryOverallCount = page.OverallCount;
         int pageCount = McpHistoryPageCount;
         if (McpHistoryPageNumber > pageCount)
         {
             McpHistoryPageNumber = pageCount;
-            page = Gateway.GetHistoryPage(McpHistoryPageNumber, McpHistoryPageSize);
+            page = Gateway.GetHistoryPage(
+                McpHistoryPageNumber,
+                McpHistoryPageSize,
+                McpHistoryToolNameFilter,
+                McpHistoryRequestFilter,
+                McpHistoryResponseFilter);
         }
         History = page.Items;
         if (ExpandedMcpRecordId is not null
@@ -627,6 +684,21 @@
         McpHistoryPageNumber = target;
         ExpandedMcpRecordId = null;
         RefreshMcpHistoryPage();
+    }
+
+    private void ApplyMcpHistoryFilters()
+    {
+        McpHistoryPageNumber = 1;
+        ExpandedMcpRecordId = null;
+        RefreshMcpHistoryPage();
+    }
+
+    private void ResetMcpHistoryFilters()
+    {
+        McpHistoryToolNameFilter = string.Empty;
+        McpHistoryRequestFilter = string.Empty;
+        McpHistoryResponseFilter = string.Empty;
+        ApplyMcpHistoryFilters();
     }
 
     private void ToggleMcpRecord(string id) =>
@@ -698,7 +770,7 @@
         if (IsValidatingTools || Config.Methods.Count == 0) return;
 
         IsValidatingTools = true;
-        SetNotice("正在当前连接环境中重新校验所有 MCP 工具…", false);
+        SetNotice("正在当前连接环境中校验所有 MCP 工具的可用性…", false);
         try
         {
             McpToolValidationSummary summary = await Gateway.RevalidateConfiguredToolsAsync();
@@ -712,7 +784,7 @@
         catch (Exception exception)
         {
             Config = Gateway.GetConfiguration();
-            SetNotice($"重新校验失败：{exception.Message}", true);
+            SetNotice($"可用性校验失败：{exception.Message}", true);
         }
         finally
         {

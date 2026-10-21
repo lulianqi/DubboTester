@@ -147,4 +147,5 @@ public sealed class McpCallRecord
 
 public sealed record McpCallRecordPage(
     IReadOnlyList<McpCallRecord> Items,
-    int TotalCount);
+    int TotalCount,
+    int OverallCount);

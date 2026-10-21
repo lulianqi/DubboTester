@@ -82,9 +82,66 @@ public sealed class McpGatewayTests
             McpCallRecordPage page = gateway.GetHistoryPage(2, 500);
 
             Assert.Equal(250, page.TotalCount);
+            Assert.Equal(250, page.OverallCount);
             Assert.Equal(100, page.Items.Count);
             Assert.Equal("101", page.Items[0].Id);
             Assert.Equal("200", page.Items[^1].Id);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void HistoryPaging_FiltersToolRequestAndResponseContent()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"dubbo-tester-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var gateway = new McpGatewayService(
+                new TestAppDataDirectoryProvider(directory),
+                new DubboCatalogCache(),
+                new TestRequestContextAccessor());
+            var historyField = typeof(McpGatewayService).GetField(
+                "_history",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var history = Assert.IsType<List<McpCallRecord>>(historyField?.GetValue(gateway));
+            history.AddRange(
+            [
+                new McpCallRecord
+                {
+                    Id = "1",
+                    ToolName = "dubbo_alpha",
+                    RequestJson = "{\"name\":\"first\"}",
+                    Response = "created"
+                },
+                new McpCallRecord
+                {
+                    Id = "2",
+                    ToolName = "dubbo_beta",
+                    RequestJson = "{\"name\":\"needle\"}",
+                    Response = "ok"
+                },
+                new McpCallRecord
+                {
+                    Id = "3",
+                    ToolName = "dubbo_alpha_extra",
+                    RequestJson = "[]",
+                    Error = "remote problem"
+                }
+            ]);
+
+            McpCallRecordPage toolPage = gateway.GetHistoryPage(1, toolName: "ALPHA");
+            McpCallRecordPage requestPage = gateway.GetHistoryPage(1, requestContent: "NEEDLE");
+            McpCallRecordPage responsePage = gateway.GetHistoryPage(1, responseContent: "PROBLEM");
+
+            Assert.Equal(3, toolPage.OverallCount);
+            Assert.Equal(2, toolPage.TotalCount);
+            Assert.Equal(["1", "3"], toolPage.Items.Select(item => item.Id));
+            Assert.Equal("2", Assert.Single(requestPage.Items).Id);
+            Assert.Equal("3", Assert.Single(responsePage.Items).Id);
         }
         finally
         {

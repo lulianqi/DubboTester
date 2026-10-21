@@ -8,8 +8,19 @@ public enum BusinessAssertionJoin
 
 public enum BusinessAssertionType
 {
-    ResponseContains,
-    JsonPath
+    ResponseContains = 0,
+    JsonPath = 1,
+    ResponseRegex = 2
+}
+
+public enum ResponseTextMatchOperator
+{
+    Contains,
+    StartsWith,
+    EndsWith,
+    NotContains,
+    Equals,
+    NotEquals
 }
 
 public enum BusinessAssertionOperator
@@ -35,6 +46,7 @@ public enum PressureTestLimitMode
 public sealed class BusinessAssertionCondition
 {
     public BusinessAssertionType Type { get; set; } = BusinessAssertionType.ResponseContains;
+    public ResponseTextMatchOperator ResponseOperator { get; set; } = ResponseTextMatchOperator.Contains;
     public string JsonPath { get; set; } = "$.code";
     public BusinessAssertionOperator Operator { get; set; } = BusinessAssertionOperator.Equals;
     public string ExpectedValue { get; set; } = string.Empty;
@@ -64,6 +76,7 @@ public sealed class PressureTestConfiguration
     public int StepStartIntervalSeconds { get; set; }
     public int StepUserCount { get; set; }
     public int RequestIntervalMs { get; set; }
+    public double SlowRequestThresholdMilliseconds { get; set; } = 500;
     public bool RecordRequestResponse { get; set; }
     public BusinessAssertionConfiguration BusinessAssertion { get; set; } = new();
     public required TesterSettings Settings { get; init; }
@@ -85,6 +98,7 @@ public sealed class PressureTestPageDraft
     public int StepStartIntervalSeconds { get; set; }
     public int StepUserCount { get; set; }
     public int RequestIntervalMs { get; set; }
+    public double SlowRequestThresholdMilliseconds { get; set; } = 500;
     public bool RecordRequestResponse { get; set; }
     public BusinessAssertionConfiguration BusinessAssertion { get; set; } = new();
 }
@@ -113,6 +127,22 @@ public readonly record struct PressureTestRequestResult(
     string? Response = null,
     bool PayloadDiscarded = false);
 
+public sealed record PressureTestDistributionBucket(
+    double StartedAtSeconds,
+    double EndedAtSeconds,
+    int TotalRequests,
+    int FailedRequests,
+    int SlowRequests)
+{
+    public double ErrorRate => TotalRequests == 0
+        ? 0
+        : FailedRequests * 100d / TotalRequests;
+
+    public double SlowRate => TotalRequests == 0
+        ? 0
+        : SlowRequests * 100d / TotalRequests;
+}
+
 public sealed class PressureTestSnapshot
 {
     public DateTimeOffset StartedAt { get; init; }
@@ -138,6 +168,7 @@ public sealed class PressureTestSnapshot
     public long ApproximatePayloadBytes { get; init; }
     public int DiscardedPayloadCount { get; init; }
     public IReadOnlyList<PressureTestPoint> Timeline { get; init; } = [];
+    public IReadOnlyList<PressureTestDistributionBucket> DistributionBuckets { get; init; } = [];
     public IReadOnlyList<PressureTestRequestResult> RequestResults { get; init; } = [];
 
     public double ProgressPercent => DurationLimitSeconds > 0

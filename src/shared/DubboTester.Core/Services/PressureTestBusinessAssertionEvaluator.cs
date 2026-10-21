@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DubboTester.Models;
 
 namespace DubboTester.Services;
@@ -9,6 +11,10 @@ public readonly record struct BusinessAssertionEvaluation(bool Success, string? 
 
 public static class PressureTestBusinessAssertionEvaluator
 {
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
+    private static readonly ConcurrentDictionary<string, Regex> ResponseRegexCache =
+        new(StringComparer.Ordinal);
+
     public static void Validate(BusinessAssertionConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -18,9 +24,31 @@ public static class PressureTestBusinessAssertionEvaluator
             if (condition.Type == BusinessAssertionType.ResponseContains)
             {
                 if (string.IsNullOrEmpty(condition.ExpectedValue))
-                    throw new ArgumentException($"业务断言第 {index + 1} 条的包含内容不能为空。");
+                    throw new ArgumentException($"业务断言第 {index + 1} 条的匹配目标不能为空。");
+                if (!Enum.IsDefined(condition.ResponseOperator))
+                    throw new ArgumentException($"业务断言第 {index + 1} 条的响应匹配条件无效。");
                 continue;
             }
+
+            if (condition.Type == BusinessAssertionType.ResponseRegex)
+            {
+                if (string.IsNullOrEmpty(condition.ExpectedValue))
+                    throw new ArgumentException($"业务断言第 {index + 1} 条的正则表达式不能为空。");
+                try
+                {
+                    _ = GetResponseRegex(condition.ExpectedValue);
+                }
+                catch (ArgumentException exception)
+                {
+                    throw new ArgumentException(
+                        $"业务断言第 {index + 1} 条的正则表达式无效：{exception.Message}",
+                        exception);
+                }
+                continue;
+            }
+
+            if (condition.Type != BusinessAssertionType.JsonPath)
+                throw new ArgumentException($"业务断言第 {index + 1} 条的类型无效。");
 
             if (string.IsNullOrWhiteSpace(condition.JsonPath)
                 || !condition.JsonPath.TrimStart().StartsWith('$'))
@@ -61,8 +89,9 @@ public static class PressureTestBusinessAssertionEvaluator
             {
                 evaluations.Add(condition.Type switch
                 {
-                    BusinessAssertionType.ResponseContains => EvaluateContains(condition, response),
+                    BusinessAssertionType.ResponseContains => EvaluateResponseText(condition, response),
                     BusinessAssertionType.JsonPath => EvaluateJsonPath(condition, document, jsonError),
+                    BusinessAssertionType.ResponseRegex => EvaluateResponseRegex(condition, response),
                     _ => (false, "不支持的业务断言类型")
                 });
             }
@@ -96,12 +125,54 @@ public static class PressureTestBusinessAssertionEvaluator
         value is not BusinessAssertionOperator.Exists
             and not BusinessAssertionOperator.NotExists;
 
-    private static (bool Success, string Description) EvaluateContains(
+    private static (bool Success, string Description) EvaluateResponseText(
         BusinessAssertionCondition condition,
         string response)
     {
-        bool success = response.Contains(condition.ExpectedValue, StringComparison.Ordinal);
-        return (success, $"响应应包含“{condition.ExpectedValue}”");
+        bool success = condition.ResponseOperator switch
+        {
+            ResponseTextMatchOperator.Contains => response.Contains(
+                condition.ExpectedValue,
+                StringComparison.Ordinal),
+            ResponseTextMatchOperator.StartsWith => response.StartsWith(
+                condition.ExpectedValue,
+                StringComparison.Ordinal),
+            ResponseTextMatchOperator.EndsWith => response.EndsWith(
+                condition.ExpectedValue,
+                StringComparison.Ordinal),
+            ResponseTextMatchOperator.NotContains => !response.Contains(
+                condition.ExpectedValue,
+                StringComparison.Ordinal),
+            ResponseTextMatchOperator.Equals => string.Equals(
+                response,
+                condition.ExpectedValue,
+                StringComparison.Ordinal),
+            ResponseTextMatchOperator.NotEquals => !string.Equals(
+                response,
+                condition.ExpectedValue,
+                StringComparison.Ordinal),
+            _ => false
+        };
+        return (success, Describe(condition));
+    }
+
+    private static (bool Success, string Description) EvaluateResponseRegex(
+        BusinessAssertionCondition condition,
+        string response)
+    {
+        try
+        {
+            bool success = GetResponseRegex(condition.ExpectedValue).IsMatch(response);
+            return (success, Describe(condition));
+        }
+        catch (ArgumentException exception)
+        {
+            return (false, $"响应正则表达式无效：{exception.Message}");
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return (false, "响应正则匹配超时");
+        }
     }
 
     private static (bool Success, string Description) EvaluateJsonPath(
@@ -139,7 +210,21 @@ public static class PressureTestBusinessAssertionEvaluator
     private static string Describe(BusinessAssertionCondition condition)
     {
         if (condition.Type == BusinessAssertionType.ResponseContains)
-            return $"响应包含“{condition.ExpectedValue}”";
+        {
+            return condition.ResponseOperator switch
+            {
+                ResponseTextMatchOperator.Contains => $"响应内容包含“{condition.ExpectedValue}”",
+                ResponseTextMatchOperator.StartsWith => $"响应内容以“{condition.ExpectedValue}”开头",
+                ResponseTextMatchOperator.EndsWith => $"响应内容以“{condition.ExpectedValue}”结尾",
+                ResponseTextMatchOperator.NotContains => $"响应内容不包含“{condition.ExpectedValue}”",
+                ResponseTextMatchOperator.Equals => $"响应内容等于“{condition.ExpectedValue}”",
+                ResponseTextMatchOperator.NotEquals => $"响应内容不等于“{condition.ExpectedValue}”",
+                _ => $"响应内容使用 {condition.ResponseOperator} 匹配“{condition.ExpectedValue}”"
+            };
+        }
+
+        if (condition.Type == BusinessAssertionType.ResponseRegex)
+            return $"响应匹配正则“{condition.ExpectedValue}”";
 
         string operation = condition.Operator switch
         {
@@ -159,6 +244,11 @@ public static class PressureTestBusinessAssertionEvaluator
             ? $"{condition.JsonPath} {operation} {condition.ExpectedValue}"
             : $"{condition.JsonPath} {operation}";
     }
+
+    private static Regex GetResponseRegex(string pattern) =>
+        ResponseRegexCache.GetOrAdd(
+            pattern,
+            static value => new Regex(value, RegexOptions.CultureInvariant, RegexTimeout));
 
     private static bool TryResolve(JsonElement root, string path, out JsonElement result)
     {

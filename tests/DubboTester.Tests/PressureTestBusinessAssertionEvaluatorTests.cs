@@ -1,5 +1,6 @@
 using DubboTester.Models;
 using DubboTester.Services;
+using System.Text.Json;
 using Xunit;
 
 namespace DubboTester.Tests;
@@ -125,5 +126,93 @@ public sealed class PressureTestBusinessAssertionEvaluatorTests
 
         Assert.Throws<ArgumentException>(() =>
             PressureTestBusinessAssertionEvaluator.Validate(configuration));
+    }
+
+    [Theory]
+    [InlineData(ResponseTextMatchOperator.Contains, "middle")]
+    [InlineData(ResponseTextMatchOperator.StartsWith, "prefix")]
+    [InlineData(ResponseTextMatchOperator.EndsWith, "suffix")]
+    [InlineData(ResponseTextMatchOperator.NotContains, "missing")]
+    [InlineData(ResponseTextMatchOperator.Equals, "prefix-middle-suffix")]
+    [InlineData(ResponseTextMatchOperator.NotEquals, "different")]
+    public void Evaluate_SupportsCommonResponseTextConditions(
+        ResponseTextMatchOperator responseOperator,
+        string expectedValue)
+    {
+        var configuration = new BusinessAssertionConfiguration
+        {
+            Conditions =
+            [
+                new BusinessAssertionCondition
+                {
+                    Type = BusinessAssertionType.ResponseContains,
+                    ResponseOperator = responseOperator,
+                    ExpectedValue = expectedValue
+                }
+            ]
+        };
+
+        BusinessAssertionEvaluation result =
+            PressureTestBusinessAssertionEvaluator.Evaluate(configuration, "prefix-middle-suffix");
+
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void Evaluate_SupportsResponseRegularExpressions()
+    {
+        var configuration = new BusinessAssertionConfiguration
+        {
+            Conditions =
+            [
+                new BusinessAssertionCondition
+                {
+                    Type = BusinessAssertionType.ResponseRegex,
+                    ExpectedValue = "\\\"code\\\"\\s*:\\s*2\\d{2}"
+                }
+            ]
+        };
+
+        BusinessAssertionEvaluation result =
+            PressureTestBusinessAssertionEvaluator.Evaluate(configuration, Response);
+
+        Assert.True(result.Success);
+        Assert.Contains("响应匹配正则", PressureTestBusinessAssertionEvaluator.Describe(configuration));
+    }
+
+    [Fact]
+    public void Validate_RejectsInvalidResponseRegularExpression()
+    {
+        var configuration = new BusinessAssertionConfiguration
+        {
+            Conditions =
+            [
+                new BusinessAssertionCondition
+                {
+                    Type = BusinessAssertionType.ResponseRegex,
+                    ExpectedValue = "["
+                }
+            ]
+        };
+
+        ArgumentException exception = Assert.Throws<ArgumentException>(() =>
+            PressureTestBusinessAssertionEvaluator.Validate(configuration));
+
+        Assert.Contains("正则表达式无效", exception.Message);
+    }
+
+    [Fact]
+    public void Deserialize_OldResponseAssertionDefaultsToContains()
+    {
+        const string json = """
+            { "type": 0, "expectedValue": "success" }
+            """;
+
+        BusinessAssertionCondition? condition = JsonSerializer.Deserialize<BusinessAssertionCondition>(
+            json,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.NotNull(condition);
+        Assert.Equal(ResponseTextMatchOperator.Contains, condition.ResponseOperator);
     }
 }

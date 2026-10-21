@@ -35,7 +35,8 @@ public sealed class DubboPressureTestRunner(DubboSession session)
             configuration.LimitMode == PressureTestLimitMode.Duration
                 ? configuration.DurationLimitSeconds
                 : 0,
-            configuration.RecordRequestResponse);
+            configuration.RecordRequestResponse,
+            configuration.SlowRequestThresholdMilliseconds);
         var startGate = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         Task[] workers = Enumerable.Range(1, configuration.UserCount)
@@ -211,6 +212,9 @@ public sealed class DubboPressureTestRunner(DubboSession session)
             throw new ArgumentOutOfRangeException(nameof(configuration.StepUserCount), "阶梯用户数必须在 0 到并发用户数之间。");
         if (configuration.RequestIntervalMs is < 0 or > MaximumIntervalMilliseconds)
             throw new ArgumentOutOfRangeException(nameof(configuration.RequestIntervalMs), "请求间隔必须在 0 到 3600000 毫秒之间。");
+        if (!double.IsFinite(configuration.SlowRequestThresholdMilliseconds)
+            || configuration.SlowRequestThresholdMilliseconds <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configuration.SlowRequestThresholdMilliseconds), "慢请求阈值必须大于 0 毫秒。");
         if (configuration.LimitMode == PressureTestLimitMode.RequestCount
             && (long)configuration.UserCount * configuration.IterationsPerUser > MaximumTotalRequests)
             throw new ArgumentOutOfRangeException(nameof(configuration.IterationsPerUser), $"单次压测最多允许 {MaximumTotalRequests:N0} 个请求。");
@@ -296,7 +300,8 @@ public sealed class DubboPressureTestRunner(DubboSession session)
     private sealed class RunState(
         int totalRequests,
         int durationLimitSeconds,
-        bool recordsRequestResponse)
+        bool recordsRequestResponse,
+        double slowRequestThresholdMilliseconds)
     {
         private const int MaximumTimelinePoints = 600;
         private const int MaximumLiveResults = 200;
@@ -310,6 +315,8 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         private readonly PressureTestPayloadRetention _payloadRetention = new(MaximumRetainedPayloadBytes);
         private readonly PressureTestThroughputWindow _throughputWindow = new(5);
         private readonly PressureTestLatencyWindow _recentLatencyWindow = new(5);
+        private readonly PressureTestDistributionAccumulator _distribution =
+            new(slowRequestThresholdMilliseconds);
         private int _successCount;
         private int _failureCount;
         private int _activeUsers;
@@ -375,6 +382,7 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                 {
                     _failureCount++;
                 }
+                _distribution.Record(completedAtSeconds, elapsed, success);
 
                 _requestResults.Add(new PressureTestRequestResult(
                     userIndex,
@@ -469,9 +477,73 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                     ApproximatePayloadBytes = _payloadRetention.ApproximateBytes,
                     DiscardedPayloadCount = _payloadRetention.DiscardedCount,
                     Timeline = _timeline.ToArray(),
+                    DistributionBuckets = _distribution.CreateBuckets(elapsedSeconds),
                     RequestResults = requestResults
                 };
             }
+        }
+    }
+
+    private sealed class PressureTestDistributionAccumulator(double slowRequestThresholdMilliseconds)
+    {
+        private const double RawBucketSeconds = 2;
+        private const int MaximumDisplayBuckets = 60;
+        private readonly List<MutableDistributionBucket> _buckets = [];
+
+        public void Record(double completedAtSeconds, double elapsedMilliseconds, bool success)
+        {
+            int index = Math.Max(0, (int)Math.Floor(completedAtSeconds / RawBucketSeconds));
+            while (_buckets.Count <= index) _buckets.Add(new MutableDistributionBucket());
+            MutableDistributionBucket bucket = _buckets[index];
+            bucket.TotalRequests++;
+            if (!success) bucket.FailedRequests++;
+            if (elapsedMilliseconds > slowRequestThresholdMilliseconds) bucket.SlowRequests++;
+        }
+
+        public IReadOnlyList<PressureTestDistributionBucket> CreateBuckets(double elapsedSeconds)
+        {
+            if (_buckets.Count == 0) return [];
+            int elapsedBucketCount = Math.Max(
+                1,
+                (int)Math.Ceiling(Math.Max(0, elapsedSeconds) / RawBucketSeconds));
+            int rawBucketCount = Math.Max(_buckets.Count, elapsedBucketCount);
+            int groupSize = Math.Max(
+                1,
+                (int)Math.Ceiling(rawBucketCount / (double)MaximumDisplayBuckets));
+            int displayBucketCount = (int)Math.Ceiling(rawBucketCount / (double)groupSize);
+            var result = new PressureTestDistributionBucket[displayBucketCount];
+
+            for (int displayIndex = 0; displayIndex < displayBucketCount; displayIndex++)
+            {
+                int startIndex = displayIndex * groupSize;
+                int endIndex = Math.Min(rawBucketCount, startIndex + groupSize);
+                int total = 0;
+                int failures = 0;
+                int slow = 0;
+                for (int rawIndex = startIndex; rawIndex < Math.Min(endIndex, _buckets.Count); rawIndex++)
+                {
+                    MutableDistributionBucket bucket = _buckets[rawIndex];
+                    total += bucket.TotalRequests;
+                    failures += bucket.FailedRequests;
+                    slow += bucket.SlowRequests;
+                }
+
+                result[displayIndex] = new PressureTestDistributionBucket(
+                    startIndex * RawBucketSeconds,
+                    Math.Min(endIndex * RawBucketSeconds, Math.Max(elapsedSeconds, .001)),
+                    total,
+                    failures,
+                    slow);
+            }
+
+            return result;
+        }
+
+        private sealed class MutableDistributionBucket
+        {
+            public int TotalRequests { get; set; }
+            public int FailedRequests { get; set; }
+            public int SlowRequests { get; set; }
         }
     }
 }

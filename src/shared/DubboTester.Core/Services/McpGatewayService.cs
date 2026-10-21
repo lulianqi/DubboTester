@@ -48,17 +48,45 @@ public sealed class McpGatewayService : IDisposable
         lock (_sync) return _configuration.Clone();
     }
 
-    public McpCallRecordPage GetHistoryPage(int pageNumber, int pageSize = 100)
+    public McpCallRecordPage GetHistoryPage(
+        int pageNumber,
+        int pageSize = 100,
+        string? toolName = null,
+        string? requestContent = null,
+        string? responseContent = null)
     {
         int normalizedPage = Math.Max(1, pageNumber);
         int normalizedPageSize = Math.Clamp(pageSize, 1, 100);
         lock (_sync)
         {
+            IEnumerable<McpCallRecord> filtered = _history;
+            if (!string.IsNullOrWhiteSpace(toolName))
+            {
+                string value = toolName.Trim();
+                filtered = filtered.Where(record =>
+                    record.ToolName.Contains(value, StringComparison.OrdinalIgnoreCase));
+            }
+            if (!string.IsNullOrWhiteSpace(requestContent))
+            {
+                string value = requestContent.Trim();
+                filtered = filtered.Where(record =>
+                    record.RequestJson.Contains(value, StringComparison.OrdinalIgnoreCase));
+            }
+            if (!string.IsNullOrWhiteSpace(responseContent))
+            {
+                string value = responseContent.Trim();
+                filtered = filtered.Where(record =>
+                    record.Response.Contains(value, StringComparison.OrdinalIgnoreCase)
+                    || record.Error.Contains(value, StringComparison.OrdinalIgnoreCase));
+            }
+
+            McpCallRecord[] matches = filtered.ToArray();
             return new McpCallRecordPage(
-                _history
+                matches
                     .Skip((normalizedPage - 1) * normalizedPageSize)
                     .Take(normalizedPageSize)
                     .ToArray(),
+                matches.Length,
                 _history.Count);
         }
     }
