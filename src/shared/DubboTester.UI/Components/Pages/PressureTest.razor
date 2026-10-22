@@ -10,12 +10,12 @@
 
 <PageTitle>Dubbo 压力测试</PageTitle>
 
-<div class="pressure-shell" @onclick="CloseResultFilter">
+<div class="pressure-shell" @onclick="ClosePagePopovers">
     <header class="pressure-header">
         <button class="back-button" disabled="@IsRunning" @onclick="BackToHome">← 返回主页</button>
         <div class="pressure-brand">
             <span class="pressure-mark">D</span>
-            <div><h1>Dubbo 压力测试</h1><p>单客户端并发 · 结果仅保存在当前页面</p></div>
+            <div><h1>Dubbo 压力测试</h1><p>可配置 TCP 复用 · 结果仅保存在当前页面</p></div>
         </div>
         <div class="run-state @(NoticeIsError ? "error" : null)"><span></span>@Notice</div>
     </header>
@@ -80,10 +80,37 @@
                 <strong>@LoadHeadingSummary</strong>
             </div>
             <div class="load-fields">
-                <label class="users-field">并发用户数 N
-                    <input type="number" min="1" max="500" @bind="UserCount" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                <div class="users-field load-field">
+                    <div class="load-field-title">
+                        <label for="pressure-user-count">并发用户数 N</label>
+                        <span class="tcp-reuse-settings" @onclick:stopPropagation="true">
+                            <button type="button"
+                                    class="tcp-reuse-settings-button @(ShowTcpReuseSettings ? "active" : null)"
+                                    aria-label="配置 TCP 复用模式"
+                                    title="配置 TCP 复用模式"
+                                    disabled="@IsRunning"
+                                    @onclick="ToggleTcpReuseSettings">⚙</button>
+                            @if (ShowTcpReuseSettings)
+                            {
+                                <span class="tcp-reuse-popover">
+                                    <strong>TCP 复用模式</strong>
+                                    <small>控制并发用户如何共享 Dubbo client；独立 client 会建立独立的 Provider 连接。</small>
+                                    <select aria-label="TCP 复用模式"
+                                            @bind="TcpReuseMode"
+                                            @bind:after="HandleTcpReuseModeChangedAsync">
+                                        <option value="@PressureTestTcpReuseMode.FullyShared">完全复用（全部用户共用）</option>
+                                        <option value="@PressureTestTcpReuseMode.PerUser">不复用（每用户一个 client）</option>
+                                        <option value="@PressureTestTcpReuseMode.SharedBy10Users">每 10 个用户复用一个 client</option>
+                                        <option value="@PressureTestTcpReuseMode.SharedBy20Users">每 20 个用户复用一个 client</option>
+                                    </select>
+                                    <span class="tcp-reuse-summary">当前将使用 <b>@ConfiguredClientCount</b> 个 Dubbo client</span>
+                                </span>
+                            }
+                        </span>
+                    </div>
+                    <input id="pressure-user-count" type="number" min="1" max="500" @bind="UserCount" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
                     <small>每个用户对应一个并发任务</small>
-                </label>
+                </div>
                 <span class="multiply">@(LimitMode == PressureTestLimitMode.RequestCount ? "×" : "⏱")</span>
                 <label class="limit-field">负载上限
                     <span class="limit-control">
@@ -234,11 +261,39 @@
         </section>
 
         <section class="metric-grid">
-            <article><span>平均响应</span><b>@FormatMilliseconds(Snapshot.AverageMilliseconds)</b><small>所有已完成请求</small></article>
-            <article><span>TPS</span><b>@Snapshot.Tps.ToString("F2")</b><small>最高 TPS @SelectedPeakTps.ToString("F2")（@ThroughputSmoothingSeconds 秒滑动平均峰值）</small></article>
+            <article>
+                <span>响应时间</span>
+                <div class="metric-pair">
+                    <div><small>全程平均</small><b>@FormatMilliseconds(Snapshot.AverageMilliseconds)</b></div>
+                    <div><small>当前（近 5 秒）</small><b>@FormatMilliseconds(CurrentAverageMilliseconds)</b></div>
+                </div>
+                <small>所有已完成请求</small>
+            </article>
+            <article>
+                <span>TPS</span>
+                <div class="metric-pair">
+                    <div><small>全程平均</small><b>@Snapshot.Tps.ToString("F2")</b></div>
+                    <div><small>当前（@ThroughputSmoothingSeconds 秒）</small><b>@CurrentTps.ToString("F2")</b></div>
+                </div>
+                <small>最高 TPS @SelectedPeakTps.ToString("F2")（@ThroughputSmoothingSeconds 秒滑动平均峰值）</small>
+            </article>
             <article><span>成功率</span><b class="@(Snapshot.FailureCount > 0 ? "metric-warn" : null)">@Snapshot.SuccessRate.ToString("F2")%</b><small>@Snapshot.SuccessCount.ToString("N0") 成功 / @Snapshot.FailureCount.ToString("N0") 失败</small></article>
-            <article><span>P95</span><b>@FormatMilliseconds(Snapshot.P95Milliseconds)</b><small>@(Snapshot.PercentilesAreSampled ? "实时随机样本；结束后精确" : "95% 请求不超过此值")</small></article>
-            <article><span>P99</span><b>@FormatMilliseconds(Snapshot.P99Milliseconds)</b><small>@(Snapshot.PercentilesAreSampled ? "实时随机样本；结束后精确" : "99% 请求不超过此值")</small></article>
+            <article>
+                <span>P95</span>
+                <div class="metric-pair">
+                    <div><small>全程</small><b>@FormatMilliseconds(Snapshot.P95Milliseconds)</b></div>
+                    <div><small>当前（近 5 秒）</small><b>@FormatMilliseconds(CurrentP95Milliseconds)</b></div>
+                </div>
+                <small>@(Snapshot.PercentilesAreSampled ? "全程值为实时随机样本；结束后精确" : "全程 95% 请求不超过此值")</small>
+            </article>
+            <article>
+                <span>P99</span>
+                <div class="metric-pair">
+                    <div><small>全程</small><b>@FormatMilliseconds(Snapshot.P99Milliseconds)</b></div>
+                    <div><small>当前（近 5 秒）</small><b>@FormatMilliseconds(CurrentP99Milliseconds)</b></div>
+                </div>
+                <small>@(Snapshot.PercentilesAreSampled ? "全程值为实时随机样本；结束后精确" : "全程 99% 请求不超过此值")</small>
+            </article>
             <article><span>运行时间</span><b>@Snapshot.ElapsedSeconds.ToString("F2") s</b><small>@Snapshot.ActiveUsers 个活跃用户</small></article>
         </section>
 
@@ -475,7 +530,7 @@
             </article>
         </section>
 
-        <section class="chart-grid distribution-chart-grid">
+        <section class="chart-grid distribution-chart-grid @(ChartsExpanded ? "expanded" : null)">
             <article class="pressure-card chart-card distribution-card">
                 <div class="card-heading">
                     <div class="chart-heading-content">
@@ -483,8 +538,18 @@
                         <div class="chart-subtitle">
                             <i class="legend error-count"></i><span>错误请求数</span>
                             <i class="legend error-rate"></i><span>错误率</span>
+                            <span class="chart-zoom-controls" title="横轴缩放">
+                                <button type="button" disabled="@(ErrorDistributionZoom <= MinimumChartZoom)" aria-label="缩小错误请求分布横轴" @onclick="() => ChangeChartZoom(ChartKind.ErrorDistribution, -ChartZoomStep)" @onclick:stopPropagation="true">−</button>
+                                <b>@ErrorDistributionZoom.ToString("0.#")×</b>
+                                <button type="button" disabled="@(ErrorDistributionZoom >= MaximumChartZoom)" aria-label="放大错误请求分布横轴" @onclick="() => ChangeChartZoom(ChartKind.ErrorDistribution, ChartZoomStep)" @onclick:stopPropagation="true">＋</button>
+                            </span>
                         </div>
                     </div>
+                    <button class="chart-size-button"
+                            type="button"
+                            title="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            aria-label="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            @onclick="ToggleChartsExpanded">⛶</button>
                 </div>
                 @if (DistributionBuckets.Count == 0)
                 {
@@ -493,59 +558,59 @@
                 else
                 {
                     <div class="chart-plot distribution-plot" @onmouseleave="() => ErrorDistributionHoverIndex = null">
-                        <div class="chart-canvas">
+                        <div class="chart-canvas" style="@ChartCanvasStyle(ErrorDistributionZoom)">
                             <svg viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="错误请求分布图">
                                 @foreach (double axisRatio in ChartAxisRatios)
                                 {
                                     double y = ChartY(axisRatio * ErrorCountScaleMaximum, ErrorCountScaleMaximum);
-                                    <line class="chart-grid-line" x1="@SvgNumber(ChartPlotLeft(1))" y1="@SvgNumber(y)" x2="@SvgNumber(ChartPlotRight(1))" y2="@SvgNumber(y)" />
-                                    @AxisLabel("chart-axis-label", ChartYAxisLabelX(1), y, "end", 1, FormatAxisValue(axisRatio * ErrorCountScaleMaximum, "次"))
-                                    @AxisLabel("chart-axis-label distribution-rate-axis", ChartPlotRight(1) + 7, y, "start", 1, $"{axisRatio * 100:F0}%")
+                                    <line class="chart-grid-line" x1="@SvgNumber(ChartPlotLeft(ErrorDistributionZoom))" y1="@SvgNumber(y)" x2="@SvgNumber(DistributionPlotRight(ErrorDistributionZoom))" y2="@SvgNumber(y)" />
+                                    @AxisLabel("chart-axis-label", ChartYAxisLabelX(ErrorDistributionZoom), y, "end", ErrorDistributionZoom, FormatCountAxisValue(axisRatio * ErrorCountScaleMaximum))
+                                    @AxisLabel("chart-axis-label distribution-rate-axis", DistributionPlotRight(ErrorDistributionZoom) + (7 / ErrorDistributionZoom), y, "start", ErrorDistributionZoom, FormatPercentageAxisValue(axisRatio * ErrorRateScaleMaximum))
                                 }
                                 @foreach (double axisRatio in ChartAxisRatios)
                                 {
-                                    double x = ChartX(axisRatio, 1);
+                                    double x = DistributionX(axisRatio, ErrorDistributionZoom);
                                     <line class="chart-axis-tick" x1="@SvgNumber(x)" y1="@SvgNumber(ChartPlotBottom)" x2="@SvgNumber(x)" y2="@SvgNumber(ChartPlotBottom + 4)" />
-                                    @AxisLabel("chart-axis-label chart-x-axis-label", x, ChartXAxisLabelY, "middle", 1, FormatDistributionTimelineTime(axisRatio))
+                                    @AxisLabel("chart-axis-label chart-x-axis-label", x, ChartXAxisLabelY, "middle", ErrorDistributionZoom, FormatDistributionTimelineTime(axisRatio))
                                 }
-                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(1))" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(ChartPlotLeft(1))" y2="@SvgNumber(ChartPlotBottom)" />
-                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(1))" y1="@SvgNumber(ChartPlotBottom)" x2="@SvgNumber(ChartPlotRight(1))" y2="@SvgNumber(ChartPlotBottom)" />
+                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(ErrorDistributionZoom))" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(ChartPlotLeft(ErrorDistributionZoom))" y2="@SvgNumber(ChartPlotBottom)" />
+                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(ErrorDistributionZoom))" y1="@SvgNumber(ChartPlotBottom)" x2="@SvgNumber(DistributionPlotRight(ErrorDistributionZoom))" y2="@SvgNumber(ChartPlotBottom)" />
                                 @for (int index = 0; index < DistributionBuckets.Count; index++)
                                 {
                                     PressureTestDistributionBucket bucket = DistributionBuckets[index];
                                     double barY = ChartY(bucket.FailedRequests, ErrorCountScaleMaximum);
                                     <rect class="distribution-bar error-bar"
-                                          x="@SvgNumber(DistributionBarX(index))"
+                                          x="@SvgNumber(DistributionBarX(index, ErrorDistributionZoom))"
                                           y="@SvgNumber(barY)"
-                                          width="@SvgNumber(DistributionBarWidth)"
+                                          width="@SvgNumber(DistributionBarWidth(ErrorDistributionZoom))"
                                           height="@SvgNumber(ChartPlotBottom - barY)" />
                                 }
-                                <polyline class="error-rate-line" points="@BuildDistributionPolyline(bucket => bucket.ErrorRate)" />
+                                <polyline class="error-rate-line" points="@BuildDistributionPolyline(bucket => bucket.ErrorRate, ErrorDistributionZoom, ErrorRateScaleMaximum)" />
                                 @for (int index = 0; index < DistributionBuckets.Count; index++)
                                 {
                                     int pointIndex = index;
                                     <rect class="chart-hit-zone"
-                                          x="@SvgNumber(DistributionHitStart(index))"
+                                          x="@SvgNumber(DistributionHitStart(index, ErrorDistributionZoom))"
                                           y="@SvgNumber(ChartPlotTop)"
-                                          width="@SvgNumber(DistributionHitWidth)"
+                                          width="@SvgNumber(DistributionHitWidth(ErrorDistributionZoom))"
                                           height="@SvgNumber(ChartPlotBottom - ChartPlotTop)"
                                           @onmouseenter="() => ErrorDistributionHoverIndex = pointIndex" />
                                 }
                                 @if (ErrorDistributionHoverIndex is int errorIndex && errorIndex < DistributionBuckets.Count)
                                 {
                                     PressureTestDistributionBucket bucket = DistributionBuckets[errorIndex];
-                                    double x = DistributionX(errorIndex);
+                                    double x = DistributionX(errorIndex, ErrorDistributionZoom);
                                     <line class="chart-hover-line" x1="@SvgNumber(x)" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(x)" y2="@SvgNumber(ChartPlotBottom)" />
-                                    <circle class="hover-point error-rate-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(bucket.ErrorRate, 100))" r="4" />
+                                    <ellipse class="hover-point error-rate-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(bucket.ErrorRate, ErrorRateScaleMaximum))" rx="@SvgNumber(HoverPointRadiusX(ErrorDistributionZoom))" ry="4" />
                                 }
                             </svg>
                             @if (ErrorDistributionHoverIndex is int errorTooltipIndex && errorTooltipIndex < DistributionBuckets.Count)
                             {
                                 PressureTestDistributionBucket bucket = DistributionBuckets[errorTooltipIndex];
-                                <div class="chart-tooltip @DistributionTooltipAlignmentClass(errorTooltipIndex)" style="@DistributionTooltipStyle(errorTooltipIndex)">
+                                <div class="chart-tooltip @DistributionTooltipAlignmentClass(errorTooltipIndex, ErrorDistributionZoom)" style="@DistributionTooltipStyle(errorTooltipIndex, ErrorDistributionZoom)">
                                     <b>@FormatDistributionBucketTime(bucket)</b>
                                     <span><i class="legend error-count"></i>错误请求 <strong>@bucket.FailedRequests.ToString("N0")</strong></span>
-                                    <span><i class="legend error-rate"></i>错误率 <strong>@bucket.ErrorRate.ToString("F2")%</strong></span>
+                                    <span><i class="legend error-rate"></i>错误率 <strong>@FormatPercentageAxisValue(bucket.ErrorRate)</strong></span>
                                     <span>全部请求 <strong>@bucket.TotalRequests.ToString("N0")</strong></span>
                                 </div>
                             }
@@ -565,8 +630,18 @@
                             </span>
                             <i class="legend slow-count"></i><span>慢请求数</span>
                             <i class="legend slow-rate"></i><span>慢请求率</span>
+                            <span class="chart-zoom-controls" title="横轴缩放">
+                                <button type="button" disabled="@(SlowDistributionZoom <= MinimumChartZoom)" aria-label="缩小慢请求分布横轴" @onclick="() => ChangeChartZoom(ChartKind.SlowDistribution, -ChartZoomStep)" @onclick:stopPropagation="true">−</button>
+                                <b>@SlowDistributionZoom.ToString("0.#")×</b>
+                                <button type="button" disabled="@(SlowDistributionZoom >= MaximumChartZoom)" aria-label="放大慢请求分布横轴" @onclick="() => ChangeChartZoom(ChartKind.SlowDistribution, ChartZoomStep)" @onclick:stopPropagation="true">＋</button>
+                            </span>
                         </div>
                     </div>
+                    <button class="chart-size-button"
+                            type="button"
+                            title="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            aria-label="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            @onclick="ToggleChartsExpanded">⛶</button>
                 </div>
                 @if (DistributionBuckets.Count == 0)
                 {
@@ -575,59 +650,59 @@
                 else
                 {
                     <div class="chart-plot distribution-plot" @onmouseleave="() => SlowDistributionHoverIndex = null">
-                        <div class="chart-canvas">
+                        <div class="chart-canvas" style="@ChartCanvasStyle(SlowDistributionZoom)">
                             <svg viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="慢请求分布图">
                                 @foreach (double axisRatio in ChartAxisRatios)
                                 {
                                     double y = ChartY(axisRatio * SlowCountScaleMaximum, SlowCountScaleMaximum);
-                                    <line class="chart-grid-line" x1="@SvgNumber(ChartPlotLeft(1))" y1="@SvgNumber(y)" x2="@SvgNumber(ChartPlotRight(1))" y2="@SvgNumber(y)" />
-                                    @AxisLabel("chart-axis-label", ChartYAxisLabelX(1), y, "end", 1, FormatAxisValue(axisRatio * SlowCountScaleMaximum, "次"))
-                                    @AxisLabel("chart-axis-label distribution-rate-axis", ChartPlotRight(1) + 7, y, "start", 1, $"{axisRatio * 100:F0}%")
+                                    <line class="chart-grid-line" x1="@SvgNumber(ChartPlotLeft(SlowDistributionZoom))" y1="@SvgNumber(y)" x2="@SvgNumber(DistributionPlotRight(SlowDistributionZoom))" y2="@SvgNumber(y)" />
+                                    @AxisLabel("chart-axis-label", ChartYAxisLabelX(SlowDistributionZoom), y, "end", SlowDistributionZoom, FormatCountAxisValue(axisRatio * SlowCountScaleMaximum))
+                                    @AxisLabel("chart-axis-label distribution-rate-axis", DistributionPlotRight(SlowDistributionZoom) + (7 / SlowDistributionZoom), y, "start", SlowDistributionZoom, FormatPercentageAxisValue(axisRatio * SlowRateScaleMaximum))
                                 }
                                 @foreach (double axisRatio in ChartAxisRatios)
                                 {
-                                    double x = ChartX(axisRatio, 1);
+                                    double x = DistributionX(axisRatio, SlowDistributionZoom);
                                     <line class="chart-axis-tick" x1="@SvgNumber(x)" y1="@SvgNumber(ChartPlotBottom)" x2="@SvgNumber(x)" y2="@SvgNumber(ChartPlotBottom + 4)" />
-                                    @AxisLabel("chart-axis-label chart-x-axis-label", x, ChartXAxisLabelY, "middle", 1, FormatDistributionTimelineTime(axisRatio))
+                                    @AxisLabel("chart-axis-label chart-x-axis-label", x, ChartXAxisLabelY, "middle", SlowDistributionZoom, FormatDistributionTimelineTime(axisRatio))
                                 }
-                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(1))" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(ChartPlotLeft(1))" y2="@SvgNumber(ChartPlotBottom)" />
-                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(1))" y1="@SvgNumber(ChartPlotBottom)" x2="@SvgNumber(ChartPlotRight(1))" y2="@SvgNumber(ChartPlotBottom)" />
+                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(SlowDistributionZoom))" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(ChartPlotLeft(SlowDistributionZoom))" y2="@SvgNumber(ChartPlotBottom)" />
+                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(SlowDistributionZoom))" y1="@SvgNumber(ChartPlotBottom)" x2="@SvgNumber(DistributionPlotRight(SlowDistributionZoom))" y2="@SvgNumber(ChartPlotBottom)" />
                                 @for (int index = 0; index < DistributionBuckets.Count; index++)
                                 {
                                     PressureTestDistributionBucket bucket = DistributionBuckets[index];
                                     double barY = ChartY(bucket.SlowRequests, SlowCountScaleMaximum);
                                     <rect class="distribution-bar slow-bar"
-                                          x="@SvgNumber(DistributionBarX(index))"
+                                          x="@SvgNumber(DistributionBarX(index, SlowDistributionZoom))"
                                           y="@SvgNumber(barY)"
-                                          width="@SvgNumber(DistributionBarWidth)"
+                                          width="@SvgNumber(DistributionBarWidth(SlowDistributionZoom))"
                                           height="@SvgNumber(ChartPlotBottom - barY)" />
                                 }
-                                <polyline class="slow-rate-line" points="@BuildDistributionPolyline(bucket => bucket.SlowRate)" />
+                                <polyline class="slow-rate-line" points="@BuildDistributionPolyline(bucket => bucket.SlowRate, SlowDistributionZoom, SlowRateScaleMaximum)" />
                                 @for (int index = 0; index < DistributionBuckets.Count; index++)
                                 {
                                     int pointIndex = index;
                                     <rect class="chart-hit-zone"
-                                          x="@SvgNumber(DistributionHitStart(index))"
+                                          x="@SvgNumber(DistributionHitStart(index, SlowDistributionZoom))"
                                           y="@SvgNumber(ChartPlotTop)"
-                                          width="@SvgNumber(DistributionHitWidth)"
+                                          width="@SvgNumber(DistributionHitWidth(SlowDistributionZoom))"
                                           height="@SvgNumber(ChartPlotBottom - ChartPlotTop)"
                                           @onmouseenter="() => SlowDistributionHoverIndex = pointIndex" />
                                 }
                                 @if (SlowDistributionHoverIndex is int slowIndex && slowIndex < DistributionBuckets.Count)
                                 {
                                     PressureTestDistributionBucket bucket = DistributionBuckets[slowIndex];
-                                    double x = DistributionX(slowIndex);
+                                    double x = DistributionX(slowIndex, SlowDistributionZoom);
                                     <line class="chart-hover-line" x1="@SvgNumber(x)" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(x)" y2="@SvgNumber(ChartPlotBottom)" />
-                                    <circle class="hover-point slow-rate-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(bucket.SlowRate, 100))" r="4" />
+                                    <ellipse class="hover-point slow-rate-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(bucket.SlowRate, SlowRateScaleMaximum))" rx="@SvgNumber(HoverPointRadiusX(SlowDistributionZoom))" ry="4" />
                                 }
                             </svg>
                             @if (SlowDistributionHoverIndex is int slowTooltipIndex && slowTooltipIndex < DistributionBuckets.Count)
                             {
                                 PressureTestDistributionBucket bucket = DistributionBuckets[slowTooltipIndex];
-                                <div class="chart-tooltip @DistributionTooltipAlignmentClass(slowTooltipIndex)" style="@DistributionTooltipStyle(slowTooltipIndex)">
+                                <div class="chart-tooltip @DistributionTooltipAlignmentClass(slowTooltipIndex, SlowDistributionZoom)" style="@DistributionTooltipStyle(slowTooltipIndex, SlowDistributionZoom)">
                                     <b>@FormatDistributionBucketTime(bucket)</b>
                                     <span><i class="legend slow-count"></i>慢请求 <strong>@bucket.SlowRequests.ToString("N0")</strong></span>
-                                    <span><i class="legend slow-rate"></i>慢请求率 <strong>@bucket.SlowRate.ToString("F2")%</strong></span>
+                                    <span><i class="legend slow-rate"></i>慢请求率 <strong>@FormatPercentageAxisValue(bucket.SlowRate)</strong></span>
                                     <span>全部请求 <strong>@bucket.TotalRequests.ToString("N0")</strong></span>
                                 </div>
                             }
@@ -980,6 +1055,7 @@
     private const double ChartXAxisLabelY = 170;
     private const double ChartLeftMargin = 58;
     private const double ChartRightMargin = 26;
+    private const double DistributionChartRightMargin = 52;
     private const double ChartHoverPointRadius = 4;
     private static readonly double[] ChartAxisRatios = [0, .25, .5, .75, 1];
     private static readonly JsonSerializerOptions StorageJsonOptions = new(JsonSerializerDefaults.Web);
@@ -988,6 +1064,7 @@
     private InvocationInput Input { get; set; } = new();
     private PressureTestSnapshot Snapshot { get; set; } = new();
     private int UserCount { get; set; } = 10;
+    private PressureTestTcpReuseMode TcpReuseMode { get; set; } = PressureTestTcpReuseMode.FullyShared;
     private PressureTestLimitMode LimitMode { get; set; } = PressureTestLimitMode.RequestCount;
     private int IterationsPerUser { get; set; } = 10;
     private int DurationLimitSeconds { get; set; } = 60;
@@ -1028,15 +1105,20 @@
     private LatencyTrendMode LatencyMode { get; set; }
     private double ThroughputZoom { get; set; } = MinimumChartZoom;
     private double LatencyZoom { get; set; } = MinimumChartZoom;
+    private double ErrorDistributionZoom { get; set; } = MinimumChartZoom;
+    private double SlowDistributionZoom { get; set; } = MinimumChartZoom;
     private bool ChartsExpanded { get; set; }
     private string Notice { get; set; } = "配置负载与参数模板后开始压测";
     private bool NoticeIsError { get; set; }
     private bool IsRunning { get; set; }
+    private bool ShowTcpReuseSettings { get; set; }
     private bool _hasDraft;
     private bool DraftStorageReady { get; set; }
     private bool DraftStorageLoading { get; set; }
     private int DraftStorageLoadAttempts { get; set; }
     private bool IsDisposed { get; set; }
+    private bool StopRequested { get; set; }
+    private int RunVersion { get; set; }
     private CancellationTokenSource? _runCancellation;
     private PressureTestConfiguration? _lastRunConfiguration;
     private DateTimeOffset _runStartedAt;
@@ -1045,6 +1127,9 @@
     private long TotalRequests => UserCount <= 0 || IterationsPerUser <= 0
         ? 0
         : (long)UserCount * IterationsPerUser;
+    private int ConfiguredClientCount => UserCount < 1
+        ? 0
+        : DubboPressureTestRunner.GetClientCount(UserCount, TcpReuseMode);
     private int StepIntervalMaximum => LimitMode == PressureTestLimitMode.Duration
         ? Math.Clamp(DurationLimitSeconds, 0, 3_600)
         : 3_600;
@@ -1101,9 +1186,22 @@
     private double SlowCountScaleMaximum => Math.Max(
         1,
         DistributionBuckets.Select(bucket => bucket.SlowRequests).DefaultIfEmpty(0).Max());
-    private double DistributionBarWidth => Math.Max(
+    private double ErrorRateScaleMaximum => PressureTestChartMetrics.CalculateAdaptivePercentageMaximum(
+        DistributionBuckets.Select(bucket => bucket.ErrorRate));
+    private double SlowRateScaleMaximum => PressureTestChartMetrics.CalculateAdaptivePercentageMaximum(
+        DistributionBuckets.Select(bucket => bucket.SlowRate));
+    private PressureTestPoint? CurrentTimelinePoint => Snapshot.Timeline.Count == 0
+        ? null
+        : Snapshot.Timeline[^1];
+    private double CurrentTps => Snapshot.Timeline.Count == 0
+        ? 0
+        : SmoothedTpsAt(Snapshot.Timeline.Count - 1);
+    private double CurrentAverageMilliseconds => CurrentTimelinePoint?.RecentAverageMilliseconds ?? 0;
+    private double CurrentP95Milliseconds => CurrentTimelinePoint?.RecentP95Milliseconds ?? 0;
+    private double CurrentP99Milliseconds => CurrentTimelinePoint?.RecentP99Milliseconds ?? 0;
+    private double DistributionBarWidth(double zoom) => Math.Max(
         2,
-        (ChartPlotRight(1) - ChartPlotLeft(1)) / Math.Max(DistributionBuckets.Count, 1) * .62);
+        (DistributionPlotRight(zoom) - ChartPlotLeft(zoom)) / Math.Max(DistributionBuckets.Count, 1) * .62);
     private string DetailsDescription => Snapshot.CompletedRequests > 0
         ? Snapshot.RecordsRequestResponse
             ? Snapshot.DiscardedPayloadCount > 0
@@ -1161,6 +1259,7 @@
             if (persistedDraft is not null)
             {
                 UserCount = persistedDraft.UserCount;
+                TcpReuseMode = persistedDraft.TcpReuseMode;
                 LimitMode = persistedDraft.LimitMode;
                 IterationsPerUser = persistedDraft.IterationsPerUser;
                 DurationLimitSeconds = persistedDraft.DurationLimitSeconds;
@@ -1206,8 +1305,11 @@
     private async Task StartAsync()
     {
         if (IsRunning || !DraftStorageReady) return;
+        ShowTcpReuseSettings = false;
         await PersistPressureDraftAsync();
         IsRunning = true;
+        StopRequested = false;
+        int runVersion = ++RunVersion;
         NoticeIsError = false;
         Notice = "正在建立连接并启动并发任务…";
         Snapshot = new PressureTestSnapshot
@@ -1233,12 +1335,16 @@
         _runCancellation = new CancellationTokenSource();
         var progress = new Progress<PressureTestSnapshot>(snapshot =>
         {
+            if (!IsRunning || runVersion != RunVersion) return;
+
             ApplySnapshot(snapshot);
             if (snapshot.IsRunning)
             {
-                Notice = snapshot.DurationLimitSeconds > 0
-                    ? $"压测运行中：{snapshot.ElapsedSeconds:F1} / {snapshot.DurationLimitSeconds:N0} 秒，已完成 {snapshot.CompletedRequests:N0} 次请求"
-                    : $"压测运行中：{snapshot.CompletedRequests:N0} / {snapshot.TotalRequests:N0}";
+                Notice = StopRequested
+                    ? "正在停止，等待已发出的请求结束…"
+                    : snapshot.DurationLimitSeconds > 0
+                        ? $"压测运行中：{snapshot.ElapsedSeconds:F1} / {snapshot.DurationLimitSeconds:N0} 秒，已完成 {snapshot.CompletedRequests:N0} 次请求"
+                        : $"压测运行中：{snapshot.CompletedRequests:N0} / {snapshot.TotalRequests:N0}";
             }
             StateHasChanged();
         });
@@ -1248,6 +1354,7 @@
             var configuration = new PressureTestConfiguration
             {
                 UserCount = UserCount,
+                TcpReuseMode = TcpReuseMode,
                 LimitMode = LimitMode,
                 IterationsPerUser = IterationsPerUser,
                 DurationLimitSeconds = DurationLimitSeconds,
@@ -1268,11 +1375,12 @@
             Notice = Snapshot.IsCancelled
                 ? $"压测已停止，完成 {Snapshot.CompletedRequests:N0} 次请求"
                 : $"压测完成：{Snapshot.SuccessCount:N0} 成功，{Snapshot.FailureCount:N0} 失败";
-            NoticeIsError = Snapshot.FailureCount > 0;
+            NoticeIsError = !Snapshot.IsCancelled && Snapshot.FailureCount > 0;
         }
         catch (OperationCanceledException)
         {
             Notice = "压测已停止";
+            NoticeIsError = false;
         }
         catch (Exception exception)
         {
@@ -1282,6 +1390,7 @@
         {
             _runFinishedAt = DateTimeOffset.Now;
             IsRunning = false;
+            StopRequested = false;
             _runCancellation?.Dispose();
             _runCancellation = null;
         }
@@ -1289,6 +1398,9 @@
 
     private void Stop()
     {
+        if (!IsRunning || StopRequested) return;
+        StopRequested = true;
+        NoticeIsError = false;
         Notice = "正在停止，等待已发出的请求结束…";
         _runCancellation?.Cancel();
     }
@@ -1419,6 +1531,27 @@
     {
         if (!ActiveResultFilter.HasValue) return;
         ApplyAndCloseResultFilter();
+    }
+
+    private void ClosePagePopovers()
+    {
+        ShowTcpReuseSettings = false;
+        CloseResultFilter();
+    }
+
+    private void ToggleTcpReuseSettings()
+    {
+        if (IsRunning) return;
+        ShowTcpReuseSettings = !ShowTcpReuseSettings;
+        if (ShowTcpReuseSettings)
+        {
+            CloseResultFilter();
+        }
+    }
+
+    private async Task HandleTcpReuseModeChangedAsync()
+    {
+        await PersistPressureDraftAsync();
     }
 
     private void ApplyAndCloseResultFilter()
@@ -1701,6 +1834,7 @@
         {
             Invocation = Input.Clone(),
             UserCount = UserCount,
+            TcpReuseMode = TcpReuseMode,
             LimitMode = LimitMode,
             IterationsPerUser = IterationsPerUser,
             DurationLimitSeconds = DurationLimitSeconds,
@@ -1761,24 +1895,30 @@
     }
 
     private string BuildDistributionPolyline(
-        Func<PressureTestDistributionBucket, double> selector)
+        Func<PressureTestDistributionBucket, double> selector,
+        double zoom,
+        double scaleMaximum)
     {
         if (DistributionBuckets.Count == 0) return string.Empty;
         return string.Join(' ', DistributionBuckets.Select((bucket, index) =>
-            $"{SvgNumber(DistributionX(index))},{SvgNumber(ChartY(selector(bucket), 100))}"));
+            $"{SvgNumber(DistributionX(index, zoom))},{SvgNumber(ChartY(selector(bucket), scaleMaximum))}"));
     }
 
-    private double DistributionBarX(int index) =>
-        DistributionX(index) - DistributionBarWidth / 2;
+    private double DistributionBarX(int index, double zoom) =>
+        DistributionX(index, zoom) - DistributionBarWidth(zoom) / 2;
 
-    private double DistributionX(int index) =>
-        ChartX((index + .5) / Math.Max(DistributionBuckets.Count, 1), 1);
+    private double DistributionX(int index, double zoom) =>
+        DistributionX((index + .5) / Math.Max(DistributionBuckets.Count, 1), zoom);
 
-    private double DistributionHitStart(int index) =>
-        ChartX(index / (double)Math.Max(DistributionBuckets.Count, 1), 1);
+    private static double DistributionX(double ratio, double zoom) =>
+        ChartPlotLeft(zoom)
+        + Math.Clamp(ratio, 0, 1) * (DistributionPlotRight(zoom) - ChartPlotLeft(zoom));
 
-    private double DistributionHitWidth =>
-        (ChartPlotRight(1) - ChartPlotLeft(1)) / Math.Max(DistributionBuckets.Count, 1);
+    private double DistributionHitStart(int index, double zoom) =>
+        DistributionX(index / (double)Math.Max(DistributionBuckets.Count, 1), zoom);
+
+    private double DistributionHitWidth(double zoom) =>
+        (DistributionPlotRight(zoom) - ChartPlotLeft(zoom)) / Math.Max(DistributionBuckets.Count, 1);
 
     private string FormatDistributionTimelineTime(double ratio)
     {
@@ -1791,15 +1931,15 @@
     private string FormatDistributionBucketTime(PressureTestDistributionBucket bucket) =>
         $"{FormatClockTime(bucket.StartedAtSeconds)}–{FormatClockTime(bucket.EndedAtSeconds)}";
 
-    private string DistributionTooltipStyle(int index)
+    private string DistributionTooltipStyle(int index, double zoom)
     {
-        double percentage = DistributionX(index) * 100 / ChartViewWidth;
+        double percentage = DistributionX(index, zoom) * 100 / ChartViewWidth;
         return $"left:{percentage.ToString("F2", CultureInfo.InvariantCulture)}%";
     }
 
-    private string DistributionTooltipAlignmentClass(int index)
+    private string DistributionTooltipAlignmentClass(int index, double zoom)
     {
-        double percentage = DistributionX(index) * 100 / ChartViewWidth;
+        double percentage = DistributionX(index, zoom) * 100 / ChartViewWidth;
         return percentage < 18 ? "align-left" : percentage > 82 ? "align-right" : string.Empty;
     }
 
@@ -1849,6 +1989,8 @@
         ChartsExpanded = !ChartsExpanded;
         ThroughputHoverIndex = null;
         LatencyHoverIndex = null;
+        ErrorDistributionHoverIndex = null;
+        SlowDistributionHoverIndex = null;
     }
 
     private void RefreshThroughputChart() => ThroughputHoverIndex = null;
@@ -1857,21 +1999,24 @@
 
     private void ChangeChartZoom(ChartKind chart, double change)
     {
-        if (chart == ChartKind.Throughput)
+        switch (chart)
         {
-            ThroughputZoom = Math.Clamp(
-                ThroughputZoom + change,
-                MinimumChartZoom,
-                MaximumChartZoom);
-            ThroughputHoverIndex = null;
-        }
-        else
-        {
-            LatencyZoom = Math.Clamp(
-                LatencyZoom + change,
-                MinimumChartZoom,
-                MaximumChartZoom);
-            LatencyHoverIndex = null;
+            case ChartKind.Throughput:
+                ThroughputZoom = Math.Clamp(ThroughputZoom + change, MinimumChartZoom, MaximumChartZoom);
+                ThroughputHoverIndex = null;
+                break;
+            case ChartKind.Latency:
+                LatencyZoom = Math.Clamp(LatencyZoom + change, MinimumChartZoom, MaximumChartZoom);
+                LatencyHoverIndex = null;
+                break;
+            case ChartKind.ErrorDistribution:
+                ErrorDistributionZoom = Math.Clamp(ErrorDistributionZoom + change, MinimumChartZoom, MaximumChartZoom);
+                ErrorDistributionHoverIndex = null;
+                break;
+            case ChartKind.SlowDistribution:
+                SlowDistributionZoom = Math.Clamp(SlowDistributionZoom + change, MinimumChartZoom, MaximumChartZoom);
+                SlowDistributionHoverIndex = null;
+                break;
         }
     }
 
@@ -1882,6 +2027,9 @@
 
     private static double ChartPlotRight(double zoom) =>
         ChartViewWidth - (ChartRightMargin / zoom);
+
+    private static double DistributionPlotRight(double zoom) =>
+        ChartViewWidth - (DistributionChartRightMargin / zoom);
 
     private static double ChartYAxisLabelX(double zoom) =>
         ChartPlotLeft(zoom) - (7 / zoom);
@@ -1970,6 +2118,12 @@
         return $"{number} {unit}";
     }
 
+    private static string FormatPercentageAxisValue(double value) =>
+        $"{Math.Max(0, value).ToString("0.####", CultureInfo.InvariantCulture)}%";
+
+    private static string FormatCountAxisValue(double value) =>
+        $"{Math.Max(0, value).ToString("N0", CultureInfo.InvariantCulture)} 次";
+
     private static string SvgNumber(double value) => value.ToString("F2", CultureInfo.InvariantCulture);
 
     private static string SanitizeFileName(string value)
@@ -2006,7 +2160,9 @@
     private enum ChartKind
     {
         Throughput,
-        Latency
+        Latency,
+        ErrorDistribution,
+        SlowDistribution
     }
 
     private enum LatencyTrendMode

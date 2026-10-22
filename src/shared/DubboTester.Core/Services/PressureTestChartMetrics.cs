@@ -52,6 +52,23 @@ public static class PressureTestChartMetrics
         return peak;
     }
 
+    public static double CalculateAdaptivePercentageMaximum(IEnumerable<double> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+
+        double maximum = values
+            .Where(double.IsFinite)
+            .Select(value => Math.Clamp(value, 0, 100))
+            .DefaultIfEmpty(0)
+            .Max();
+        if (maximum <= 0) return 1;
+
+        double paddedMaximum = Math.Min(100, maximum * 1.12);
+        double magnitude = Math.Pow(10, Math.Floor(Math.Log10(paddedMaximum)));
+        double step = magnitude / 2;
+        return Math.Min(100, Math.Ceiling(paddedMaximum / step) * step);
+    }
+
     private static int FindLastIndexAtOrBefore(
         IReadOnlyList<PressureTestPoint> points,
         int maximumIndex,

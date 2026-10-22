@@ -43,6 +43,14 @@ public enum PressureTestLimitMode
     Duration
 }
 
+public enum PressureTestTcpReuseMode
+{
+    FullyShared,
+    PerUser,
+    SharedBy10Users,
+    SharedBy20Users
+}
+
 public sealed class BusinessAssertionCondition
 {
     public BusinessAssertionType Type { get; set; } = BusinessAssertionType.ResponseContains;
@@ -69,6 +77,7 @@ public sealed class BusinessAssertionConfiguration
 public sealed class PressureTestConfiguration
 {
     public int UserCount { get; set; } = 10;
+    public PressureTestTcpReuseMode TcpReuseMode { get; set; } = PressureTestTcpReuseMode.FullyShared;
     public PressureTestLimitMode LimitMode { get; set; } = PressureTestLimitMode.RequestCount;
     public int IterationsPerUser { get; set; } = 10;
     public int DurationLimitSeconds { get; set; } = 60;
@@ -91,6 +100,7 @@ public sealed class PressureTestPageDraft
 {
     public InvocationInput Invocation { get; set; } = new();
     public int UserCount { get; set; } = 10;
+    public PressureTestTcpReuseMode TcpReuseMode { get; set; } = PressureTestTcpReuseMode.FullyShared;
     public PressureTestLimitMode LimitMode { get; set; } = PressureTestLimitMode.RequestCount;
     public int IterationsPerUser { get; set; } = 10;
     public int DurationLimitSeconds { get; set; } = 60;

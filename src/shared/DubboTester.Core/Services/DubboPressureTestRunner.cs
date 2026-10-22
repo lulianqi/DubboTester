@@ -25,54 +25,71 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         JsonArgumentParser.ParseArguments(sample);
         PressureTestBusinessAssertionEvaluator.Validate(configuration.BusinessAssertion);
 
-        await session.PrepareForInvocationsAsync(
-            configuration.Settings,
-            configuration.Invocation,
-            cancellationToken);
-
-        var state = new RunState(
-            configuration.TotalRequests,
-            configuration.LimitMode == PressureTestLimitMode.Duration
-                ? configuration.DurationLimitSeconds
-                : 0,
-            configuration.RecordRequestResponse,
-            configuration.SlowRequestThresholdMilliseconds);
-        var startGate = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        Task[] workers = Enumerable.Range(1, configuration.UserCount)
-            .Select(userIndex => RunUserAsync(
-                configuration,
-                userIndex,
-                state,
-                startGate.Task,
-                cancellationToken))
-            .ToArray();
-        Task allWorkers = Task.WhenAll(workers);
-        state.Start();
-        startGate.SetResult(true);
-        Task reporter = ReportProgressAsync(allWorkers, state, progress);
-
-        bool cancelled = false;
+        DubboSession[] invocationSessions = CreateInvocationSessions(configuration);
         try
         {
-            await allWorkers;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            cancelled = true;
+            await Task.WhenAll(invocationSessions.Select(invocationSession =>
+                invocationSession.PrepareForInvocationsAsync(
+                    configuration.Settings,
+                    configuration.Invocation,
+                    cancellationToken)));
+
+            var state = new RunState(
+                configuration.TotalRequests,
+                configuration.LimitMode == PressureTestLimitMode.Duration
+                    ? configuration.DurationLimitSeconds
+                    : 0,
+                configuration.RecordRequestResponse,
+                configuration.SlowRequestThresholdMilliseconds);
+            var startGate = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            Task[] workers = Enumerable.Range(1, configuration.UserCount)
+                .Select(userIndex => RunUserAsync(
+                    invocationSessions[GetClientIndex(
+                        configuration.UserCount,
+                        configuration.TcpReuseMode,
+                        userIndex)],
+                    configuration,
+                    userIndex,
+                    state,
+                    startGate.Task,
+                    cancellationToken))
+                .ToArray();
+            Task allWorkers = Task.WhenAll(workers);
+            state.Start();
+            startGate.SetResult(true);
+            Task reporter = ReportProgressAsync(allWorkers, state, progress);
+
+            bool cancelled = false;
+            try
+            {
+                await allWorkers;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                cancelled = true;
+            }
+            finally
+            {
+                state.Stop();
+                await reporter;
+            }
+
+            PressureTestSnapshot final = state.CreateSnapshot(isRunning: false, isCancelled: cancelled, addPoint: true);
+            progress?.Report(final);
+            return final;
         }
         finally
         {
-            state.Stop();
-            await reporter;
+            foreach (DubboSession additionalSession in invocationSessions.Skip(1))
+            {
+                additionalSession.Dispose();
+            }
         }
-
-        PressureTestSnapshot final = state.CreateSnapshot(isRunning: false, isCancelled: cancelled, addPoint: true);
-        progress?.Report(final);
-        return final;
     }
 
     private async Task RunUserAsync(
+        DubboSession invocationSession,
         PressureTestConfiguration configuration,
         int userIndex,
         RunState state,
@@ -124,7 +141,7 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                 string? response = null;
                 try
                 {
-                    InvocationOutput output = await session.InvokeAsync(
+                    InvocationOutput output = await invocationSession.InvokeAsync(
                         configuration.Settings,
                         invocation,
                         cancellationToken);
@@ -193,6 +210,8 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         ArgumentNullException.ThrowIfNull(configuration.Invocation);
         if (configuration.UserCount is < 1 or > 500)
             throw new ArgumentOutOfRangeException(nameof(configuration.UserCount), "并发用户数必须在 1 到 500 之间。");
+        if (!Enum.IsDefined(configuration.TcpReuseMode))
+            throw new ArgumentOutOfRangeException(nameof(configuration.TcpReuseMode), "请选择有效的 TCP 复用模式。");
         if (!Enum.IsDefined(configuration.LimitMode))
             throw new ArgumentOutOfRangeException(nameof(configuration.LimitMode), "请选择有效的负载上限模式。");
         if (configuration.LimitMode == PressureTestLimitMode.RequestCount
@@ -219,6 +238,49 @@ public sealed class DubboPressureTestRunner(DubboSession session)
             && (long)configuration.UserCount * configuration.IterationsPerUser > MaximumTotalRequests)
             throw new ArgumentOutOfRangeException(nameof(configuration.IterationsPerUser), $"单次压测最多允许 {MaximumTotalRequests:N0} 个请求。");
     }
+
+    public static int GetClientCount(
+        int userCount,
+        PressureTestTcpReuseMode reuseMode)
+    {
+        if (userCount < 1)
+            throw new ArgumentOutOfRangeException(nameof(userCount));
+        int usersPerClient = GetUsersPerClient(userCount, reuseMode);
+        return (userCount + usersPerClient - 1) / usersPerClient;
+    }
+
+    internal static int GetClientIndex(
+        int userCount,
+        PressureTestTcpReuseMode reuseMode,
+        int userIndex)
+    {
+        if (userIndex < 1 || userIndex > userCount)
+            throw new ArgumentOutOfRangeException(nameof(userIndex));
+        return (userIndex - 1) / GetUsersPerClient(userCount, reuseMode);
+    }
+
+    private DubboSession[] CreateInvocationSessions(PressureTestConfiguration configuration)
+    {
+        int clientCount = GetClientCount(configuration.UserCount, configuration.TcpReuseMode);
+        var result = new DubboSession[clientCount];
+        result[0] = session;
+        for (int index = 1; index < result.Length; index++)
+        {
+            result[index] = session.CreateInvocationSession();
+        }
+        return result;
+    }
+
+    private static int GetUsersPerClient(
+        int userCount,
+        PressureTestTcpReuseMode reuseMode) => reuseMode switch
+        {
+            PressureTestTcpReuseMode.FullyShared => userCount,
+            PressureTestTcpReuseMode.PerUser => 1,
+            PressureTestTcpReuseMode.SharedBy10Users => 10,
+            PressureTestTcpReuseMode.SharedBy20Users => 20,
+            _ => throw new ArgumentOutOfRangeException(nameof(reuseMode), "请选择有效的 TCP 复用模式。")
+        };
 
     public static bool ShouldStartRequest(
         PressureTestConfiguration configuration,

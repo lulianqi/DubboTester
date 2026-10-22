@@ -6,6 +6,49 @@ namespace DubboTester.Tests;
 
 public sealed class DubboPressureTestRunnerTests
 {
+    [Theory]
+    [InlineData(100, PressureTestTcpReuseMode.FullyShared, 1)]
+    [InlineData(100, PressureTestTcpReuseMode.PerUser, 100)]
+    [InlineData(100, PressureTestTcpReuseMode.SharedBy10Users, 10)]
+    [InlineData(101, PressureTestTcpReuseMode.SharedBy10Users, 11)]
+    [InlineData(100, PressureTestTcpReuseMode.SharedBy20Users, 5)]
+    [InlineData(101, PressureTestTcpReuseMode.SharedBy20Users, 6)]
+    public void GetClientCount_UsesConfiguredReuseGroupSize(
+        int userCount,
+        PressureTestTcpReuseMode reuseMode,
+        int expected)
+    {
+        Assert.Equal(expected, DubboPressureTestRunner.GetClientCount(userCount, reuseMode));
+    }
+
+    [Theory]
+    [InlineData(1, 0)]
+    [InlineData(10, 0)]
+    [InlineData(11, 1)]
+    [InlineData(20, 1)]
+    [InlineData(21, 2)]
+    public void GetClientIndex_AssignsTenUsersToEachClient(int userIndex, int expected)
+    {
+        Assert.Equal(
+            expected,
+            DubboPressureTestRunner.GetClientIndex(
+                25,
+                PressureTestTcpReuseMode.SharedBy10Users,
+                userIndex));
+    }
+
+    [Fact]
+    public void ValidateConfiguration_RejectsUnknownTcpReuseMode()
+    {
+        PressureTestConfiguration configuration = CreateConfiguration();
+        configuration.TcpReuseMode = (PressureTestTcpReuseMode)999;
+
+        ArgumentOutOfRangeException exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            DubboPressureTestRunner.ValidateConfiguration(configuration));
+
+        Assert.Contains("TCP 复用模式", exception.Message);
+    }
+
     [Fact]
     public void CalculateUserStartDelay_StartsEachStepAtItsAbsoluteScheduledTime()
     {
@@ -170,6 +213,16 @@ public sealed class DubboPressureTestRunnerTests
         Assert.Equal(15, PressureTestChartMetrics.CalculateSmoothedTps(points, 3, 1));
         Assert.Equal(10, PressureTestChartMetrics.CalculateSmoothedTps(points, 3, 5));
         Assert.Equal(15, PressureTestChartMetrics.CalculatePeakSmoothedTps(points, 1));
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(0.07, 0.08)]
+    [InlineData(57, 65)]
+    [InlineData(99, 100)]
+    public void ChartMetrics_CalculatesAdaptivePercentageMaximum(double value, double expected)
+    {
+        Assert.Equal(expected, PressureTestChartMetrics.CalculateAdaptivePercentageMaximum([value]), 6);
     }
 
     [Fact]

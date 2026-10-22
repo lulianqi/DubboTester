@@ -54,6 +54,10 @@ public static class PressureTestHtmlReportBuilder
             .Append(Item("Java 参数类型", configuration.Invocation.JavaParameterTypes))
             .Append(Item("版本 / 分组", $"{EmptyAsDash(configuration.Invocation.Version)} / {EmptyAsDash(configuration.Invocation.Group)}"))
             .Append(Item("并发用户", configuration.UserCount.ToString("N0", CultureInfo.InvariantCulture)))
+            .Append(Item("TCP 复用模式", TcpReuseModeLabel(configuration.TcpReuseMode)))
+            .Append(Item("Dubbo client 数", DubboPressureTestRunner.GetClientCount(
+                configuration.UserCount,
+                configuration.TcpReuseMode).ToString("N0", CultureInfo.InvariantCulture)))
             .Append(Item("终止方式", configuration.LimitMode == PressureTestLimitMode.RequestCount ? "次数上限" : "时间上限"))
             .Append(configuration.LimitMode == PressureTestLimitMode.RequestCount
                 ? Item("每用户发送", configuration.IterationsPerUser.ToString("N0", CultureInfo.InvariantCulture))
@@ -132,6 +136,15 @@ public static class PressureTestHtmlReportBuilder
             .Append("</body></html>");
         return html.ToString();
     }
+
+    private static string TcpReuseModeLabel(PressureTestTcpReuseMode mode) => mode switch
+    {
+        PressureTestTcpReuseMode.FullyShared => "完全复用（全部用户共用一个 client）",
+        PressureTestTcpReuseMode.PerUser => "不复用（每个用户一个 client）",
+        PressureTestTcpReuseMode.SharedBy10Users => "每 10 个用户复用一个 client",
+        PressureTestTcpReuseMode.SharedBy20Users => "每 20 个用户复用一个 client",
+        _ => mode.ToString()
+    };
 
     private static string ThroughputChart(
         IReadOnlyList<PressureTestPoint> points,
@@ -231,6 +244,8 @@ public static class PressureTestHtmlReportBuilder
         if (buckets.Count > 0)
         {
             double maximum = Math.Max(1, buckets.Max(countSelector));
+            double rateMaximum = PressureTestChartMetrics.CalculateAdaptivePercentageMaximum(
+                buckets.Select(rateSelector));
             double slotWidth = 720d / buckets.Count;
             double barWidth = Math.Max(2, slotWidth * .62);
             for (int index = 0; index < buckets.Count; index++)
@@ -250,7 +265,7 @@ public static class PressureTestHtmlReportBuilder
             string ratePoints = string.Join(' ', buckets.Select((bucket, index) =>
             {
                 double x = (index + .5) * slotWidth;
-                double y = 170 - Math.Clamp(rateSelector(bucket) / 100d, 0, 1) * 160;
+                double y = 170 - Math.Clamp(rateSelector(bucket) / rateMaximum, 0, 1) * 160;
                 return $"{x.ToString("F1", CultureInfo.InvariantCulture)},{y.ToString("F1", CultureInfo.InvariantCulture)}";
             }));
             html.Append("<polyline class=\"").Append(lineClass).Append("\" points=\"")

@@ -20,6 +20,8 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
     private string? _registryAddress;
     private bool _disposed;
 
+    internal DubboSession CreateInvocationSession() => new(catalogCache);
+
     public async Task<DubboCatalogLoadResult> LoadServicesAsync(
         TesterSettings settings,
         bool forceRefresh = false,
@@ -279,7 +281,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         }
         else
         {
-            result = await _client!.QueryGenericAsync(invocation);
+            result = await _client!.QueryAsync(invocation);
         }
 
         string content = result.QuerySuccess
@@ -437,7 +439,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
             settings.LoadBalanceMode
         });
 
-        if (_clientConfigurationKey == configurationKey && _client is not null && _registry is not null)
+        if (_clientConfigurationKey == configurationKey && _client is not null)
         {
             return;
         }
@@ -445,19 +447,12 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (_clientConfigurationKey == configurationKey && _client is not null && _registry is not null)
+            if (_clientConfigurationKey == configurationKey && _client is not null)
             {
                 return;
             }
 
             _client?.Dispose();
-            if (_registry is null || !string.Equals(_registryAddress, address, StringComparison.Ordinal))
-            {
-                _registry?.Dispose();
-                _registry = new MyZookeeper(address);
-                _registryAddress = address;
-            }
-
             _client = new DubboClient(
                 address,
                 new DubboClient.DubboClientConf
