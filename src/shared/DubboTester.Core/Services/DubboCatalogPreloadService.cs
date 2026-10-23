@@ -17,7 +17,7 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
 
     private readonly object _sync = new();
     private readonly Dictionary<string, PreloadOperation> _operations =
-        new(StringComparer.OrdinalIgnoreCase);
+        new(StringComparer.Ordinal);
     private bool _disposed;
 
     public CatalogPreloadStatus StartOrGet(
@@ -25,7 +25,7 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
         IReadOnlyList<DubboServiceItem> services)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        string address = NormalizeAddress(settings.ZooKeeperAddress);
+        string address = NormalizeAddress(settings);
         string catalogKey = RegistryRootPaths.Parse(settings.RegistryRootPath).CacheKey;
         string key = BuildKey(address, catalogKey);
         PreloadOperation operation;
@@ -38,7 +38,7 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
                 return existing.GetStatus();
             }
 
-            operation = new PreloadOperation(address, catalogKey, services);
+            operation = new PreloadOperation(settings.Clone(), address, catalogKey, services);
             _operations[key] = operation;
             TrimCompletedOperations();
         }
@@ -47,11 +47,11 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
         return operation.GetStatus();
     }
 
-    public CatalogPreloadStatus? GetStatus(string zooKeeperAddress, string registryRoot)
+    public CatalogPreloadStatus? GetStatus(TesterSettings settings)
     {
         string key = BuildKey(
-            NormalizeAddress(zooKeeperAddress),
-            RegistryRootPaths.Parse(registryRoot).CacheKey);
+            NormalizeAddress(settings),
+            RegistryRootPaths.Parse(settings.RegistryRootPath).CacheKey);
         lock (_sync)
         {
             return _operations.TryGetValue(key, out PreloadOperation? operation)
@@ -60,11 +60,11 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
         }
     }
 
-    public bool Stop(string zooKeeperAddress, string registryRoot)
+    public bool Stop(TesterSettings settings)
     {
         string key = BuildKey(
-            NormalizeAddress(zooKeeperAddress),
-            RegistryRootPaths.Parse(registryRoot).CacheKey);
+            NormalizeAddress(settings),
+            RegistryRootPaths.Parse(settings.RegistryRootPath).CacheKey);
         PreloadOperation? operation;
         lock (_sync)
         {
@@ -76,7 +76,7 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
 
     private async Task RunAsync(PreloadOperation operation)
     {
-        // 强制切到后台调度，确保命中目录缓存的页面线程不会同步进入 ZooKeeper 初始化。
+        // 强制切到后台调度，确保命中目录缓存的页面线程不会同步进入注册中心初始化。
         await Task.Yield();
         using var timeout = new CancellationTokenSource(PreloadTimeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -92,7 +92,12 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
                 return;
             }
 
-            await using var registry = new MyZookeeper(operation.ZooKeeperAddress);
+            await using MyZookeeper? zooKeeperRegistry = operation.Settings.RegistryType == RegistryCenterType.ZooKeeper
+                ? new MyZookeeper(operation.Settings.RegistryConnectionString)
+                : null;
+            NacosRegistryCatalogClient? nacosRegistry = operation.Settings.RegistryType == RegistryCenterType.Nacos
+                ? NacosRegistryCatalogPool.Shared.Get(operation.Settings.RegistryConnectionString)
+                : null;
 
             async Task WorkerAsync()
             {
@@ -104,13 +109,25 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
                         string serviceRoot = RegistryRootPaths.ResolveInvocationRoot(
                             operation.RegistryRoot,
                             service.RegistryRootPath);
-                        string path = $"{serviceRoot}/{service.Name}/providers";
-                        var providers = await registry
-                            .GetChildrenAsync(path, retryTime: 1)
-                            .WaitAsync(linked.Token);
-                        DubboSession.PopulateServiceDetails(service, providers?.Children ?? []);
+                        if (operation.Settings.RegistryType == RegistryCenterType.Nacos)
+                        {
+                            IReadOnlyList<DubboProviderItem> providers =
+                                await nacosRegistry!.GetProvidersAsync(
+                                    service.Name,
+                                    RegistryConnectionSettings.NacosGroup(serviceRoot),
+                                    linked.Token);
+                            DubboSession.PopulateServiceDetails(service, providers);
+                        }
+                        else
+                        {
+                            string path = $"{serviceRoot}/{service.Name}/providers";
+                            var providers = await zooKeeperRegistry!
+                                .GetChildrenAsync(path, retryTime: 1)
+                                .WaitAsync(linked.Token);
+                            DubboSession.PopulateServiceDetails(service, providers?.Children ?? []);
+                        }
                         catalogCache.UpdateService(
-                            operation.ZooKeeperAddress,
+                            operation.RegistryAddress,
                             operation.RegistryRoot,
                             service);
                         operation.RegisterSuccess();
@@ -137,7 +154,6 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
                 .Select(_ => WorkerAsync())
                 .ToArray();
             await Task.WhenAll(workers);
-
             CatalogPreloadState finalState = operation.RequestedStopState
                 ?? (timeout.IsCancellationRequested
                     ? CatalogPreloadState.TimedOut
@@ -165,7 +181,7 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
     {
         // 先提交缓存标记，再发布终态，避免新页面在两者之间启动重复预取。
         catalogCache.MarkPreloadAttempted(
-            operation.ZooKeeperAddress,
+            operation.RegistryAddress,
             operation.RegistryRoot);
         operation.Complete(state, error);
     }
@@ -190,10 +206,12 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
 
     private static string BuildKey(string address, string root) => $"{address}\n{root}";
 
-    private static string NormalizeAddress(string address) =>
-        string.IsNullOrWhiteSpace(address)
-            ? throw new ArgumentException("请先在设置中填写 ZooKeeper 连接地址。", nameof(address))
-            : address.Trim();
+    private static string NormalizeAddress(TesterSettings settings) =>
+        string.IsNullOrWhiteSpace(settings.RegistryAddress)
+            ? throw new ArgumentException(
+                $"请先在设置中填写 {settings.RegistryDisplayName} 连接地址。",
+                nameof(settings))
+            : settings.RegistryCacheAddress;
 
     public void Dispose()
     {
@@ -223,17 +241,20 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
         private string? _error;
 
         public PreloadOperation(
-            string zooKeeperAddress,
+            TesterSettings settings,
+            string registryAddress,
             string registryRoot,
             IReadOnlyList<DubboServiceItem> services)
         {
-            ZooKeeperAddress = zooKeeperAddress;
+            Settings = settings;
+            RegistryAddress = registryAddress;
             RegistryRoot = registryRoot;
             Services = services.Select(CloneService).ToArray();
             _loadedServiceCount = services.Count(service => service.IsLoaded);
         }
 
-        public string ZooKeeperAddress { get; }
+        public TesterSettings Settings { get; }
+        public string RegistryAddress { get; }
         public string RegistryRoot { get; }
         public IReadOnlyList<DubboServiceItem> Services { get; }
         public DateTimeOffset StartedAt { get; } = DateTimeOffset.Now;
@@ -291,7 +312,7 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
             lock (_sync)
             {
                 return new CatalogPreloadStatus(
-                    ZooKeeperAddress,
+                    RegistryAddress,
                     RegistryRoot,
                     _state,
                     Services.Count,

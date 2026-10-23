@@ -53,6 +53,11 @@ public sealed class McpGatewayTests
         changedZooKeeper.ZooKeeperAddress = "zk-new.example:2181";
         Assert.False(McpGatewayService.IsConnectionContextEquivalent(original, changedZooKeeper));
 
+        McpGatewayConfiguration changedRegistryType = original.Clone();
+        changedRegistryType.RegistryType = RegistryCenterType.Nacos;
+        changedRegistryType.RegistryAddress = "nacos.example:8848";
+        Assert.False(McpGatewayService.IsConnectionContextEquivalent(original, changedRegistryType));
+
         McpGatewayConfiguration changedMetadataRoot = original.Clone();
         changedMetadataRoot.MetadataRootPath = "/metadata-v2";
         Assert.False(McpGatewayService.IsConnectionContextEquivalent(original, changedMetadataRoot));

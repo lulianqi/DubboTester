@@ -47,9 +47,9 @@
 .mcp-settings-grid > label b, .method-editor label b { color: #d83b4e; }
 .field-label { display: inline-flex; align-items: center; gap: 3px; width: max-content; white-space: nowrap; }
 .field-label b { color: #d83b4e; }
-.mcp-settings-grid input, .method-editor input, .method-editor select, .method-editor textarea { min-width: 0; width: 100%; border: 1px solid #dfe5ee; border-radius: 7px; color: #25344a; background: #fff; }
-.mcp-settings-grid input, .method-editor input, .method-editor select { height: 37px; padding: 0 10px; }
-.mcp-settings-grid input:disabled { color: #6f7b8b; background: #f2f4f7; cursor: not-allowed; }
+.mcp-settings-grid input, .mcp-settings-grid select, .method-editor input, .method-editor select, .method-editor textarea { min-width: 0; width: 100%; border: 1px solid #dfe5ee; border-radius: 7px; color: #25344a; background: #fff; }
+.mcp-settings-grid input, .mcp-settings-grid select, .method-editor input, .method-editor select { height: 37px; padding: 0 10px; }
+.mcp-settings-grid input:disabled, .mcp-settings-grid select:disabled { color: #6f7b8b; background: #f2f4f7; cursor: not-allowed; }
 .mcp-settings-grid .span-two { grid-column: 1 / -1; }
 .mcp-settings-grid small { color: #919aa7; font-size: 9px; }
 .auth-setting { min-width: 0; display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #e3e8f0; border-radius: 7px; background: #fafbfd; }

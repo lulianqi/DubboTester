@@ -37,8 +37,8 @@
                 </label>
                 @if (Input.Route == InvocationRoute.Registry)
                 {
-                    <label>ZooKeeper
-                        <input @bind="Settings.ZooKeeperAddress" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="127.0.0.1:2181" />
+                    <label>@Settings.RegistryDisplayName
+                        <input @bind="Settings.RegistryAddress" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="@RegistryAddressPlaceholder" />
                     </label>
                     <label>注册目录
                         <input @bind="Input.RegistryRootPath" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="从请求页选择的服务目录" />
@@ -1041,6 +1041,9 @@
 }
 
 @code {
+    private string RegistryAddressPlaceholder => Settings.RegistryType == RegistryCenterType.Nacos
+        ? "127.0.0.1:8848?namespace=prod"
+        : "127.0.0.1:2181";
     private const string SettingsStorageKey = "dubbo-tester.settings.v1";
     private const string UserToken = "{{user}}";
     private const string IterationToken = "{{iteration}}";

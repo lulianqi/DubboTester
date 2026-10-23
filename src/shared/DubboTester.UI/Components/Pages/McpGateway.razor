@@ -28,7 +28,7 @@
                 </button>
                 <div class="settings-summary">
                     <span class="endpoint-summary" title="@Endpoint"><b>MCP：</b><code>@Endpoint</code><button type="button" title="复制 MCP 地址" @onclick="() => CopyAsync(Endpoint)" @onclick:stopPropagation="true">复制</button></span>
-                    <span>ZooKeeper：@(string.IsNullOrWhiteSpace(Config.ZooKeeperAddress) ? "未配置" : Config.ZooKeeperAddress)</span>
+                    <span>@Config.RegistryDisplayName：@(string.IsNullOrWhiteSpace(Config.RegistryAddress) ? "未配置" : Config.RegistryAddress)</span>
                     <span>鉴权：@(Config.AuthenticationEnabled ? "Bearer Token" : "关闭")</span>
                     <span>记录上限：@Config.HistoryLimit</span>
                     @if (NoticeIsError || NoticeIsWarning)
@@ -45,10 +45,16 @@
             @if (GlobalSettingsExpanded)
             {
                 <div class="mcp-settings-grid @(Config.Enabled ? "settings-locked" : null)">
-                    <label><span class="field-label">ZooKeeper 地址 <b>*</b></span><input disabled="@(Config.Enabled || IsSaving)" @bind="Config.ZooKeeperAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="例如：127.0.0.1:2181 或 zk1:2181,zk2:2181" /></label>
+                    <label>注册中心类型
+                        <select disabled="@(Config.Enabled || IsSaving)" @bind="Config.RegistryType" @bind:after="RegistryTypeChangedAsync">
+                            <option value="@RegistryCenterType.ZooKeeper">ZooKeeper</option>
+                            <option value="@RegistryCenterType.Nacos">Nacos</option>
+                        </select>
+                    </label>
+                    <label><span class="field-label">@Config.RegistryDisplayName 地址 <b>*</b></span><input disabled="@(Config.Enabled || IsSaving)" @bind="Config.RegistryAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="@RegistryAddressPlaceholder" /></label>
                     <label>注册目录<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.RegistryRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="/" /></label>
-                    <label>元数据中心地址（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataCenterAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="默认复用 ZooKeeper" /></label>
-                    <label>元数据目录（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="自动推导" /></label>
+                    <label>元数据中心地址（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataCenterAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="@MetadataAddressPlaceholder" /></label>
+                    <label>元数据目录（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="@MetadataRootPlaceholder" /></label>
                     <label>调用超时（ms）<input disabled="@(Config.Enabled || IsSaving)" type="number" min="100" max="600000" @bind="Config.RequestTimeoutMs" @bind:after="AutoSaveConfigurationAsync" /></label>
                     <label>内存记录上限<input disabled="@(Config.Enabled || IsSaving)" type="number" min="10" max="5000" @bind="Config.HistoryLimit" @bind:after="AutoSaveConfigurationAsync" /></label>
                     <label class="span-two">MCP Endpoint
@@ -99,7 +105,7 @@
                         <div class="mcp-catalog-list">
                             @if (Services.Count == 0)
                             {
-                                <div class="mcp-empty">暂无服务，请确认 ZooKeeper 配置后刷新列表</div>
+                                <div class="mcp-empty">暂无服务，请确认 @Config.RegistryDisplayName 配置后刷新列表</div>
                             }
                             else
                             {
@@ -188,7 +194,7 @@
                     <strong>@AvailableConfigurationCount / @Config.Methods.Count 可用</strong>
                     <button class="link-button availability-check-link"
                             title="重新读取当前注册中心的服务、方法和签名，判断各工具是否仍可对 MCP 客户端提供服务；不会删除现有配置。"
-                            disabled="@(IsBusy || Config.Methods.Count == 0 || string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))"
+                            disabled="@(IsBusy || Config.Methods.Count == 0 || string.IsNullOrWhiteSpace(Config.RegistryAddress))"
                             @onclick="RevalidateToolsAsync">@(IsValidatingTools ? "校验中…" : "可用性校验")</button>
                     <button class="primary small-button" @onclick="OpenAddDialog">＋ 添加配置</button>
                 </div>
@@ -516,7 +522,7 @@
     private string McpHistoryResponseFilter { get; set; } = string.Empty;
     private string? ExpandedMcpRecordId { get; set; }
     private string SearchText { get; set; } = string.Empty;
-    private string Notice { get; set; } = "配置 ZooKeeper 并扫描服务，然后为需要暴露的方法启用 MCP。";
+    private string Notice { get; set; } = "配置注册中心并扫描服务，然后为需要暴露的方法启用 MCP。";
     private bool NoticeIsError { get; set; }
     private bool NoticeIsWarning { get; set; }
     private bool IsScanning { get; set; }
@@ -602,6 +608,15 @@
         && !IsSaving
         && !IsDialogBusy
         && string.IsNullOrEmpty(DialogValidationMessage);
+    private string RegistryAddressPlaceholder => Config.RegistryType == RegistryCenterType.Nacos
+        ? "例如：127.0.0.1:8848?namespace=prod"
+        : "例如：127.0.0.1:2181 或 zk1:2181,zk2:2181";
+    private string MetadataAddressPlaceholder => Config.RegistryType == RegistryCenterType.Nacos
+        ? "默认复用 Nacos"
+        : "默认复用 ZooKeeper";
+    private string MetadataRootPlaceholder => Config.RegistryType == RegistryCenterType.Nacos
+        ? "默认使用 Nacos Config 分组 dubbo"
+        : "自动推导";
     private int McpHistoryPageCount => Math.Max(1,
         (int)Math.Ceiling(McpHistoryTotalCount / (double)McpHistoryPageSize));
     private bool HasMcpHistoryFilters =>
@@ -620,12 +635,24 @@
         ServiceListExpanded = !ServiceListExpanded;
     }
 
+    private async Task RegistryTypeChangedAsync()
+    {
+        // A ZooKeeper endpoint is not a valid Nacos endpoint (and vice versa).
+        // Clear protocol-specific values before autosaving so the old address is
+        // never tested using the newly selected registry client.
+        Config.RegistryAddress = string.Empty;
+        Config.RegistryRootPath = "/";
+        Config.MetadataCenterAddress = string.Empty;
+        Config.MetadataRootPath = string.Empty;
+        await AutoSaveConfigurationAsync();
+    }
+
     protected override async Task OnInitializedAsync()
     {
         Config = Gateway.GetConfiguration();
         RefreshMcpHistoryPage();
         Gateway.Changed += GatewayChanged;
-        if (!string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))
+        if (!string.IsNullOrWhiteSpace(Config.RegistryAddress))
         {
             await LoadServiceListAsync(forceRefresh: false, refreshDetails: false);
         }
@@ -726,9 +753,9 @@
         try
         {
             if ((isEnablingGateway || connectionContextChanged)
-                && !string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))
+                && !string.IsNullOrWhiteSpace(Config.RegistryAddress))
             {
-                await DubboSession.TestZooKeeperAsync(Config.ZooKeeperAddress);
+                await DubboSession.TestRegistryAsync(Config.ToTesterSettings());
             }
 
             await Gateway.SaveConfigurationAsync(Config);
@@ -797,9 +824,9 @@
 
     private async Task LoadServiceListAsync(bool forceRefresh, bool refreshDetails)
     {
-        if (string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))
+        if (string.IsNullOrWhiteSpace(Config.RegistryAddress))
         {
-            SetNotice("请先填写 ZooKeeper 地址。", true);
+            SetNotice($"请先填写 {Config.RegistryDisplayName} 地址。", true);
             return;
         }
 
@@ -871,7 +898,7 @@
         {
             // Expanding a service is an explicit refresh point. This avoids presenting
             // an older cached zero-method snapshot and also updates the shared catalog
-            // cache with the latest providers/methods returned by ZooKeeper.
+            // cache with the latest providers/methods returned by the registry center.
             await Gateway.LoadServiceDetailsAsync(
                 Config.ToTesterSettings(),
                 service,

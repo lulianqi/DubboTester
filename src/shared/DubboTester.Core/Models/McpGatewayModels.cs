@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using DubboTester.Services;
+
 namespace DubboTester.Models;
 
 public enum McpToolValidationStatus
@@ -13,7 +16,22 @@ public enum McpToolValidationStatus
 public sealed class McpGatewayConfiguration
 {
     public bool Enabled { get; set; }
+    public RegistryCenterType RegistryType { get; set; } = RegistryCenterType.ZooKeeper;
     public string ZooKeeperAddress { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public string RegistryAddress
+    {
+        get => ZooKeeperAddress;
+        set => ZooKeeperAddress = value;
+    }
+
+    [JsonIgnore]
+    public string RegistryConnectionString =>
+        RegistryConnectionSettings.BuildConnectionString(RegistryType, RegistryAddress);
+
+    [JsonIgnore]
+    public string RegistryDisplayName => RegistryConnectionSettings.DisplayName(RegistryType);
     public string RegistryRootPath { get; set; } = "/";
     public string MetadataCenterAddress { get; set; } = string.Empty;
     public string MetadataRootPath { get; set; } = string.Empty;
@@ -27,6 +45,7 @@ public sealed class McpGatewayConfiguration
     public McpGatewayConfiguration Clone() => new()
     {
         Enabled = Enabled,
+        RegistryType = RegistryType,
         ZooKeeperAddress = ZooKeeperAddress,
         RegistryRootPath = RegistryRootPath,
         MetadataCenterAddress = MetadataCenterAddress,
@@ -41,6 +60,7 @@ public sealed class McpGatewayConfiguration
 
     public TesterSettings ToTesterSettings() => new()
     {
+        RegistryType = RegistryType,
         ZooKeeperAddress = ZooKeeperAddress,
         RegistryRootPath = RegistryRootPath,
         MetadataCenterAddress = MetadataCenterAddress,

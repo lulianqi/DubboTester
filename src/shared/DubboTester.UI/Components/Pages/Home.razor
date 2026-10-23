@@ -90,7 +90,7 @@
                 <div class="empty-state">
                     <div class="empty-icon">⌘</div>
                     <strong>尚未加载服务</strong>
-                    <span>配置 ZooKeeper 后刷新注册中心</span>
+                    <span>配置 @Settings.RegistryDisplayName 后刷新注册中心</span>
                     <button class="primary small" @onclick="OpenSettings">打开设置</button>
                 </div>
             }
@@ -694,27 +694,39 @@
                 <button class="modal-close" @onclick="CloseSettings">×</button>
             </header>
             <div class="settings-content">
-                <label class="wide-field">
-                    <span>ZooKeeper 连接地址<b>*</b></span>
-                    <input @bind="SettingsDraft.ZooKeeperAddress" @bind:event="oninput" placeholder="zk-1:2181,zk-2:2181" />
-                    <small>支持 DubboNet 的 digest 认证连接字符串格式</small>
-                </label>
+                <div class="wide-field registry-connection-field">
+                    <div class="registry-connection-heading">
+                        <div class="registry-type-switch" role="group" aria-label="注册中心类型">
+                            <button type="button"
+                                    class="@(SettingsDraft.RegistryType == RegistryCenterType.ZooKeeper ? "active" : null)"
+                                    @onclick="() => SetRegistryType(RegistryCenterType.ZooKeeper)">ZooKeeper</button>
+                            <button type="button"
+                                    class="@(SettingsDraft.RegistryType == RegistryCenterType.Nacos ? "active" : null)"
+                                    @onclick="() => SetRegistryType(RegistryCenterType.Nacos)">Nacos</button>
+                        </div>
+                        <span>@SettingsDraft.RegistryDisplayName 连接地址<b>*</b></span>
+                    </div>
+                    <input @bind="SettingsDraft.RegistryAddress"
+                           @bind:event="oninput"
+                           placeholder="@RegistryAddressPlaceholder" />
+                    <small>@RegistryAddressHelp</small>
+                </div>
                 <div class="settings-grid">
                     <label>
                         <span>注册目录</span>
-                        <input @bind="SettingsDraft.RegistryRootPath" @bind:event="oninput" placeholder="/dubbo-a, /dubbo-b；留空或 / 自动扫描" />
-                        <small>多个目录用逗号、分号或空格分隔；留空或填写 / 时自动扫描一级目录</small>
+                        <input @bind="SettingsDraft.RegistryRootPath" @bind:event="oninput" placeholder="@RegistryRootPlaceholder" />
+                        <small>@RegistryRootHelp</small>
                     </label>
                     <label><span>请求超时（ms）</span><input type="number" min="100" max="600000" @bind="SettingsDraft.RequestTimeoutMs" /></label>
                 </div>
                 <div class="settings-grid">
-                    <label><span>元数据中心地址（选填）</span><input @bind="SettingsDraft.MetadataCenterAddress" placeholder="留空则复用注册中心" /></label>
+                    <label><span>元数据中心地址（选填）</span><input @bind="SettingsDraft.MetadataCenterAddress" placeholder="@MetadataAddressPlaceholder" /></label>
                     <label>
                         <span>元数据目录（选填）</span>
                         <input @bind="SettingsDraft.MetadataRootPath"
                                @bind:event="oninput"
-                               placeholder="留空则复用当前服务的注册目录" />
-                        <small>留空时随当前服务所属注册目录自动切换；填写后固定使用指定目录</small>
+                               placeholder="@MetadataRootPlaceholder" />
+                        <small>@MetadataRootHelp</small>
                     </label>
                 </div>
                 <div class="settings-grid">
@@ -762,7 +774,7 @@
 }
 
 @code {
-    private const string DubboNetVersion = "3.1.0";
+    private const string DubboNetVersion = "3.2.0";
     private string DubboTesterVersion => Configuration["DubboTester:Version"] ?? "未知";
     private const string SettingsStorageKey = "dubbo-tester.settings.v1";
     private const string LegacyHistoryStorageKey = "dubbo-tester.history.v1";
@@ -799,7 +811,7 @@
     private string ResultText { get; set; } = string.Empty;
     private bool KeepResultHistory { get; set; }
     private long ResultContextVersion { get; set; }
-    private string Notice { get; set; } = "请先配置 ZooKeeper，然后刷新服务目录";
+    private string Notice { get; set; } = "请先配置注册中心，然后刷新服务目录";
     private bool NoticeIsError { get; set; }
     private bool NoticeIsWarning { get; set; }
     private bool AboutVisible { get; set; }
@@ -1031,7 +1043,7 @@
 
             StateHasChanged();
 
-            if (!string.IsNullOrWhiteSpace(Settings.ZooKeeperAddress))
+            if (!string.IsNullOrWhiteSpace(Settings.RegistryAddress))
             {
                 await RefreshCatalogAsync(false);
             }
@@ -1081,7 +1093,7 @@
         CatalogStopRequested = false;
         IsCatalogBusy = true;
         SetNotice(forceRefresh
-            ? "正在忽略缓存并重新读取 ZooKeeper 服务目录…"
+            ? $"正在忽略缓存并重新读取 {Settings.RegistryDisplayName} 服务目录…"
             : "正在加载服务目录（优先使用全局缓存）…");
         try
         {
@@ -1103,7 +1115,7 @@
                 StartCatalogPreloadTracking(Settings.Clone());
             }
 
-            string source = result.FromCache ? "全局缓存" : "ZooKeeper";
+            string source = result.FromCache ? "全局缓存" : Settings.RegistryDisplayName;
             if (IsCatalogPreloading)
             {
                 SetNotice(
@@ -1112,7 +1124,7 @@
             else if (!Settings.OnlyRefreshServiceNames && !result.HasAllServiceDetails)
             {
                 SetNotice(
-                    $"已从{source}加载 {Services.Count} 个服务；因 ZooKeeper 超时或连接波动，"
+                    $"已从{source}加载 {Services.Count} 个服务；因 {Settings.RegistryDisplayName} 超时或连接波动，"
                     + $"仍有 {result.PendingServiceDetailCount} 个服务未预取，可展开服务重试或强制刷新");
             }
             else
@@ -1120,7 +1132,9 @@
                 if (Services.Count == 0
                     && RegistryRootPaths.Parse(Settings.RegistryRootPath).AutoDiscover)
                 {
-                    SetNotice("已扫描 ZooKeeper 一级节点，但未发现包含可用 Provider 的 Dubbo 注册目录", true);
+                    SetNotice(Settings.RegistryType == RegistryCenterType.Nacos
+                        ? "已扫描 Nacos 默认分组，但未发现可用的 Dubbo Provider"
+                        : "已扫描 ZooKeeper 一级节点，但未发现包含可用 Provider 的 Dubbo 注册目录", true);
                     return;
                 }
                 string details = result.HasAllServiceDetails ? "，已包含全部服务方法" : string.Empty;
@@ -1180,7 +1194,7 @@
 
         if (IsCatalogPreloading)
         {
-            CatalogPreloader.Stop(Settings.ZooKeeperAddress, Settings.RegistryRootPath);
+            CatalogPreloader.Stop(Settings);
             SetNotice("正在结束后台方法预取，已完成的数据会保留…");
         }
     }
@@ -1201,9 +1215,7 @@
         {
             while (!cancellation.IsCancellationRequested)
             {
-                CatalogPreloadStatus? status = CatalogPreloader.GetStatus(
-                    settings.ZooKeeperAddress,
-                    settings.RegistryRootPath);
+                CatalogPreloadStatus? status = CatalogPreloader.GetStatus(settings);
                 if (status is null)
                 {
                     return;
@@ -1264,8 +1276,9 @@
     }
 
     private static bool IsSameCatalog(TesterSettings left, TesterSettings right) =>
-        string.Equals(left.ZooKeeperAddress.Trim(), right.ZooKeeperAddress.Trim(),
-            StringComparison.OrdinalIgnoreCase)
+        left.RegistryType == right.RegistryType
+        && string.Equals(left.RegistryConnectionString, right.RegistryConnectionString,
+            StringComparison.Ordinal)
         && string.Equals(
             RegistryRootPaths.Parse(left.RegistryRootPath).CacheKey,
             RegistryRootPaths.Parse(right.RegistryRootPath).CacheKey,
@@ -2019,7 +2032,7 @@
             : Input.JavaParameterTypes.Trim();
         return string.Join(
             '\u001f',
-            Settings.ZooKeeperAddress.Trim(),
+            Settings.RegistryCacheAddress,
             Input.RegistryRootPath.Trim(),
             serviceName,
             methodName,
@@ -2046,6 +2059,44 @@
         return methods.Where(method => method.Contains(SearchText, comparison));
     }
 
+    private string RegistryAddressPlaceholder => SettingsDraft.RegistryType == RegistryCenterType.Nacos
+        ? "nacos-1:8848,nacos-2:8848?namespace=prod"
+        : "zk-1:2181,zk-2:2181";
+
+    private string RegistryAddressHelp => SettingsDraft.RegistryType == RegistryCenterType.Nacos
+        ? "支持 namespace、username、password、accessKey、secretKey 参数；可省略 nacos:// 前缀"
+        : "支持 DubboNet 的 digest 认证连接字符串格式";
+
+    private string RegistryRootPlaceholder => SettingsDraft.RegistryType == RegistryCenterType.Nacos
+        ? "DEFAULT_GROUP；多个分组用逗号或空格分隔"
+        : "/dubbo-a, /dubbo-b；留空或 / 自动扫描";
+
+    private string RegistryRootHelp => SettingsDraft.RegistryType == RegistryCenterType.Nacos
+        ? "对应 Nacos Naming 分组；留空或填写 / 时使用 DEFAULT_GROUP"
+        : "多个目录用逗号、分号或空格分隔；留空或填写 / 时自动扫描一级目录";
+
+    private string MetadataAddressPlaceholder => SettingsDraft.RegistryType == RegistryCenterType.Nacos
+        ? "留空则复用 Nacos；也可填写独立 Nacos 地址"
+        : "留空则复用注册中心";
+
+    private string MetadataRootPlaceholder => SettingsDraft.RegistryType == RegistryCenterType.Nacos
+        ? "留空使用 Nacos Config 分组 dubbo"
+        : "留空则复用当前服务的注册目录";
+
+    private string MetadataRootHelp => SettingsDraft.RegistryType == RegistryCenterType.Nacos
+        ? "Nacos 元数据由 Config 管理；留空使用 Dubbo 默认分组 dubbo"
+        : "留空时随当前服务所属注册目录自动切换；填写后固定使用指定目录";
+
+    private void SetRegistryType(RegistryCenterType type)
+    {
+        if (SettingsDraft.RegistryType == type) return;
+        SettingsDraft.RegistryType = type;
+        SettingsDraft.RegistryAddress = string.Empty;
+        SettingsDraft.RegistryRootPath = "/";
+        SettingsDraft.MetadataCenterAddress = string.Empty;
+        SettingsDraft.MetadataRootPath = string.Empty;
+    }
+
     private void OpenSettings() { SettingsDraft = Settings.Clone(); SettingsVisible = true; }
     private void CloseSettings() => SettingsVisible = false;
     private void OpenAbout() => AboutVisible = true;
@@ -2059,6 +2110,7 @@
             return;
         }
 
+        SettingsDraft.RegistryAddress = SettingsDraft.RegistryAddress.Trim();
         SettingsDraft.RegistryRootPath = SettingsDraft.RegistryRootPath.Trim();
         SettingsDraft.MetadataRootPath = SettingsDraft.MetadataRootPath.Trim();
         SettingsDraft.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(SettingsDraft.HistoryLimit);

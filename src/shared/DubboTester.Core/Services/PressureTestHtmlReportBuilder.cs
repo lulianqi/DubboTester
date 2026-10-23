@@ -66,8 +66,11 @@ public static class PressureTestHtmlReportBuilder
 
         html.Append("<section class=\"card config\"><h2>压测配置</h2><div class=\"config-grid\">")
             .Append(Item("调用方式", configuration.Invocation.Route == InvocationRoute.Registry ? "注册中心" : "直连 Provider"))
+            .Append(configuration.Invocation.Route == InvocationRoute.Registry
+                ? Item("注册中心类型", configuration.Settings.RegistryDisplayName)
+                : string.Empty)
             .Append(Item("连接地址", configuration.Invocation.Route == InvocationRoute.Registry
-                ? configuration.Settings.ZooKeeperAddress
+                ? configuration.Settings.RegistryAddress
                 : $"{configuration.Invocation.Host}:{configuration.Invocation.Port}"))
             .Append(Item("服务", configuration.Invocation.ServiceName))
             .Append(Item("方法", configuration.Invocation.MethodName))
