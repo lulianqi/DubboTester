@@ -13,6 +13,9 @@ on:
         required: true
         default: true
         type: boolean
+  release:
+    types:
+      - published
 
 permissions:
   contents: read
@@ -34,6 +37,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -58,10 +63,15 @@ jobs:
         id: tags
         shell: bash
         env:
-          IMAGE_TAG: ${{ inputs.tag }}
-          PUBLISH_LATEST: ${{ inputs.publish_latest }}
+          IMAGE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          PUBLISH_LATEST: ${{ github.event_name == 'release' && github.event.release.prerelease == false || inputs.publish_latest }}
+          RELEASE_EVENT: ${{ github.event_name == 'release' }}
         run: |
           set -euo pipefail
+
+          if [[ "$RELEASE_EVENT" == "true" ]]; then
+            IMAGE_TAG="${IMAGE_TAG#v}"
+          fi
 
           if [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "::error::Invalid Docker tag: $IMAGE_TAG"

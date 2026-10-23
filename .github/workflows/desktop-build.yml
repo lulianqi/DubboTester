@@ -2,34 +2,16 @@ name: Build desktop apps
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - release1.3
-    tags:
-      - "v*"
-    paths:
-      - .github/workflows/desktop-build.yml
-      - global.json
-      - DubboTester.sln
-      - src/shared/DubboTester.Core/**
-      - src/shared/DubboTester.Hosting/**
-      - src/shared/DubboTester.UI/**
-      - src/apps/DubboTester.Desktop/**
-  pull_request:
-    paths:
-      - .github/workflows/desktop-build.yml
-      - global.json
-      - DubboTester.sln
-      - src/shared/DubboTester.Core/**
-      - src/shared/DubboTester.Hosting/**
-      - src/shared/DubboTester.UI/**
-      - src/apps/DubboTester.Desktop/**
+  release:
+    types:
+      - published
 
 permissions:
   contents: read
 
 env:
   DESKTOP_PROJECT: src/apps/DubboTester.Desktop/DubboTester.Desktop.csproj
+  RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
 
 jobs:
   macos:
@@ -40,6 +22,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -73,8 +57,8 @@ jobs:
           project_version="$(dotnet msbuild "$DESKTOP_PROJECT" -nologo -getProperty:ApplicationDisplayVersion)"
           artifact_version="$project_version"
 
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            release_version="${GITHUB_REF_NAME#v}"
+          if [[ -n "$RELEASE_TAG" ]]; then
+            release_version="${RELEASE_TAG#v}"
             release_base_version="${release_version%%-*}"
 
             if [[ "$release_base_version" != "$project_version" ]]; then
@@ -137,6 +121,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -178,8 +164,8 @@ jobs:
           $projectVersion = (dotnet msbuild $env:DESKTOP_PROJECT -nologo -getProperty:ApplicationDisplayVersion).Trim()
           $artifactVersion = $projectVersion
 
-          if ($env:GITHUB_REF.StartsWith('refs/tags/v')) {
-            $releaseVersion = $env:GITHUB_REF_NAME.Substring(1)
+          if (-not [string]::IsNullOrWhiteSpace($env:RELEASE_TAG)) {
+            $releaseVersion = $env:RELEASE_TAG.TrimStart('v')
             $releaseBaseVersion = ($releaseVersion -split '-', 2)[0]
 
             if ($releaseBaseVersion -ne $projectVersion) {
@@ -207,8 +193,8 @@ jobs:
           retention-days: 14
 
   release:
-    name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: Attach assets to GitHub release
+    if: github.event_name == 'release'
     needs:
       - macos
       - windows
@@ -230,7 +216,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           expected_assets=(
             "release-assets/DubboTester-macOS-universal-${version}.zip"
             "release-assets/DubboTester-Windows-x64-${version}.zip"
@@ -246,26 +232,13 @@ jobs:
           cd release-assets
           sha256sum ./*.zip > SHA256SUMS.txt
 
-      - name: Create GitHub release
+      - name: Upload assets to GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
-          release_flags=(
-            --verify-tag
-            --generate-notes
-            --title "DubboTester ${GITHUB_REF_NAME}"
-          )
-
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            release_flags+=(--prerelease --latest=false)
-          else
-            release_flags+=(--latest)
-          fi
-
-          gh release create \
-            "$GITHUB_REF_NAME" \
-            "${release_flags[@]}" \
-            release-assets/*
+          gh release upload \
+            "$RELEASE_TAG" \
+            release-assets/* \
+            --clobber
