@@ -1,0 +1,2242 @@
+@page "/pressure-test"
+@using System.Globalization
+@using System.Net
+@using System.Text.Json
+@implements IDisposable
+@inject DubboPressureTestRunner Runner
+@inject PressureTestDraftStore DraftStore
+@inject IPressureTestReportExportService ReportExporter
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Dubbo 压力测试</PageTitle>
+
+<div class="pressure-shell" @onclick="ClosePagePopovers">
+    <header class="pressure-header">
+        <button class="back-button" disabled="@IsRunning" @onclick="BackToHome">← 返回主页</button>
+        <div class="pressure-brand">
+            <span class="pressure-mark">D</span>
+            <div><h1>Dubbo 压力测试</h1><p>可配置 TCP 复用 · 结果仅保存在当前页面</p></div>
+        </div>
+        <div class="run-state @(NoticeIsError ? "error" : null)"><span></span>@Notice</div>
+    </header>
+
+    <main class="pressure-content">
+        <section class="pressure-card setup-card">
+            <div class="card-heading">
+                <div><h2>目标请求</h2><p>从请求页带入，可在开始前继续调整</p></div>
+                <span class="route-badge">@(Input.Route == InvocationRoute.Registry ? "注册中心" : "直连 Provider")</span>
+            </div>
+
+            <div class="target-grid">
+                <label>调用方式
+                    <select @bind="Input.Route" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning">
+                        <option value="@InvocationRoute.Registry">注册中心</option>
+                        <option value="@InvocationRoute.DirectProvider">直连 Provider</option>
+                    </select>
+                </label>
+                @if (Input.Route == InvocationRoute.Registry)
+                {
+                    <label>ZooKeeper
+                        <input @bind="Settings.ZooKeeperAddress" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="127.0.0.1:2181" />
+                    </label>
+                    <label>注册目录
+                        <input @bind="Input.RegistryRootPath" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="从请求页选择的服务目录" />
+                    </label>
+                }
+                else
+                {
+                    <label>Provider 地址
+                        <input @bind="Input.Host" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="10.0.0.10" />
+                    </label>
+                    <label>端口
+                        <input type="number" min="1" max="65535" @bind="Input.Port" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                    </label>
+                }
+                <label class="span-two">服务
+                    <input @bind="Input.ServiceName" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="com.foo.DemoService" />
+                </label>
+                <label>方法
+                    <input @bind="Input.MethodName" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="methodName" />
+                </label>
+                <label>Java 参数类型
+                    <input @bind="Input.JavaParameterTypes" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="java.lang.String, java.lang.Integer" />
+                </label>
+                <label>服务版本
+                    <input @bind="Input.Version" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="可选" />
+                </label>
+                <label>服务分组
+                    <input @bind="Input.Group" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="可选" />
+                </label>
+                <label class="span-three">
+                    <span>Attachments JSON <small>可选，随 RPC 请求传递，类似请求 Header</small></span>
+                    <input @bind="Input.AttachmentsJson" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder='{"traceId":"..."}' />
+                </label>
+            </div>
+        </section>
+
+        <section class="pressure-card load-card">
+            <div class="card-heading">
+                <div><h2>负载配置</h2><p>@LoadDescription</p></div>
+                <strong>@LoadHeadingSummary</strong>
+            </div>
+            <div class="load-fields">
+                <div class="users-field load-field">
+                    <div class="load-field-title">
+                        <label for="pressure-user-count">并发用户数 N</label>
+                        <span class="tcp-reuse-settings" @onclick:stopPropagation="true">
+                            <button type="button"
+                                    class="tcp-reuse-settings-button @(ShowTcpReuseSettings ? "active" : null)"
+                                    aria-label="配置 TCP 复用模式"
+                                    title="配置 TCP 复用模式"
+                                    disabled="@IsRunning"
+                                    @onclick="ToggleTcpReuseSettings">⚙</button>
+                            @if (ShowTcpReuseSettings)
+                            {
+                                <span class="tcp-reuse-popover">
+                                    <strong>TCP 复用模式</strong>
+                                    <small>控制并发用户如何共享 Dubbo client；独立 client 会建立独立的 Provider 连接。</small>
+                                    <select aria-label="TCP 复用模式"
+                                            @bind="TcpReuseMode"
+                                            @bind:after="HandleTcpReuseModeChangedAsync">
+                                        <option value="@PressureTestTcpReuseMode.FullyShared">完全复用（全部用户共用）</option>
+                                        <option value="@PressureTestTcpReuseMode.PerUser">不复用（每用户一个 client）</option>
+                                        <option value="@PressureTestTcpReuseMode.SharedBy10Users">每 10 个用户复用一个 client</option>
+                                        <option value="@PressureTestTcpReuseMode.SharedBy20Users">每 20 个用户复用一个 client</option>
+                                    </select>
+                                    <span class="tcp-reuse-summary">当前将使用 <b>@ConfiguredClientCount</b> 个 Dubbo client</span>
+                                </span>
+                            }
+                        </span>
+                    </div>
+                    <input id="pressure-user-count" type="number" min="1" max="500" @bind="UserCount" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                    <small>每个用户对应一个并发任务</small>
+                </div>
+                <span class="multiply">@(LimitMode == PressureTestLimitMode.RequestCount ? "×" : "⏱")</span>
+                <label class="limit-field">负载上限
+                    <span class="limit-control">
+                        <select aria-label="负载上限模式" @bind="LimitMode" @bind:after="HandleLimitModeChangedAsync" disabled="@IsRunning">
+                            <option value="@PressureTestLimitMode.RequestCount">次数上限</option>
+                            <option value="@PressureTestLimitMode.Duration">时间上限</option>
+                        </select>
+                        @if (LimitMode == PressureTestLimitMode.RequestCount)
+                        {
+                            <input aria-label="每用户发送次数" type="number" min="1" max="100000" @bind="IterationsPerUser" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                        }
+                        else
+                        {
+                            <input aria-label="执行时长（秒）" type="number" min="1" max="86400" @bind="DurationLimitSeconds" @bind:after="HandleDurationLimitChangedAsync" disabled="@IsRunning" />
+                        }
+                    </span>
+                    <small>@(LimitMode == PressureTestLimitMode.RequestCount ? "每个用户顺序发送指定次数" : "从整场压测开始计时，单位为秒")</small>
+                </label>
+                <div class="load-summary"><b>@LoadSummaryValue</b><span>@LoadSummaryLabel</span></div>
+                <label class="user-start-interval-field">用户启动间隔（ms）
+                    <input type="number" min="0" max="3600000" @bind="UserStartIntervalMs" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                    <small>同一阶梯内相邻用户的启动间隔；0 表示同时启动</small>
+                </label>
+                <label class="request-interval-field">请求间隔（ms）
+                    <input type="number" min="0" max="3600000" @bind="RequestIntervalMs" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                    <small>同一用户相邻请求之间等待</small>
+                </label>
+                <label class="step-interval-field">阶梯启动间隔（s）
+                    <input type="number" min="0" max="@StepIntervalMaximum" @bind="StepStartIntervalSeconds" @bind:after="HandleStepStartIntervalChangedAsync" disabled="@IsRunning" />
+                    <small>按固定时间点启动下一阶梯；0 表示不启用阶梯启动</small>
+                </label>
+                <label class="step-users-field">阶梯用户数
+                    <input type="number" min="0" max="@Math.Max(0, UserCount)" @bind="StepUserCount" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                    <small>每个阶梯的用户数；0 表示全部用户在同一阶梯启动</small>
+                </label>
+            </div>
+        </section>
+
+        <section class="pressure-card template-card">
+            <div class="card-heading template-heading">
+                <div><h2>请求参数模板</h2><p>保持合法 JSON；变量会在每次请求前替换</p></div>
+                <button class="text-button" disabled="@IsRunning" @onclick="FormatTemplate">格式化</button>
+            </div>
+            <div class="variable-help">
+                <code>@UserToken</code><span>用户序号</span>
+                <code>@IterationToken</code><span>发送序号</span>
+                <code>@RandomIntToken</code><span>范围内随机整数</span>
+                <code>@RandomStringToken</code><span>随机字符串</span>
+                <code>@GuidToken</code><span>随机 GUID</span>
+                <code>@TimestampToken</code><span>当前时间</span>
+            </div>
+            <textarea @bind="Input.RequestJson" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" spellcheck="false"></textarea>
+            <div class="template-note">序号从 1 开始。字符串变量请放在 JSON 引号内，例如 <code>@($"\"user-{UserToken}-{IterationToken}\"")</code>。</div>
+            <section class="assertion-editor">
+                <div class="assertion-heading">
+                    <div><h3>业务断言 <small>选填</small></h3><p>Dubbo 调用成功后，再根据响应正文判断业务是否成功</p></div>
+                    <div class="assertion-actions">
+                        <button type="button"
+                                class="assertion-debug-link"
+                                title="输入模拟响应内容，使用当前业务断言进行校验"
+                                disabled="@(BusinessAssertion.Conditions.Count == 0)"
+                                @onclick="OpenAssertionDebugDialog">调试断言</button>
+                        @if (BusinessAssertion.Conditions.Count > 1)
+                        {
+                            <select aria-label="断言组合方式" @bind="BusinessAssertion.Join" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning">
+                                <option value="@BusinessAssertionJoin.And">全部满足（AND）</option>
+                                <option value="@BusinessAssertionJoin.Or">任一满足（OR）</option>
+                            </select>
+                        }
+                        <button class="assertion-add" disabled="@IsRunning" @onclick="AddAssertion">＋ 添加条件</button>
+                    </div>
+                </div>
+                @if (BusinessAssertion.Conditions.Count == 0)
+                {
+                    <div class="assertion-empty">未配置业务断言，将以 Dubbo 调用结果作为成功标准</div>
+                }
+                else
+                {
+                    <div class="assertion-list">
+                        @foreach (BusinessAssertionCondition condition in BusinessAssertion.Conditions)
+                        {
+                            <div class="assertion-row" @key="condition">
+                                <select aria-label="断言类型" @bind="condition.Type" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning">
+                                    <option value="@BusinessAssertionType.ResponseContains">响应内容</option>
+                                    <option value="@BusinessAssertionType.JsonPath">JSONPath 条件</option>
+                                    <option value="@BusinessAssertionType.ResponseRegex">正则表达式</option>
+                                </select>
+                                @if (condition.Type == BusinessAssertionType.ResponseContains)
+                                {
+                                    <select aria-label="响应内容匹配条件" @bind="condition.ResponseOperator" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning">
+                                        <option value="@ResponseTextMatchOperator.Contains">包含</option>
+                                        <option value="@ResponseTextMatchOperator.StartsWith">以目标开头</option>
+                                        <option value="@ResponseTextMatchOperator.EndsWith">以目标结尾</option>
+                                        <option value="@ResponseTextMatchOperator.NotContains">不包含</option>
+                                        <option value="@ResponseTextMatchOperator.Equals">等于</option>
+                                        <option value="@ResponseTextMatchOperator.NotEquals">不等于</option>
+                                    </select>
+                                    <input class="assertion-response-value" aria-label="响应内容匹配目标" @bind="condition.ExpectedValue" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="匹配目标，例如 success" />
+                                }
+                                else if (condition.Type == BusinessAssertionType.ResponseRegex)
+                                {
+                                    <input class="assertion-value-wide" aria-label="响应正则表达式" @bind="condition.ExpectedValue" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="正则表达式，例如 ^.*success.*$" />
+                                }
+                                else
+                                {
+                                    <input aria-label="JSONPath" @bind="condition.JsonPath" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="$.data.code 或 $.items[0].id" />
+                                    <select aria-label="比较条件" @bind="condition.Operator" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning">
+                                        <option value="@BusinessAssertionOperator.Exists">存在</option>
+                                        <option value="@BusinessAssertionOperator.NotExists">不存在</option>
+                                        <option value="@BusinessAssertionOperator.Equals">等于</option>
+                                        <option value="@BusinessAssertionOperator.NotEquals">不等于</option>
+                                        <option value="@BusinessAssertionOperator.Contains">包含</option>
+                                        <option value="@BusinessAssertionOperator.NotContains">不包含</option>
+                                        <option value="@BusinessAssertionOperator.GreaterThan">大于</option>
+                                        <option value="@BusinessAssertionOperator.GreaterThanOrEqual">大于等于</option>
+                                        <option value="@BusinessAssertionOperator.LessThan">小于</option>
+                                        <option value="@BusinessAssertionOperator.LessThanOrEqual">小于等于</option>
+                                    </select>
+                                    @if (PressureTestBusinessAssertionEvaluator.RequiresExpectedValue(condition.Operator))
+                                    {
+                                        <input aria-label="期望值" @bind="condition.ExpectedValue" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="期望值" />
+                                    }
+                                }
+                                <button class="assertion-remove" title="删除条件" disabled="@IsRunning" @onclick="() => RemoveAssertion(condition)">×</button>
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+        </section>
+
+        <section class="pressure-card control-card">
+            <div class="progress-block">
+                <div><span>完成进度</span><b>@ProgressDescription</b></div>
+                <div class="progress-track"><span style="width: @($"{Snapshot.ProgressPercent:F2}%")"></span></div>
+            </div>
+            <div class="control-actions">
+                <button class="export-button" disabled="@(IsRunning || IsExporting || Snapshot.CompletedRequests == 0)" @onclick="ExportReportAsync">
+                    @(IsExporting ? "正在生成…" : "⇩ 导出报告")
+                </button>
+                @if (IsRunning)
+                {
+                    <button class="stop-button" @onclick="Stop">停止压测</button>
+                }
+                else
+                {
+                    <button class="primary start-button" disabled="@(!DraftStorageReady)" @onclick="StartAsync">▷ 开始压测</button>
+                }
+            </div>
+        </section>
+
+        <section class="metric-grid">
+            <article>
+                <span>响应时间</span>
+                <div class="metric-pair">
+                    <div><small>全程平均</small><b>@FormatMilliseconds(Snapshot.AverageMilliseconds)</b></div>
+                    <div><small>当前（近 5 秒）</small><b>@FormatMilliseconds(CurrentAverageMilliseconds)</b></div>
+                </div>
+                <small>所有已完成请求</small>
+            </article>
+            <article>
+                <span>TPS</span>
+                <div class="metric-pair">
+                    <div><small>全程平均</small><b>@Snapshot.Tps.ToString("F2")</b></div>
+                    <div><small>当前（@ThroughputSmoothingSeconds 秒）</small><b>@CurrentTps.ToString("F2")</b></div>
+                </div>
+                <small>最高 TPS @SelectedPeakTps.ToString("F2")（@ThroughputSmoothingSeconds 秒滑动平均峰值）</small>
+            </article>
+            <article><span>成功率</span><b class="@(Snapshot.FailureCount > 0 ? "metric-warn" : null)">@Snapshot.SuccessRate.ToString("F2")%</b><small>@Snapshot.SuccessCount.ToString("N0") 成功 / @Snapshot.FailureCount.ToString("N0") 失败</small></article>
+            <article>
+                <span>P95</span>
+                <div class="metric-pair">
+                    <div><small>全程</small><b>@FormatMilliseconds(Snapshot.P95Milliseconds)</b></div>
+                    <div><small>当前（近 5 秒）</small><b>@FormatMilliseconds(CurrentP95Milliseconds)</b></div>
+                </div>
+                <small>@(Snapshot.PercentilesAreSampled ? "全程值为实时随机样本；结束后精确" : "全程 95% 请求不超过此值")</small>
+            </article>
+            <article>
+                <span>P99</span>
+                <div class="metric-pair">
+                    <div><small>全程</small><b>@FormatMilliseconds(Snapshot.P99Milliseconds)</b></div>
+                    <div><small>当前（近 5 秒）</small><b>@FormatMilliseconds(CurrentP99Milliseconds)</b></div>
+                </div>
+                <small>@(Snapshot.PercentilesAreSampled ? "全程值为实时随机样本；结束后精确" : "全程 99% 请求不超过此值")</small>
+            </article>
+            <article><span>运行时间</span><b>@Snapshot.ElapsedSeconds.ToString("F2") s</b><small>@Snapshot.ActiveUsers 个活跃用户</small></article>
+        </section>
+
+        <section class="chart-grid @(ChartsExpanded ? "expanded" : null)">
+            <article class="pressure-card chart-card">
+                <div class="card-heading">
+                    <div class="chart-heading-content">
+                        <h2>吞吐趋势</h2>
+                        <div class="chart-subtitle">
+                            <span>500 ms 采样</span>
+                            <i class="legend tps"></i>
+                            <select class="chart-inline-select" aria-label="TPS 平滑区间" @bind="ThroughputSmoothingSeconds" @bind:after="RefreshThroughputChart">
+                                <option value="1">1 秒平滑</option>
+                                <option value="5">5 秒平滑</option>
+                                <option value="10">10 秒平滑</option>
+                                <option value="30">30 秒平滑</option>
+                            </select>
+                            <i class="legend users"></i><span>活跃用户</span>
+                            <span class="chart-zoom-controls" title="横轴缩放">
+                                <button type="button" disabled="@(ThroughputZoom <= MinimumChartZoom)" aria-label="缩小吞吐趋势横轴" @onclick="() => ChangeChartZoom(ChartKind.Throughput, -ChartZoomStep)" @onclick:stopPropagation="true">−</button>
+                                <b>@ThroughputZoom.ToString("0.#")×</b>
+                                <button type="button" disabled="@(ThroughputZoom >= MaximumChartZoom)" aria-label="放大吞吐趋势横轴" @onclick="() => ChangeChartZoom(ChartKind.Throughput, ChartZoomStep)" @onclick:stopPropagation="true">＋</button>
+                            </span>
+                        </div>
+                    </div>
+                    <button class="chart-size-button"
+                            type="button"
+                            title="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            aria-label="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            @onclick="ToggleChartsExpanded">⛶</button>
+                </div>
+                @if (Snapshot.Timeline.Count < 2)
+                {
+                    <div class="chart-empty">开始压测后显示趋势</div>
+                }
+                else
+                {
+                    <div class="chart-plot" @onmouseleave="() => ThroughputHoverIndex = null">
+                        <div class="chart-canvas" style="@ChartCanvasStyle(ThroughputZoom)">
+                            <svg viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="TPS 趋势图">
+                                @foreach (double axisRatio in ChartAxisRatios)
+                                {
+                                    double y = ChartY(axisRatio * ThroughputScaleMaximum, ThroughputScaleMaximum);
+                                    <line class="chart-grid-line"
+                                          x1="@SvgNumber(ChartPlotLeft(ThroughputZoom))"
+                                          y1="@SvgNumber(y)"
+                                          x2="@SvgNumber(ChartPlotRight(ThroughputZoom))"
+                                          y2="@SvgNumber(y)" />
+                                    @AxisLabel(
+                                        "chart-axis-label",
+                                        ChartYAxisLabelX(ThroughputZoom),
+                                        y,
+                                        "end",
+                                        ThroughputZoom,
+                                        FormatAxisValue(axisRatio * ThroughputScaleMaximum, "TPS"))
+                                }
+                                @foreach (double axisRatio in ChartAxisRatios)
+                                {
+                                    double x = ChartX(axisRatio, ThroughputZoom);
+                                    <line class="chart-axis-tick"
+                                          x1="@SvgNumber(x)"
+                                          y1="@SvgNumber(ChartPlotBottom)"
+                                          x2="@SvgNumber(x)"
+                                          y2="@SvgNumber(ChartPlotBottom + 4)" />
+                                    @AxisLabel(
+                                        "chart-axis-label chart-x-axis-label",
+                                        x,
+                                        ChartXAxisLabelY,
+                                        "middle",
+                                        ThroughputZoom,
+                                        FormatTimelineTime(axisRatio))
+                                }
+                                <line class="chart-axis-line"
+                                      x1="@SvgNumber(ChartPlotLeft(ThroughputZoom))"
+                                      y1="@SvgNumber(ChartPlotTop)"
+                                      x2="@SvgNumber(ChartPlotLeft(ThroughputZoom))"
+                                      y2="@SvgNumber(ChartPlotBottom)" />
+                                <line class="chart-axis-line"
+                                      x1="@SvgNumber(ChartPlotLeft(ThroughputZoom))"
+                                      y1="@SvgNumber(ChartPlotBottom)"
+                                      x2="@SvgNumber(ChartPlotRight(ThroughputZoom))"
+                                      y2="@SvgNumber(ChartPlotBottom)" />
+                                <polyline class="tps-line" points="@BuildPolyline((_, index) => SmoothedTpsAt(index), ThroughputZoom)" />
+                                <polyline class="active-users-line" points="@BuildPolyline((point, _) => point.ActiveUsers, ThroughputZoom, scaleMaximum: ActiveUserScaleMaximum)" />
+                                @for (int index = 0; index < Snapshot.Timeline.Count; index++)
+                                {
+                                    int pointIndex = index;
+                                    <rect class="chart-hit-zone"
+                                          x="@SvgNumber(ChartHitStart(index, Snapshot.Timeline.Count, ThroughputZoom))"
+                                          y="@SvgNumber(ChartPlotTop)"
+                                          width="@SvgNumber(ChartHitWidth(index, Snapshot.Timeline.Count, ThroughputZoom))"
+                                          height="@SvgNumber(ChartPlotBottom - ChartPlotTop)"
+                                          @onmouseenter="() => ThroughputHoverIndex = pointIndex" />
+                                }
+                                @if (ThroughputHoverIndex is int throughputIndex && throughputIndex < Snapshot.Timeline.Count)
+                                {
+                                    PressureTestPoint point = Snapshot.Timeline[throughputIndex];
+                                    double x = ChartX(throughputIndex, Snapshot.Timeline.Count, ThroughputZoom);
+                                    <line class="chart-hover-line" x1="@SvgNumber(x)" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(x)" y2="@SvgNumber(ChartPlotBottom)" />
+                                    <ellipse class="hover-point tps-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(SmoothedTpsAt(throughputIndex), ThroughputScaleMaximum))" rx="@SvgNumber(HoverPointRadiusX(ThroughputZoom))" ry="4" />
+                                    <ellipse class="hover-point active-users-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(point.ActiveUsers, ActiveUserScaleMaximum))" rx="@SvgNumber(HoverPointRadiusX(ThroughputZoom))" ry="4" />
+                                }
+                            </svg>
+                            @if (ThroughputHoverIndex is int throughputTooltipIndex && throughputTooltipIndex < Snapshot.Timeline.Count)
+                            {
+                                PressureTestPoint point = Snapshot.Timeline[throughputTooltipIndex];
+                                <div class="chart-tooltip @TooltipAlignmentClass(throughputTooltipIndex, ThroughputZoom)" style="@TooltipStyle(throughputTooltipIndex, ThroughputZoom)">
+                                    <b>@FormatClockTime(point.ElapsedSeconds) · @point.ElapsedSeconds.ToString("F2") s</b>
+                                    <span>@ThroughputSmoothingSeconds 秒平滑 TPS <strong>@SmoothedTpsAt(throughputTooltipIndex).ToString("F2")</strong></span>
+                                    <span>原始 TPS <strong>@point.InstantTps.ToString("F2")</strong></span>
+                                    <span><i class="legend users"></i>活跃用户 <strong>@point.ActiveUsers</strong></span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+            </article>
+            <article class="pressure-card chart-card">
+                <div class="card-heading">
+                    <div class="chart-heading-content">
+                        <h2>响应时间趋势</h2>
+                        <div class="chart-subtitle">
+                            <select class="chart-inline-select" aria-label="响应时间统计方式" @bind="LatencyMode" @bind:after="RefreshLatencyChart">
+                                <option value="@LatencyTrendMode.Cumulative">累计统计</option>
+                                <option value="@LatencyTrendMode.Recent">即时统计（最近 5 秒）</option>
+                            </select>
+                            <i class="legend average"></i><span>平均</span>
+                            <i class="legend p95"></i><span>P95</span>
+                            <i class="legend p99"></i><span>P99</span>
+                            <i class="legend users"></i><span>活跃用户</span>
+                            <span class="chart-zoom-controls" title="横轴缩放">
+                                <button type="button" disabled="@(LatencyZoom <= MinimumChartZoom)" aria-label="缩小响应时间趋势横轴" @onclick="() => ChangeChartZoom(ChartKind.Latency, -ChartZoomStep)" @onclick:stopPropagation="true">−</button>
+                                <b>@LatencyZoom.ToString("0.#")×</b>
+                                <button type="button" disabled="@(LatencyZoom >= MaximumChartZoom)" aria-label="放大响应时间趋势横轴" @onclick="() => ChangeChartZoom(ChartKind.Latency, ChartZoomStep)" @onclick:stopPropagation="true">＋</button>
+                            </span>
+                        </div>
+                    </div>
+                    <button class="chart-size-button"
+                            type="button"
+                            title="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            aria-label="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            @onclick="ToggleChartsExpanded">⛶</button>
+                </div>
+                @if (Snapshot.Timeline.Count < 2)
+                {
+                    <div class="chart-empty">开始压测后显示趋势</div>
+                }
+                else
+                {
+                    <div class="chart-plot" @onmouseleave="() => LatencyHoverIndex = null">
+                        <div class="chart-canvas" style="@ChartCanvasStyle(LatencyZoom)">
+                            <svg viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="响应时间趋势图">
+                                @foreach (double axisRatio in ChartAxisRatios)
+                                {
+                                    double y = ChartY(axisRatio * LatencyScaleMaximum, LatencyScaleMaximum);
+                                    <line class="chart-grid-line"
+                                          x1="@SvgNumber(ChartPlotLeft(LatencyZoom))"
+                                          y1="@SvgNumber(y)"
+                                          x2="@SvgNumber(ChartPlotRight(LatencyZoom))"
+                                          y2="@SvgNumber(y)" />
+                                    @AxisLabel(
+                                        "chart-axis-label",
+                                        ChartYAxisLabelX(LatencyZoom),
+                                        y,
+                                        "end",
+                                        LatencyZoom,
+                                        FormatAxisValue(axisRatio * LatencyScaleMaximum, "ms"))
+                                }
+                                @foreach (double axisRatio in ChartAxisRatios)
+                                {
+                                    double x = ChartX(axisRatio, LatencyZoom);
+                                    <line class="chart-axis-tick"
+                                          x1="@SvgNumber(x)"
+                                          y1="@SvgNumber(ChartPlotBottom)"
+                                          x2="@SvgNumber(x)"
+                                          y2="@SvgNumber(ChartPlotBottom + 4)" />
+                                    @AxisLabel(
+                                        "chart-axis-label chart-x-axis-label",
+                                        x,
+                                        ChartXAxisLabelY,
+                                        "middle",
+                                        LatencyZoom,
+                                        FormatTimelineTime(axisRatio))
+                                }
+                                <line class="chart-axis-line"
+                                      x1="@SvgNumber(ChartPlotLeft(LatencyZoom))"
+                                      y1="@SvgNumber(ChartPlotTop)"
+                                      x2="@SvgNumber(ChartPlotLeft(LatencyZoom))"
+                                      y2="@SvgNumber(ChartPlotBottom)" />
+                                <line class="chart-axis-line"
+                                      x1="@SvgNumber(ChartPlotLeft(LatencyZoom))"
+                                      y1="@SvgNumber(ChartPlotBottom)"
+                                      x2="@SvgNumber(ChartPlotRight(LatencyZoom))"
+                                      y2="@SvgNumber(ChartPlotBottom)" />
+                                <polyline class="average-line" points="@BuildPolyline((point, _) => LatencyAverage(point), LatencyZoom, scaleMaximum: LatencyScaleMaximum)" />
+                                <polyline class="p95-line" points="@BuildPolyline((point, _) => LatencyP95(point), LatencyZoom, scaleMaximum: LatencyScaleMaximum)" />
+                                <polyline class="p99-line" points="@BuildPolyline((point, _) => LatencyP99(point), LatencyZoom, scaleMaximum: LatencyScaleMaximum)" />
+                                <polyline class="active-users-line" points="@BuildPolyline((point, _) => point.ActiveUsers, LatencyZoom, scaleMaximum: ActiveUserScaleMaximum)" />
+                                @for (int index = 0; index < Snapshot.Timeline.Count; index++)
+                                {
+                                    int pointIndex = index;
+                                    <rect class="chart-hit-zone"
+                                          x="@SvgNumber(ChartHitStart(index, Snapshot.Timeline.Count, LatencyZoom))"
+                                          y="@SvgNumber(ChartPlotTop)"
+                                          width="@SvgNumber(ChartHitWidth(index, Snapshot.Timeline.Count, LatencyZoom))"
+                                          height="@SvgNumber(ChartPlotBottom - ChartPlotTop)"
+                                          @onmouseenter="() => LatencyHoverIndex = pointIndex" />
+                                }
+                                @if (LatencyHoverIndex is int latencyIndex && latencyIndex < Snapshot.Timeline.Count)
+                                {
+                                    PressureTestPoint point = Snapshot.Timeline[latencyIndex];
+                                    double x = ChartX(latencyIndex, Snapshot.Timeline.Count, LatencyZoom);
+                                    <line class="chart-hover-line" x1="@SvgNumber(x)" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(x)" y2="@SvgNumber(ChartPlotBottom)" />
+                                    <ellipse class="hover-point average-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(LatencyAverage(point), LatencyScaleMaximum))" rx="@SvgNumber(HoverPointRadiusX(LatencyZoom))" ry="4" />
+                                    <ellipse class="hover-point p95-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(LatencyP95(point), LatencyScaleMaximum))" rx="@SvgNumber(HoverPointRadiusX(LatencyZoom))" ry="4" />
+                                    <ellipse class="hover-point p99-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(LatencyP99(point), LatencyScaleMaximum))" rx="@SvgNumber(HoverPointRadiusX(LatencyZoom))" ry="4" />
+                                    <ellipse class="hover-point active-users-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(point.ActiveUsers, ActiveUserScaleMaximum))" rx="@SvgNumber(HoverPointRadiusX(LatencyZoom))" ry="4" />
+                                }
+                            </svg>
+                            @if (LatencyHoverIndex is int latencyTooltipIndex && latencyTooltipIndex < Snapshot.Timeline.Count)
+                            {
+                                PressureTestPoint point = Snapshot.Timeline[latencyTooltipIndex];
+                                <div class="chart-tooltip latency-tooltip @TooltipAlignmentClass(latencyTooltipIndex, LatencyZoom)" style="@TooltipStyle(latencyTooltipIndex, LatencyZoom)">
+                                    <b>@FormatClockTime(point.ElapsedSeconds) · @point.ElapsedSeconds.ToString("F2") s · @LatencyModeLabel</b>
+                                    <span><i class="legend average"></i>平均 <strong>@FormatMilliseconds(LatencyAverage(point))</strong></span>
+                                    <span><i class="legend p95"></i>P95 <strong>@FormatMilliseconds(LatencyP95(point))</strong></span>
+                                    <span><i class="legend p99"></i>P99 <strong>@FormatMilliseconds(LatencyP99(point))</strong></span>
+                                    <span><i class="legend users"></i>活跃用户 <strong>@point.ActiveUsers</strong></span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+            </article>
+        </section>
+
+        <section class="chart-grid distribution-chart-grid @(ChartsExpanded ? "expanded" : null)">
+            <article class="pressure-card chart-card distribution-card">
+                <div class="card-heading">
+                    <div class="chart-heading-content">
+                        <h2>错误请求分布</h2>
+                        <div class="chart-subtitle">
+                            <i class="legend error-count"></i><span>错误请求数</span>
+                            <i class="legend error-rate"></i><span>错误率</span>
+                            <span class="chart-zoom-controls" title="横轴缩放">
+                                <button type="button" disabled="@(ErrorDistributionZoom <= MinimumChartZoom)" aria-label="缩小错误请求分布横轴" @onclick="() => ChangeChartZoom(ChartKind.ErrorDistribution, -ChartZoomStep)" @onclick:stopPropagation="true">−</button>
+                                <b>@ErrorDistributionZoom.ToString("0.#")×</b>
+                                <button type="button" disabled="@(ErrorDistributionZoom >= MaximumChartZoom)" aria-label="放大错误请求分布横轴" @onclick="() => ChangeChartZoom(ChartKind.ErrorDistribution, ChartZoomStep)" @onclick:stopPropagation="true">＋</button>
+                            </span>
+                        </div>
+                    </div>
+                    <button class="chart-size-button"
+                            type="button"
+                            title="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            aria-label="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            @onclick="ToggleChartsExpanded">⛶</button>
+                </div>
+                @if (DistributionBuckets.Count == 0)
+                {
+                    <div class="chart-empty">产生请求后显示分布</div>
+                }
+                else
+                {
+                    <div class="chart-plot distribution-plot" @onmouseleave="() => ErrorDistributionHoverIndex = null">
+                        <div class="chart-canvas" style="@ChartCanvasStyle(ErrorDistributionZoom)">
+                            <svg viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="错误请求分布图">
+                                @foreach (double axisRatio in ChartAxisRatios)
+                                {
+                                    double y = ChartY(axisRatio * ErrorCountScaleMaximum, ErrorCountScaleMaximum);
+                                    <line class="chart-grid-line" x1="@SvgNumber(ChartPlotLeft(ErrorDistributionZoom))" y1="@SvgNumber(y)" x2="@SvgNumber(DistributionPlotRight(ErrorDistributionZoom))" y2="@SvgNumber(y)" />
+                                    @AxisLabel("chart-axis-label", ChartYAxisLabelX(ErrorDistributionZoom), y, "end", ErrorDistributionZoom, FormatCountAxisValue(axisRatio * ErrorCountScaleMaximum))
+                                    @AxisLabel("chart-axis-label distribution-rate-axis", DistributionPlotRight(ErrorDistributionZoom) + (7 / ErrorDistributionZoom), y, "start", ErrorDistributionZoom, FormatPercentageAxisValue(axisRatio * ErrorRateScaleMaximum))
+                                }
+                                @foreach (double axisRatio in ChartAxisRatios)
+                                {
+                                    double x = DistributionX(axisRatio, ErrorDistributionZoom);
+                                    <line class="chart-axis-tick" x1="@SvgNumber(x)" y1="@SvgNumber(ChartPlotBottom)" x2="@SvgNumber(x)" y2="@SvgNumber(ChartPlotBottom + 4)" />
+                                    @AxisLabel("chart-axis-label chart-x-axis-label", x, ChartXAxisLabelY, "middle", ErrorDistributionZoom, FormatDistributionTimelineTime(axisRatio))
+                                }
+                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(ErrorDistributionZoom))" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(ChartPlotLeft(ErrorDistributionZoom))" y2="@SvgNumber(ChartPlotBottom)" />
+                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(ErrorDistributionZoom))" y1="@SvgNumber(ChartPlotBottom)" x2="@SvgNumber(DistributionPlotRight(ErrorDistributionZoom))" y2="@SvgNumber(ChartPlotBottom)" />
+                                @for (int index = 0; index < DistributionBuckets.Count; index++)
+                                {
+                                    PressureTestDistributionBucket bucket = DistributionBuckets[index];
+                                    double barY = ChartY(bucket.FailedRequests, ErrorCountScaleMaximum);
+                                    <rect class="distribution-bar error-bar"
+                                          x="@SvgNumber(DistributionBarX(index, ErrorDistributionZoom))"
+                                          y="@SvgNumber(barY)"
+                                          width="@SvgNumber(DistributionBarWidth(ErrorDistributionZoom))"
+                                          height="@SvgNumber(ChartPlotBottom - barY)" />
+                                }
+                                <polyline class="error-rate-line" points="@BuildDistributionPolyline(bucket => bucket.ErrorRate, ErrorDistributionZoom, ErrorRateScaleMaximum)" />
+                                @for (int index = 0; index < DistributionBuckets.Count; index++)
+                                {
+                                    int pointIndex = index;
+                                    <rect class="chart-hit-zone"
+                                          x="@SvgNumber(DistributionHitStart(index, ErrorDistributionZoom))"
+                                          y="@SvgNumber(ChartPlotTop)"
+                                          width="@SvgNumber(DistributionHitWidth(ErrorDistributionZoom))"
+                                          height="@SvgNumber(ChartPlotBottom - ChartPlotTop)"
+                                          @onmouseenter="() => ErrorDistributionHoverIndex = pointIndex" />
+                                }
+                                @if (ErrorDistributionHoverIndex is int errorIndex && errorIndex < DistributionBuckets.Count)
+                                {
+                                    PressureTestDistributionBucket bucket = DistributionBuckets[errorIndex];
+                                    double x = DistributionX(errorIndex, ErrorDistributionZoom);
+                                    <line class="chart-hover-line" x1="@SvgNumber(x)" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(x)" y2="@SvgNumber(ChartPlotBottom)" />
+                                    <ellipse class="hover-point error-rate-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(bucket.ErrorRate, ErrorRateScaleMaximum))" rx="@SvgNumber(HoverPointRadiusX(ErrorDistributionZoom))" ry="4" />
+                                }
+                            </svg>
+                            @if (ErrorDistributionHoverIndex is int errorTooltipIndex && errorTooltipIndex < DistributionBuckets.Count)
+                            {
+                                PressureTestDistributionBucket bucket = DistributionBuckets[errorTooltipIndex];
+                                <div class="chart-tooltip @DistributionTooltipAlignmentClass(errorTooltipIndex, ErrorDistributionZoom)" style="@DistributionTooltipStyle(errorTooltipIndex, ErrorDistributionZoom)">
+                                    <b>@FormatDistributionBucketTime(bucket)</b>
+                                    <span><i class="legend error-count"></i>错误请求 <strong>@bucket.FailedRequests.ToString("N0")</strong></span>
+                                    <span><i class="legend error-rate"></i>错误率 <strong>@FormatPercentageAxisValue(bucket.ErrorRate)</strong></span>
+                                    <span>全部请求 <strong>@bucket.TotalRequests.ToString("N0")</strong></span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+            </article>
+
+            <article class="pressure-card chart-card distribution-card">
+                <div class="card-heading">
+                    <div class="chart-heading-content">
+                        <h2>慢请求分布</h2>
+                        <div class="chart-subtitle">
+                            <span class="slow-threshold-control">耗时大于
+                                <input type="number" min="1" step="10" aria-label="慢请求阈值（毫秒）" disabled="@IsRunning" @bind="SlowRequestThresholdMilliseconds" @bind:after="HandleSlowThresholdChangedAsync" />
+                                ms
+                            </span>
+                            <i class="legend slow-count"></i><span>慢请求数</span>
+                            <i class="legend slow-rate"></i><span>慢请求率</span>
+                            <span class="chart-zoom-controls" title="横轴缩放">
+                                <button type="button" disabled="@(SlowDistributionZoom <= MinimumChartZoom)" aria-label="缩小慢请求分布横轴" @onclick="() => ChangeChartZoom(ChartKind.SlowDistribution, -ChartZoomStep)" @onclick:stopPropagation="true">−</button>
+                                <b>@SlowDistributionZoom.ToString("0.#")×</b>
+                                <button type="button" disabled="@(SlowDistributionZoom >= MaximumChartZoom)" aria-label="放大慢请求分布横轴" @onclick="() => ChangeChartZoom(ChartKind.SlowDistribution, ChartZoomStep)" @onclick:stopPropagation="true">＋</button>
+                            </span>
+                        </div>
+                    </div>
+                    <button class="chart-size-button"
+                            type="button"
+                            title="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            aria-label="@(ChartsExpanded ? "恢复并排显示" : "放大图表")"
+                            @onclick="ToggleChartsExpanded">⛶</button>
+                </div>
+                @if (DistributionBuckets.Count == 0)
+                {
+                    <div class="chart-empty">产生请求后显示分布</div>
+                }
+                else
+                {
+                    <div class="chart-plot distribution-plot" @onmouseleave="() => SlowDistributionHoverIndex = null">
+                        <div class="chart-canvas" style="@ChartCanvasStyle(SlowDistributionZoom)">
+                            <svg viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="慢请求分布图">
+                                @foreach (double axisRatio in ChartAxisRatios)
+                                {
+                                    double y = ChartY(axisRatio * SlowCountScaleMaximum, SlowCountScaleMaximum);
+                                    <line class="chart-grid-line" x1="@SvgNumber(ChartPlotLeft(SlowDistributionZoom))" y1="@SvgNumber(y)" x2="@SvgNumber(DistributionPlotRight(SlowDistributionZoom))" y2="@SvgNumber(y)" />
+                                    @AxisLabel("chart-axis-label", ChartYAxisLabelX(SlowDistributionZoom), y, "end", SlowDistributionZoom, FormatCountAxisValue(axisRatio * SlowCountScaleMaximum))
+                                    @AxisLabel("chart-axis-label distribution-rate-axis", DistributionPlotRight(SlowDistributionZoom) + (7 / SlowDistributionZoom), y, "start", SlowDistributionZoom, FormatPercentageAxisValue(axisRatio * SlowRateScaleMaximum))
+                                }
+                                @foreach (double axisRatio in ChartAxisRatios)
+                                {
+                                    double x = DistributionX(axisRatio, SlowDistributionZoom);
+                                    <line class="chart-axis-tick" x1="@SvgNumber(x)" y1="@SvgNumber(ChartPlotBottom)" x2="@SvgNumber(x)" y2="@SvgNumber(ChartPlotBottom + 4)" />
+                                    @AxisLabel("chart-axis-label chart-x-axis-label", x, ChartXAxisLabelY, "middle", SlowDistributionZoom, FormatDistributionTimelineTime(axisRatio))
+                                }
+                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(SlowDistributionZoom))" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(ChartPlotLeft(SlowDistributionZoom))" y2="@SvgNumber(ChartPlotBottom)" />
+                                <line class="chart-axis-line" x1="@SvgNumber(ChartPlotLeft(SlowDistributionZoom))" y1="@SvgNumber(ChartPlotBottom)" x2="@SvgNumber(DistributionPlotRight(SlowDistributionZoom))" y2="@SvgNumber(ChartPlotBottom)" />
+                                @for (int index = 0; index < DistributionBuckets.Count; index++)
+                                {
+                                    PressureTestDistributionBucket bucket = DistributionBuckets[index];
+                                    double barY = ChartY(bucket.SlowRequests, SlowCountScaleMaximum);
+                                    <rect class="distribution-bar slow-bar"
+                                          x="@SvgNumber(DistributionBarX(index, SlowDistributionZoom))"
+                                          y="@SvgNumber(barY)"
+                                          width="@SvgNumber(DistributionBarWidth(SlowDistributionZoom))"
+                                          height="@SvgNumber(ChartPlotBottom - barY)" />
+                                }
+                                <polyline class="slow-rate-line" points="@BuildDistributionPolyline(bucket => bucket.SlowRate, SlowDistributionZoom, SlowRateScaleMaximum)" />
+                                @for (int index = 0; index < DistributionBuckets.Count; index++)
+                                {
+                                    int pointIndex = index;
+                                    <rect class="chart-hit-zone"
+                                          x="@SvgNumber(DistributionHitStart(index, SlowDistributionZoom))"
+                                          y="@SvgNumber(ChartPlotTop)"
+                                          width="@SvgNumber(DistributionHitWidth(SlowDistributionZoom))"
+                                          height="@SvgNumber(ChartPlotBottom - ChartPlotTop)"
+                                          @onmouseenter="() => SlowDistributionHoverIndex = pointIndex" />
+                                }
+                                @if (SlowDistributionHoverIndex is int slowIndex && slowIndex < DistributionBuckets.Count)
+                                {
+                                    PressureTestDistributionBucket bucket = DistributionBuckets[slowIndex];
+                                    double x = DistributionX(slowIndex, SlowDistributionZoom);
+                                    <line class="chart-hover-line" x1="@SvgNumber(x)" y1="@SvgNumber(ChartPlotTop)" x2="@SvgNumber(x)" y2="@SvgNumber(ChartPlotBottom)" />
+                                    <ellipse class="hover-point slow-rate-point" cx="@SvgNumber(x)" cy="@SvgNumber(ChartY(bucket.SlowRate, SlowRateScaleMaximum))" rx="@SvgNumber(HoverPointRadiusX(SlowDistributionZoom))" ry="4" />
+                                }
+                            </svg>
+                            @if (SlowDistributionHoverIndex is int slowTooltipIndex && slowTooltipIndex < DistributionBuckets.Count)
+                            {
+                                PressureTestDistributionBucket bucket = DistributionBuckets[slowTooltipIndex];
+                                <div class="chart-tooltip @DistributionTooltipAlignmentClass(slowTooltipIndex, SlowDistributionZoom)" style="@DistributionTooltipStyle(slowTooltipIndex, SlowDistributionZoom)">
+                                    <b>@FormatDistributionBucketTime(bucket)</b>
+                                    <span><i class="legend slow-count"></i>慢请求 <strong>@bucket.SlowRequests.ToString("N0")</strong></span>
+                                    <span><i class="legend slow-rate"></i>慢请求率 <strong>@FormatPercentageAxisValue(bucket.SlowRate)</strong></span>
+                                    <span>全部请求 <strong>@bucket.TotalRequests.ToString("N0")</strong></span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+            </article>
+        </section>
+
+        <section class="pressure-card details-card">
+            <div class="card-heading">
+                <div><h2>运行明细</h2><p>@DetailsDescription</p></div>
+                <div class="details-heading-actions">
+                    <label class="result-toggle" title="开启后在页面内存中保存请求和响应；约 100 MB 后自动清理较旧正文，失败请求优先保留">
+                        <input type="checkbox" @bind="RecordRequestResponse" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
+                        <span>记录请求&amp;响应</span>
+                    </label>
+                    <span>Min @FormatMilliseconds(Snapshot.MinimumMilliseconds) · Max @FormatMilliseconds(Snapshot.MaximumMilliseconds)</span>
+                </div>
+            </div>
+            @if (DisplayedResults.Count == 0 && !HasAnyResultFilter)
+            {
+                <div class="no-failures">暂无请求结果</div>
+            }
+            else
+            {
+                <div class="request-result-list">
+                    <div class="request-result-header @(Snapshot.RecordsRequestResponse ? "with-payload" : null)">
+                        <div class="result-header-cell">
+                            <span>完成时刻</span>
+                            <button type="button"
+                                    class="result-filter-button @(HasCompletedTimeResultFilter ? "active" : null)"
+                                    title="筛选完成时刻"
+                                    aria-label="筛选完成时刻"
+                                    @onclick="() => ToggleResultFilter(ResultFilterColumn.CompletedTime)"
+                                    @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveResultFilter == ResultFilterColumn.CompletedTime)
+                            {
+                                <div class="result-filter-popover completed-time-filter" @onclick:stopPropagation="true">
+                                    <strong>完成时刻范围</strong>
+                                    <div class="result-filter-range">
+                                        <label>开始<input type="time" step="1" value="@CompletedTimeMinimum" @onchange="UpdateCompletedTimeMinimum" /></label>
+                                        <span>—</span>
+                                        <label>结束<input type="time" step="1" value="@CompletedTimeMaximum" @onchange="UpdateCompletedTimeMaximum" /></label>
+                                    </div>
+                                    <small>开始晚于结束时，按跨午夜范围筛选</small>
+                                    <div class="result-filter-actions">
+                                        <button type="button" class="clear" disabled="@(!HasCompletedTimeResultFilter)" @onclick="() => ClearResultFilter(ResultFilterColumn.CompletedTime)">清除</button>
+                                        <button type="button" class="apply" @onclick="ApplyAndCloseResultFilter">应用</button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                        <div class="result-header-cell">
+                            <span>用户</span>
+                            <button type="button"
+                                    class="result-filter-button @(HasUserResultFilter ? "active" : null)"
+                                    title="筛选用户编号"
+                                    aria-label="筛选用户编号"
+                                    @onclick="() => ToggleResultFilter(ResultFilterColumn.User)"
+                                    @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveResultFilter == ResultFilterColumn.User)
+                            {
+                                <div class="result-filter-popover" @onclick:stopPropagation="true">
+                                    <strong>用户编号范围</strong>
+                                    <div class="result-filter-range">
+                                        <label>最小值<input type="number" min="1" step="1" @bind="UserIndexMinimum" /></label>
+                                        <span>—</span>
+                                        <label>最大值<input type="number" min="1" step="1" @bind="UserIndexMaximum" /></label>
+                                    </div>
+                                    <div class="result-filter-actions">
+                                        <button type="button" class="clear" disabled="@(!HasUserResultFilter)" @onclick="() => ClearResultFilter(ResultFilterColumn.User)">清除</button>
+                                        <button type="button" class="apply" @onclick="ApplyAndCloseResultFilter">应用</button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                        <span>发送序号</span>
+                        <div class="result-header-cell">
+                            <span>耗时</span>
+                            <button type="button"
+                                    class="result-filter-button @(HasElapsedResultFilter ? "active" : null)"
+                                    title="筛选耗时"
+                                    aria-label="筛选耗时"
+                                    @onclick="() => ToggleResultFilter(ResultFilterColumn.Elapsed)"
+                                    @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveResultFilter == ResultFilterColumn.Elapsed)
+                            {
+                                <div class="result-filter-popover" @onclick:stopPropagation="true">
+                                    <strong>耗时范围（ms）</strong>
+                                    <div class="result-filter-range">
+                                        <label>最小值<input type="number" min="0" step="0.01" @bind="ElapsedMillisecondsMinimum" /></label>
+                                        <span>—</span>
+                                        <label>最大值<input type="number" min="0" step="0.01" @bind="ElapsedMillisecondsMaximum" /></label>
+                                    </div>
+                                    <div class="result-filter-actions">
+                                        <button type="button" class="clear" disabled="@(!HasElapsedResultFilter)" @onclick="() => ClearResultFilter(ResultFilterColumn.Elapsed)">清除</button>
+                                        <button type="button" class="apply" @onclick="ApplyAndCloseResultFilter">应用</button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                        <div class="result-header-cell">
+                            <span>状态</span>
+                            <button type="button"
+                                    class="result-filter-button @(HasStatusResultFilter ? "active" : null)"
+                                    title="筛选状态"
+                                    aria-label="筛选状态"
+                                    @onclick="() => ToggleResultFilter(ResultFilterColumn.Status)"
+                                    @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveResultFilter == ResultFilterColumn.Status)
+                            {
+                                <div class="result-filter-popover compact" @onclick:stopPropagation="true">
+                                    <strong>请求状态</strong>
+                                    <select @bind="StatusResultFilter">
+                                        <option value="@ResultStatusFilter.All">全部</option>
+                                        <option value="@ResultStatusFilter.Success">成功</option>
+                                        <option value="@ResultStatusFilter.Failure">失败</option>
+                                    </select>
+                                    <div class="result-filter-actions">
+                                        <button type="button" class="clear" disabled="@(!HasStatusResultFilter)" @onclick="() => ClearResultFilter(ResultFilterColumn.Status)">清除</button>
+                                        <button type="button" class="apply" @onclick="ApplyAndCloseResultFilter">应用</button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                        <div class="result-header-cell">
+                            <span>错误信息</span>
+                            <button type="button"
+                                    class="result-filter-button @(HasTextResultFilter(ErrorResultFilter) ? "active" : null)"
+                                    title="筛选错误信息"
+                                    aria-label="筛选错误信息"
+                                    @onclick="() => ToggleResultFilter(ResultFilterColumn.Error)"
+                                    @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveResultFilter == ResultFilterColumn.Error)
+                            {
+                                <div class="result-filter-popover text-filter" @onclick:stopPropagation="true">
+                                    <strong>筛选错误信息</strong>
+                                    <select @bind="ErrorResultFilter.Mode">
+                                        @foreach (TextMatchMode mode in Enum.GetValues<TextMatchMode>())
+                                        {
+                                            <option value="@mode">@TextMatchModeLabel(mode)</option>
+                                        }
+                                    </select>
+                                    @if (TextMatchModeNeedsValue(ErrorResultFilter.Mode))
+                                    {
+                                        <input type="text" placeholder="输入筛选内容" @bind="ErrorResultFilter.Value" @bind:event="oninput" />
+                                    }
+                                    <div class="result-filter-actions">
+                                        <button type="button" class="clear" disabled="@(!HasTextResultFilter(ErrorResultFilter))" @onclick="() => ClearResultFilter(ResultFilterColumn.Error)">清除</button>
+                                        <button type="button" class="apply" @onclick="ApplyAndCloseResultFilter">应用</button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                        @if (Snapshot.RecordsRequestResponse)
+                        {
+                            <div class="result-header-cell">
+                                <span>请求</span>
+                                <button type="button"
+                                        class="result-filter-button @(HasTextResultFilter(RequestResultFilter) ? "active" : null)"
+                                        title="筛选请求内容"
+                                        aria-label="筛选请求内容"
+                                        @onclick="() => ToggleResultFilter(ResultFilterColumn.Request)"
+                                        @onclick:stopPropagation="true">
+                                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                                </button>
+                                @if (ActiveResultFilter == ResultFilterColumn.Request)
+                                {
+                                    <div class="result-filter-popover text-filter align-right" @onclick:stopPropagation="true">
+                                        <strong>筛选请求内容</strong>
+                                        <select @bind="RequestResultFilter.Mode">
+                                            @foreach (TextMatchMode mode in Enum.GetValues<TextMatchMode>())
+                                            {
+                                                <option value="@mode">@TextMatchModeLabel(mode)</option>
+                                            }
+                                        </select>
+                                        @if (TextMatchModeNeedsValue(RequestResultFilter.Mode))
+                                        {
+                                            <input type="text" placeholder="输入筛选内容" @bind="RequestResultFilter.Value" @bind:event="oninput" />
+                                        }
+                                        <div class="result-filter-actions">
+                                            <button type="button" class="clear" disabled="@(!HasTextResultFilter(RequestResultFilter))" @onclick="() => ClearResultFilter(ResultFilterColumn.Request)">清除</button>
+                                            <button type="button" class="apply" @onclick="ApplyAndCloseResultFilter">应用</button>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                            <div class="result-header-cell">
+                                <span>响应</span>
+                                <button type="button"
+                                        class="result-filter-button @(HasTextResultFilter(ResponseResultFilter) ? "active" : null)"
+                                        title="筛选响应内容"
+                                        aria-label="筛选响应内容"
+                                        @onclick="() => ToggleResultFilter(ResultFilterColumn.Response)"
+                                        @onclick:stopPropagation="true">
+                                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                                </button>
+                                @if (ActiveResultFilter == ResultFilterColumn.Response)
+                                {
+                                    <div class="result-filter-popover text-filter align-right" @onclick:stopPropagation="true">
+                                        <strong>筛选响应内容</strong>
+                                        <select @bind="ResponseResultFilter.Mode">
+                                            @foreach (TextMatchMode mode in Enum.GetValues<TextMatchMode>())
+                                            {
+                                                <option value="@mode">@TextMatchModeLabel(mode)</option>
+                                            }
+                                        </select>
+                                        @if (TextMatchModeNeedsValue(ResponseResultFilter.Mode))
+                                        {
+                                            <input type="text" placeholder="输入筛选内容" @bind="ResponseResultFilter.Value" @bind:event="oninput" />
+                                        }
+                                        <div class="result-filter-actions">
+                                            <button type="button" class="clear" disabled="@(!HasTextResultFilter(ResponseResultFilter))" @onclick="() => ClearResultFilter(ResultFilterColumn.Response)">清除</button>
+                                            <button type="button" class="apply" @onclick="ApplyAndCloseResultFilter">应用</button>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                            <span>操作</span>
+                        }
+                    </div>
+                    @if (DisplayedResults.Count == 0)
+                    {
+                        <div class="no-failures request-filter-empty">没有符合筛选条件的请求</div>
+                    }
+                    else
+                    {
+                        @foreach (PressureTestRequestResult request in DisplayedResults)
+                        {
+                            <div class="request-result-item @(Snapshot.RecordsRequestResponse ? "with-payload" : null)" @key="ResultKey(request)">
+                                <div class="request-result-row @(request.Success ? "success" : "failed") @(Snapshot.RecordsRequestResponse ? "with-payload" : null)">
+                                    <span>@FormatClockTime(request.CompletedAtSeconds)</span>
+                                    <span>@request.UserIndex</span>
+                                    <span>@request.IterationIndex</span>
+                                    <span>@request.ElapsedMilliseconds.ToString("F2") ms</span>
+                                    <b>@(request.Success ? "成功" : "失败")</b>
+                                    <p title="@request.Error">@(request.Error ?? "—")</p>
+                                    @if (Snapshot.RecordsRequestResponse)
+                                    {
+                                        <span class="payload-preview" title="@RequestDetailText(request)">@RequestDetailText(request)</span>
+                                        <span class="payload-preview" title="@ResponseDetailText(request)">@ResponseDetailText(request)</span>
+                                        <button class="detail-link" @onclick="() => ToggleRequestDetail(request)">@(ExpandedResultKey == ResultKey(request) ? "收起" : "详情")</button>
+                                    }
+                                </div>
+                                @if (Snapshot.RecordsRequestResponse && ExpandedResultKey == ResultKey(request))
+                                {
+                                    <div class="request-result-detail">
+                                        <section><h3>请求内容</h3><pre>@RequestDetailText(request)</pre></section>
+                                        <section><h3>响应内容</h3><pre>@ResponseDetailText(request)</pre></section>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    }
+                </div>
+                <div class="result-pagination">
+                    <span>共 @FilteredResultCount.ToString("N0") 条，每页 @ResultsPerPage 条</span>
+                    <div>
+                        <button disabled="@(ResultsPage <= 1)" @onclick="FirstResultsPage">«</button>
+                        <button disabled="@(ResultsPage <= 1)" @onclick="PreviousResultsPage">‹</button>
+                        <b>第 @ResultsPage / @ResultsPageCount 页</b>
+                        <button disabled="@(ResultsPage >= ResultsPageCount)" @onclick="NextResultsPage">›</button>
+                        <button disabled="@(ResultsPage >= ResultsPageCount)" @onclick="LastResultsPage">»</button>
+                        <span class="result-page-jump">
+                            <input type="number" min="1" max="@ResultsPageCount" step="1" aria-label="跳转页码" @bind="ResultsPageTarget" />
+                            <button type="button" @onclick="JumpToResultsPage">跳转</button>
+                        </span>
+                    </div>
+                </div>
+                @if (Snapshot.IsRunning && Snapshot.CompletedRequests > Snapshot.RequestResults.Count)
+                {
+                    <div class="live-results-note">运行中仅刷新最近 @Snapshot.RequestResults.Count 条；压测结束后可查看全部明细。</div>
+                }
+            }
+        </section>
+    </main>
+</div>
+
+@if (ShowAssertionDebugDialog && AssertionDebugConfiguration is not null)
+{
+    <div class="assertion-debug-backdrop" role="presentation">
+        <section class="assertion-debug-modal"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-labelledby="assertion-debug-dialog-title"
+                 @onclick:stopPropagation="true">
+            <header>
+                <div>
+                    <h2 id="assertion-debug-dialog-title">调试业务断言</h2>
+                    <p>输入模拟的 Dubbo 响应正文，使用当前配置的业务断言进行校验</p>
+                </div>
+                <button type="button" title="关闭" @onclick="CloseAssertionDebugDialog">×</button>
+            </header>
+            <div class="assertion-debug-body">
+                <section class="assertion-debug-summary">
+                    <span>当前断言</span>
+                    <p>@PressureTestBusinessAssertionEvaluator.Describe(AssertionDebugConfiguration)</p>
+                </section>
+                <label>
+                    <span>模拟响应内容</span>
+                    <textarea aria-label="模拟响应内容"
+                              spellcheck="false"
+                              placeholder="请输入用于调试断言的响应正文；可以是 JSON、文本或空响应"
+                              @bind="AssertionDebugResponse"
+                              @bind:event="oninput"
+                              @bind:after="ClearAssertionDebugResult"></textarea>
+                </label>
+                @if (AssertionDebugResultState != AssertionDebugState.None)
+                {
+                    <section class="assertion-debug-result @AssertionDebugResultCssClass" role="status" aria-live="polite">
+                        <strong>@AssertionDebugResultTitle</strong>
+                        <p>@AssertionDebugResultMessage</p>
+                    </section>
+                }
+            </div>
+            <footer>
+                <button type="button" class="assertion-debug-secondary" @onclick="CloseAssertionDebugDialog">关闭</button>
+                <button type="button" class="assertion-debug-primary" @onclick="EvaluateAssertionDebug">校验断言</button>
+            </footer>
+        </section>
+    </div>
+}
+
+@code {
+    private const string SettingsStorageKey = "dubbo-tester.settings.v1";
+    private const string UserToken = "{{user}}";
+    private const string IterationToken = "{{iteration}}";
+    private const string RandomIntToken = "{{randomInt:1:1000}}";
+    private const string RandomStringToken = "{{randomString:8}}";
+    private const string GuidToken = "{{guid}}";
+    private const string TimestampToken = "{{timestamp}}";
+    private const int ResultsPerPage = 100;
+    private const double MinimumChartZoom = 1;
+    private const double MaximumChartZoom = 8;
+    private const double ChartZoomStep = .5;
+    private const double ChartViewWidth = 720;
+    private const double ChartPlotTop = 8;
+    private const double ChartPlotBottom = 150;
+    private const double ChartXAxisLabelY = 170;
+    private const double ChartLeftMargin = 58;
+    private const double ChartRightMargin = 26;
+    private const double DistributionChartRightMargin = 52;
+    private const double ChartHoverPointRadius = 4;
+    private static readonly double[] ChartAxisRatios = [0, .25, .5, .75, 1];
+    private static readonly JsonSerializerOptions StorageJsonOptions = new(JsonSerializerDefaults.Web);
+
+    private TesterSettings Settings { get; set; } = new();
+    private InvocationInput Input { get; set; } = new();
+    private PressureTestSnapshot Snapshot { get; set; } = new();
+    private int UserCount { get; set; } = 10;
+    private PressureTestTcpReuseMode TcpReuseMode { get; set; } = PressureTestTcpReuseMode.FullyShared;
+    private PressureTestLimitMode LimitMode { get; set; } = PressureTestLimitMode.RequestCount;
+    private int IterationsPerUser { get; set; } = 10;
+    private int DurationLimitSeconds { get; set; } = 60;
+    private int UserStartIntervalMs { get; set; }
+    private int StepStartIntervalSeconds { get; set; }
+    private int StepUserCount { get; set; }
+    private int RequestIntervalMs { get; set; }
+    private double SlowRequestThresholdMilliseconds { get; set; } = 500;
+    private bool RecordRequestResponse { get; set; }
+    private BusinessAssertionConfiguration BusinessAssertion { get; set; } = new();
+    private bool ShowAssertionDebugDialog { get; set; }
+    private string AssertionDebugResponse { get; set; } = string.Empty;
+    private BusinessAssertionConfiguration? AssertionDebugConfiguration { get; set; }
+    private AssertionDebugState AssertionDebugResultState { get; set; }
+    private string AssertionDebugResultMessage { get; set; } = string.Empty;
+    private IReadOnlyList<PressureTestDistributionBucket> DistributionBuckets { get; set; } = [];
+    private IReadOnlyList<PressureTestRequestResult> DisplayedResults { get; set; } = [];
+    private int FilteredResultCount { get; set; }
+    private int ResultsPage { get; set; } = 1;
+    private int ResultsPageTarget { get; set; } = 1;
+    private ResultFilterColumn? ActiveResultFilter { get; set; }
+    private string CompletedTimeMinimum { get; set; } = string.Empty;
+    private string CompletedTimeMaximum { get; set; } = string.Empty;
+    private int? UserIndexMinimum { get; set; }
+    private int? UserIndexMaximum { get; set; }
+    private double? ElapsedMillisecondsMinimum { get; set; }
+    private double? ElapsedMillisecondsMaximum { get; set; }
+    private ResultStatusFilter StatusResultFilter { get; set; }
+    private TextResultFilter ErrorResultFilter { get; } = new();
+    private TextResultFilter RequestResultFilter { get; } = new();
+    private TextResultFilter ResponseResultFilter { get; } = new();
+    private string? ExpandedResultKey { get; set; }
+    private int? ThroughputHoverIndex { get; set; }
+    private int? LatencyHoverIndex { get; set; }
+    private int? ErrorDistributionHoverIndex { get; set; }
+    private int? SlowDistributionHoverIndex { get; set; }
+    private int ThroughputSmoothingSeconds { get; set; } = 5;
+    private LatencyTrendMode LatencyMode { get; set; }
+    private double ThroughputZoom { get; set; } = MinimumChartZoom;
+    private double LatencyZoom { get; set; } = MinimumChartZoom;
+    private double ErrorDistributionZoom { get; set; } = MinimumChartZoom;
+    private double SlowDistributionZoom { get; set; } = MinimumChartZoom;
+    private bool ChartsExpanded { get; set; }
+    private string Notice { get; set; } = "配置负载与参数模板后开始压测";
+    private bool NoticeIsError { get; set; }
+    private bool IsRunning { get; set; }
+    private bool IsExporting { get; set; }
+    private bool ShowTcpReuseSettings { get; set; }
+    private bool _hasDraft;
+    private bool DraftStorageReady { get; set; }
+    private bool DraftStorageLoading { get; set; }
+    private int DraftStorageLoadAttempts { get; set; }
+    private bool IsDisposed { get; set; }
+    private bool StopRequested { get; set; }
+    private int RunVersion { get; set; }
+    private CancellationTokenSource? _runCancellation;
+    private PressureTestConfiguration? _lastRunConfiguration;
+    private DateTimeOffset _runStartedAt;
+    private DateTimeOffset _runFinishedAt;
+
+    private long TotalRequests => UserCount <= 0 || IterationsPerUser <= 0
+        ? 0
+        : (long)UserCount * IterationsPerUser;
+    private int ConfiguredClientCount => UserCount < 1
+        ? 0
+        : DubboPressureTestRunner.GetClientCount(UserCount, TcpReuseMode);
+    private int StepIntervalMaximum => LimitMode == PressureTestLimitMode.Duration
+        ? Math.Clamp(DurationLimitSeconds, 0, 3_600)
+        : 3_600;
+    private string LoadDescription => LimitMode == PressureTestLimitMode.RequestCount
+        ? "N 个并发用户，每个用户顺序发送 M 次"
+        : "N 个并发用户，在总执行时长内持续发送请求";
+    private string LoadHeadingSummary => LimitMode == PressureTestLimitMode.RequestCount
+        ? $"{TotalRequests:N0} 次请求"
+        : $"{DurationLimitSeconds:N0} 秒";
+    private string LoadSummaryValue => LimitMode == PressureTestLimitMode.RequestCount
+        ? TotalRequests.ToString("N0")
+        : $"{DurationLimitSeconds:N0} s";
+    private string LoadSummaryLabel => LimitMode == PressureTestLimitMode.RequestCount
+        ? "计划请求总数"
+        : "执行时长上限";
+    private string ProgressDescription => Snapshot.DurationLimitSeconds > 0
+        ? $"{Math.Min(Snapshot.ElapsedSeconds, Snapshot.DurationLimitSeconds):F2} / {Snapshot.DurationLimitSeconds:N0} s · {Snapshot.CompletedRequests:N0} 次请求"
+        : Snapshot.TotalRequests > 0
+            ? $"{Snapshot.CompletedRequests:N0} / {Snapshot.TotalRequests:N0}"
+            : LimitMode == PressureTestLimitMode.Duration
+                ? $"0.00 / {DurationLimitSeconds:N0} s · 0 次请求"
+                : $"0 / {TotalRequests:N0}";
+    private int ResultsPageCount => Math.Max(1,
+        (int)Math.Ceiling(FilteredResultCount / (double)ResultsPerPage));
+    private bool HasCompletedTimeResultFilter => !string.IsNullOrWhiteSpace(CompletedTimeMinimum)
+        || !string.IsNullOrWhiteSpace(CompletedTimeMaximum);
+    private bool HasUserResultFilter => UserIndexMinimum.HasValue || UserIndexMaximum.HasValue;
+    private bool HasElapsedResultFilter => ElapsedMillisecondsMinimum.HasValue || ElapsedMillisecondsMaximum.HasValue;
+    private string AssertionDebugResultTitle => AssertionDebugResultState switch
+    {
+        AssertionDebugState.Success => "校验通过",
+        AssertionDebugState.Failure => "校验未通过",
+        AssertionDebugState.InvalidConfiguration => "断言配置有误",
+        _ => string.Empty
+    };
+    private string AssertionDebugResultCssClass => AssertionDebugResultState switch
+    {
+        AssertionDebugState.Success => "success",
+        AssertionDebugState.Failure => "failed",
+        AssertionDebugState.InvalidConfiguration => "invalid",
+        _ => string.Empty
+    };
+    private bool HasStatusResultFilter => StatusResultFilter != ResultStatusFilter.All;
+    private bool HasAnyResultFilter => HasCompletedTimeResultFilter
+        || HasUserResultFilter
+        || HasElapsedResultFilter
+        || HasStatusResultFilter
+        || HasTextResultFilter(ErrorResultFilter)
+        || HasTextResultFilter(RequestResultFilter)
+        || HasTextResultFilter(ResponseResultFilter);
+    private double ErrorCountScaleMaximum => Math.Max(
+        1,
+        DistributionBuckets.Select(bucket => bucket.FailedRequests).DefaultIfEmpty(0).Max());
+    private double SlowCountScaleMaximum => Math.Max(
+        1,
+        DistributionBuckets.Select(bucket => bucket.SlowRequests).DefaultIfEmpty(0).Max());
+    private double ErrorRateScaleMaximum => PressureTestChartMetrics.CalculateAdaptivePercentageMaximum(
+        DistributionBuckets.Select(bucket => bucket.ErrorRate));
+    private double SlowRateScaleMaximum => PressureTestChartMetrics.CalculateAdaptivePercentageMaximum(
+        DistributionBuckets.Select(bucket => bucket.SlowRate));
+    private PressureTestPoint? CurrentTimelinePoint => Snapshot.Timeline.Count == 0
+        ? null
+        : Snapshot.Timeline[^1];
+    private double CurrentTps => Snapshot.Timeline.Count == 0
+        ? 0
+        : SmoothedTpsAt(Snapshot.Timeline.Count - 1);
+    private double CurrentAverageMilliseconds => CurrentTimelinePoint?.RecentAverageMilliseconds ?? 0;
+    private double CurrentP95Milliseconds => CurrentTimelinePoint?.RecentP95Milliseconds ?? 0;
+    private double CurrentP99Milliseconds => CurrentTimelinePoint?.RecentP99Milliseconds ?? 0;
+    private double DistributionBarWidth(double zoom) => Math.Max(
+        2,
+        (DistributionPlotRight(zoom) - ChartPlotLeft(zoom)) / Math.Max(DistributionBuckets.Count, 1) * .62);
+    private string DetailsDescription => Snapshot.CompletedRequests > 0
+        ? Snapshot.RecordsRequestResponse
+            ? Snapshot.DiscardedPayloadCount > 0
+                ? $"请求与响应正文当前约占 {FormatMegabytes(Snapshot.ApproximatePayloadBytes)} MB；已按约 100 MB 上限清理 {Snapshot.DiscardedPayloadCount:N0} 条较旧正文，失败请求优先保留"
+                : $"本次压测在当前页面内存中记录请求与响应，当前约 {FormatMegabytes(Snapshot.ApproximatePayloadBytes)} MB，不写入历史记录或数据库"
+            : "本次压测未记录请求与响应正文，也不写入历史记录或数据库"
+        : RecordRequestResponse
+            ? "压测开始后将在当前页面内存中记录请求与响应；约 100 MB 后自动清理较旧正文，失败请求优先保留"
+            : "默认不记录请求与响应正文，也不写入历史记录或数据库";
+
+    protected override void OnInitialized()
+    {
+        _hasDraft = DraftStore.TryGet(out TesterSettings settings, out InvocationInput invocation);
+        if (_hasDraft)
+        {
+            Settings = settings;
+            Input = invocation;
+        }
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (DraftStorageReady || DraftStorageLoading || IsDisposed)
+        {
+            return Task.CompletedTask;
+        }
+
+        return InitializeDraftStorageAsync();
+    }
+
+    private async Task InitializeDraftStorageAsync()
+    {
+        DraftStorageLoading = true;
+        bool shouldRetry = false;
+        try
+        {
+            string? settingsJson = await JS.InvokeAsync<string?>("dubboTester.load", SettingsStorageKey);
+            string? draftJson = await JS.InvokeAsync<string?>("dubboTester.indexedDb.loadPressureDraft");
+            PressureTestPageDraft? persistedDraft = string.IsNullOrWhiteSpace(draftJson)
+                ? null
+                : JsonSerializer.Deserialize<PressureTestPageDraft>(draftJson, StorageJsonOptions);
+
+            if (!_hasDraft)
+            {
+                Settings = string.IsNullOrWhiteSpace(settingsJson)
+                        ? new TesterSettings()
+                        : JsonSerializer.Deserialize<TesterSettings>(settingsJson, StorageJsonOptions)
+                            ?? new TesterSettings();
+                if (persistedDraft is not null)
+                {
+                    Input = persistedDraft.Invocation;
+                }
+            }
+
+            if (persistedDraft is not null)
+            {
+                UserCount = persistedDraft.UserCount;
+                TcpReuseMode = persistedDraft.TcpReuseMode;
+                LimitMode = persistedDraft.LimitMode;
+                IterationsPerUser = persistedDraft.IterationsPerUser;
+                DurationLimitSeconds = persistedDraft.DurationLimitSeconds;
+                UserStartIntervalMs = persistedDraft.UserStartIntervalMs;
+                StepStartIntervalSeconds = persistedDraft.StepStartIntervalSeconds;
+                StepUserCount = persistedDraft.StepUserCount;
+                RequestIntervalMs = persistedDraft.RequestIntervalMs;
+                SlowRequestThresholdMilliseconds = persistedDraft.SlowRequestThresholdMilliseconds > 0
+                    ? persistedDraft.SlowRequestThresholdMilliseconds
+                    : 500;
+                RecordRequestResponse = persistedDraft.RecordRequestResponse;
+                BusinessAssertion = persistedDraft.BusinessAssertion ?? new BusinessAssertionConfiguration();
+            }
+
+            DraftStorageReady = true;
+            DraftStorageLoadAttempts = 0;
+            StateHasChanged();
+        }
+        catch (Exception exception)
+        {
+            DraftStorageLoadAttempts++;
+            shouldRetry = DraftStorageLoadAttempts < 3;
+            SetNotice($"读取本地设置失败：{GetErrorMessage(exception)}", true);
+            StateHasChanged();
+            if (!shouldRetry)
+            {
+                // Keep the page usable when IndexedDB is unavailable.
+                DraftStorageReady = true;
+            }
+        }
+        finally
+        {
+            DraftStorageLoading = false;
+        }
+
+        if (shouldRetry && !IsDisposed)
+        {
+            await Task.Delay(DraftStorageLoadAttempts * 250);
+            await InitializeDraftStorageAsync();
+        }
+    }
+
+    private async Task StartAsync()
+    {
+        if (IsRunning || !DraftStorageReady) return;
+        ShowTcpReuseSettings = false;
+        await PersistPressureDraftAsync();
+        IsRunning = true;
+        StopRequested = false;
+        int runVersion = ++RunVersion;
+        NoticeIsError = false;
+        Notice = "正在建立连接并启动并发任务…";
+        Snapshot = new PressureTestSnapshot
+        {
+            TotalRequests = LimitMode == PressureTestLimitMode.RequestCount
+                ? (int)Math.Min(TotalRequests, int.MaxValue)
+                : 0,
+            DurationLimitSeconds = LimitMode == PressureTestLimitMode.Duration
+                ? DurationLimitSeconds
+                : 0,
+            IsRunning = true,
+            RecordsRequestResponse = RecordRequestResponse
+        };
+        DistributionBuckets = [];
+        ResultsPage = 1;
+        ResetResultFilters();
+        ExpandedResultKey = null;
+        RebuildDisplayedResults();
+        ThroughputHoverIndex = null;
+        LatencyHoverIndex = null;
+        ErrorDistributionHoverIndex = null;
+        SlowDistributionHoverIndex = null;
+        _runCancellation = new CancellationTokenSource();
+        var progress = new Progress<PressureTestSnapshot>(snapshot =>
+        {
+            if (!IsRunning || runVersion != RunVersion) return;
+
+            ApplySnapshot(snapshot);
+            if (snapshot.IsRunning)
+            {
+                Notice = StopRequested
+                    ? "正在停止，等待已发出的请求结束…"
+                    : snapshot.DurationLimitSeconds > 0
+                        ? $"压测运行中：{snapshot.ElapsedSeconds:F1} / {snapshot.DurationLimitSeconds:N0} 秒，已完成 {snapshot.CompletedRequests:N0} 次请求"
+                        : $"压测运行中：{snapshot.CompletedRequests:N0} / {snapshot.TotalRequests:N0}";
+            }
+            StateHasChanged();
+        });
+
+        try
+        {
+            var configuration = new PressureTestConfiguration
+            {
+                UserCount = UserCount,
+                TcpReuseMode = TcpReuseMode,
+                LimitMode = LimitMode,
+                IterationsPerUser = IterationsPerUser,
+                DurationLimitSeconds = DurationLimitSeconds,
+                UserStartIntervalMs = UserStartIntervalMs,
+                StepStartIntervalSeconds = StepStartIntervalSeconds,
+                StepUserCount = StepUserCount,
+                RequestIntervalMs = RequestIntervalMs,
+                SlowRequestThresholdMilliseconds = SlowRequestThresholdMilliseconds,
+                RecordRequestResponse = RecordRequestResponse,
+                BusinessAssertion = BusinessAssertion.Clone(),
+                Settings = Settings.Clone(),
+                Invocation = Input.Clone()
+            };
+            _lastRunConfiguration = configuration;
+            _runStartedAt = DateTimeOffset.Now;
+            _runFinishedAt = default;
+            ApplySnapshot(await Runner.RunAsync(configuration, progress, _runCancellation.Token));
+            Notice = Snapshot.IsCancelled
+                ? $"压测已停止，完成 {Snapshot.CompletedRequests:N0} 次请求"
+                : $"压测完成：{Snapshot.SuccessCount:N0} 成功，{Snapshot.FailureCount:N0} 失败";
+            NoticeIsError = !Snapshot.IsCancelled && Snapshot.FailureCount > 0;
+        }
+        catch (OperationCanceledException)
+        {
+            Notice = "压测已停止";
+            NoticeIsError = false;
+        }
+        catch (Exception exception)
+        {
+            SetNotice($"压测启动失败：{GetErrorMessage(exception)}", true);
+        }
+        finally
+        {
+            _runFinishedAt = DateTimeOffset.Now;
+            IsRunning = false;
+            StopRequested = false;
+            _runCancellation?.Dispose();
+            _runCancellation = null;
+        }
+    }
+
+    private void Stop()
+    {
+        if (!IsRunning || StopRequested) return;
+        StopRequested = true;
+        NoticeIsError = false;
+        Notice = "正在停止，等待已发出的请求结束…";
+        _runCancellation?.Cancel();
+    }
+
+    private async Task ExportReportAsync()
+    {
+        if (_lastRunConfiguration is null || Snapshot.CompletedRequests == 0 || IsExporting) return;
+
+        IsExporting = true;
+        NoticeIsError = false;
+        Notice = "正在生成压测报告…";
+        await Task.Yield();
+        try
+        {
+            DateTimeOffset finishedAt = _runFinishedAt == default ? DateTimeOffset.Now : _runFinishedAt;
+            string endpoint = SanitizeFileName(
+                $"{_lastRunConfiguration.Invocation.ServiceName}-{_lastRunConfiguration.Invocation.MethodName}");
+            string fileName = $"dubbo-pressure-{endpoint}-{DateTime.Now:yyyyMMdd-HHmmss}.html";
+            PressureTestReportExportResult result = await ReportExporter.ExportAsync(new(
+                _lastRunConfiguration,
+                Snapshot,
+                _runStartedAt,
+                finishedAt,
+                IncludeAllRequests: true,
+                ThroughputSmoothingSeconds,
+                LatencyMode == LatencyTrendMode.Recent,
+                fileName));
+            if (!string.IsNullOrWhiteSpace(result.DownloadUrl))
+            {
+                await JS.InvokeVoidAsync("dubboTester.downloadUrl", result.DownloadUrl);
+            }
+
+            SetNotice(!string.IsNullOrWhiteSpace(result.SavedPath)
+                ? $"压测报告已保存：{result.SavedPath}"
+                : $"压测报告已导出：{result.FileName}");
+        }
+        catch (Exception exception)
+        {
+            SetNotice($"压测报告导出失败：{GetErrorMessage(exception)}", true);
+        }
+        finally
+        {
+            IsExporting = false;
+        }
+    }
+
+    private void ToggleRequestDetail(PressureTestRequestResult result)
+    {
+        string key = ResultKey(result);
+        ExpandedResultKey = ExpandedResultKey == key ? null : key;
+    }
+
+    private static string ResultKey(PressureTestRequestResult result) =>
+        $"{result.UserIndex}:{result.IterationIndex}";
+
+    private static string RequestDetailText(PressureTestRequestResult result) =>
+        result.PayloadDiscarded
+            ? "（已因运行明细内存达到上限而清理）"
+            : result.Request ?? "（本次压测未记录请求内容）";
+
+    private static string ResponseDetailText(PressureTestRequestResult result) =>
+        result.PayloadDiscarded
+            ? "（已因运行明细内存达到上限而清理）"
+            : !string.IsNullOrEmpty(result.Response)
+            ? result.Response
+            : result.Success
+                ? "（空响应）"
+                : result.Error ?? "（无响应内容）";
+
+    private static string FormatMegabytes(long bytes) =>
+        (bytes / (1024d * 1024d)).ToString("F1", CultureInfo.InvariantCulture);
+
+    private string FormatClockTime(double elapsedSeconds)
+    {
+        DateTimeOffset startedAt = Snapshot.StartedAt != default
+            ? Snapshot.StartedAt
+            : _runStartedAt;
+        return startedAt == default
+            ? "--:--:--"
+            : startedAt.AddSeconds(Math.Max(0, elapsedSeconds)).ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+    }
+
+    private void ApplySnapshot(PressureTestSnapshot snapshot)
+    {
+        bool justFinished = Snapshot.IsRunning && !snapshot.IsRunning;
+        Snapshot = snapshot;
+        if (snapshot.StartedAt != default)
+        {
+            _runStartedAt = snapshot.StartedAt;
+        }
+        if (justFinished)
+        {
+            ResultsPage = 1;
+            ExpandedResultKey = null;
+        }
+        RebuildDistributionBuckets();
+        RebuildDisplayedResults();
+        if (ThroughputHoverIndex is int throughputIndex && throughputIndex >= snapshot.Timeline.Count)
+            ThroughputHoverIndex = null;
+        if (LatencyHoverIndex is int latencyIndex && latencyIndex >= snapshot.Timeline.Count)
+            LatencyHoverIndex = null;
+    }
+
+    private void RebuildDisplayedResults()
+    {
+        IEnumerable<PressureTestRequestResult> filtered = Snapshot.RequestResults
+            .Where(MatchesResultFilters);
+        if (!Snapshot.IsRunning)
+        {
+            filtered = filtered
+                .OrderByDescending(result => result.CompletedAtSeconds)
+                .ThenByDescending(result => result.IterationIndex)
+                .ThenByDescending(result => result.UserIndex);
+        }
+        PressureTestRequestResult[] materialized = filtered.ToArray();
+        FilteredResultCount = materialized.Length;
+        ResultsPage = Math.Clamp(ResultsPage, 1, ResultsPageCount);
+        ResultsPageTarget = ResultsPage;
+        DisplayedResults = materialized
+            .Skip((ResultsPage - 1) * ResultsPerPage)
+            .Take(ResultsPerPage)
+            .ToArray();
+        if (ExpandedResultKey is not null
+            && !DisplayedResults.Any(result => ResultKey(result) == ExpandedResultKey))
+        {
+            ExpandedResultKey = null;
+        }
+    }
+
+    private void ToggleResultFilter(ResultFilterColumn column)
+    {
+        if (ActiveResultFilter == column)
+        {
+            ApplyAndCloseResultFilter();
+            return;
+        }
+
+        if (ActiveResultFilter.HasValue)
+        {
+            ApplyResultFilters();
+        }
+
+        ActiveResultFilter = column;
+    }
+
+    private void CloseResultFilter()
+    {
+        if (!ActiveResultFilter.HasValue) return;
+        ApplyAndCloseResultFilter();
+    }
+
+    private void ClosePagePopovers()
+    {
+        ShowTcpReuseSettings = false;
+        CloseResultFilter();
+    }
+
+    private void ToggleTcpReuseSettings()
+    {
+        if (IsRunning) return;
+        ShowTcpReuseSettings = !ShowTcpReuseSettings;
+        if (ShowTcpReuseSettings)
+        {
+            CloseResultFilter();
+        }
+    }
+
+    private async Task HandleTcpReuseModeChangedAsync()
+    {
+        await PersistPressureDraftAsync();
+    }
+
+    private void ApplyAndCloseResultFilter()
+    {
+        ActiveResultFilter = null;
+        ApplyResultFilters();
+    }
+
+    private void ApplyResultFilters()
+    {
+        ResultsPage = 1;
+        ExpandedResultKey = null;
+        RebuildDisplayedResults();
+    }
+
+    private void UpdateCompletedTimeMinimum(ChangeEventArgs args) =>
+        CompletedTimeMinimum = args.Value?.ToString() ?? string.Empty;
+
+    private void UpdateCompletedTimeMaximum(ChangeEventArgs args) =>
+        CompletedTimeMaximum = args.Value?.ToString() ?? string.Empty;
+
+    private void ClearResultFilter(ResultFilterColumn column)
+    {
+        switch (column)
+        {
+            case ResultFilterColumn.CompletedTime:
+                CompletedTimeMinimum = string.Empty;
+                CompletedTimeMaximum = string.Empty;
+                break;
+            case ResultFilterColumn.User:
+                UserIndexMinimum = null;
+                UserIndexMaximum = null;
+                break;
+            case ResultFilterColumn.Elapsed:
+                ElapsedMillisecondsMinimum = null;
+                ElapsedMillisecondsMaximum = null;
+                break;
+            case ResultFilterColumn.Status:
+                StatusResultFilter = ResultStatusFilter.All;
+                break;
+            case ResultFilterColumn.Error:
+                ErrorResultFilter.Reset();
+                break;
+            case ResultFilterColumn.Request:
+                RequestResultFilter.Reset();
+                break;
+            case ResultFilterColumn.Response:
+                ResponseResultFilter.Reset();
+                break;
+        }
+
+        ActiveResultFilter = null;
+        ApplyResultFilters();
+    }
+
+    private void ResetResultFilters()
+    {
+        ActiveResultFilter = null;
+        CompletedTimeMinimum = string.Empty;
+        CompletedTimeMaximum = string.Empty;
+        UserIndexMinimum = null;
+        UserIndexMaximum = null;
+        ElapsedMillisecondsMinimum = null;
+        ElapsedMillisecondsMaximum = null;
+        StatusResultFilter = ResultStatusFilter.All;
+        ErrorResultFilter.Reset();
+        RequestResultFilter.Reset();
+        ResponseResultFilter.Reset();
+    }
+
+    private bool MatchesResultFilters(PressureTestRequestResult result) =>
+        MatchesCompletedTime(result)
+        && (!UserIndexMinimum.HasValue || result.UserIndex >= UserIndexMinimum.Value)
+        && (!UserIndexMaximum.HasValue || result.UserIndex <= UserIndexMaximum.Value)
+        && (!ElapsedMillisecondsMinimum.HasValue || result.ElapsedMilliseconds >= ElapsedMillisecondsMinimum.Value)
+        && (!ElapsedMillisecondsMaximum.HasValue || result.ElapsedMilliseconds <= ElapsedMillisecondsMaximum.Value)
+        && (StatusResultFilter == ResultStatusFilter.All
+            || StatusResultFilter == ResultStatusFilter.Success && result.Success
+            || StatusResultFilter == ResultStatusFilter.Failure && !result.Success)
+        && MatchesText(result.Error, ErrorResultFilter)
+        && MatchesText(result.Request, RequestResultFilter)
+        && MatchesText(result.Response, ResponseResultFilter);
+
+    private bool MatchesCompletedTime(PressureTestRequestResult result)
+    {
+        TimeOnly? minimum = ParseTimeOnly(CompletedTimeMinimum);
+        TimeOnly? maximum = ParseTimeOnly(CompletedTimeMaximum);
+        if (!minimum.HasValue && !maximum.HasValue) return true;
+
+        DateTimeOffset startedAt = Snapshot.StartedAt != default
+            ? Snapshot.StartedAt
+            : _runStartedAt;
+        if (startedAt == default) return true;
+
+        TimeOnly completedTime = TimeOnly.FromTimeSpan(
+            startedAt.AddSeconds(Math.Max(0, result.CompletedAtSeconds)).TimeOfDay);
+        if (minimum.HasValue && maximum.HasValue && minimum.Value > maximum.Value)
+        {
+            return completedTime >= minimum.Value || completedTime <= maximum.Value;
+        }
+
+        return (!minimum.HasValue || completedTime >= minimum.Value)
+            && (!maximum.HasValue || completedTime <= maximum.Value);
+    }
+
+    private static TimeOnly? ParseTimeOnly(string value) =>
+        TimeOnly.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out TimeOnly parsed)
+            ? parsed
+            : null;
+
+    private static bool HasTextResultFilter(TextResultFilter filter) =>
+        filter.Mode is TextMatchMode.IsEmpty or TextMatchMode.IsNotEmpty
+        || !string.IsNullOrWhiteSpace(filter.Value);
+
+    private static bool MatchesText(string? source, TextResultFilter filter)
+    {
+        if (!HasTextResultFilter(filter)) return true;
+        string text = source ?? string.Empty;
+        string value = filter.Value.Trim();
+        return filter.Mode switch
+        {
+            TextMatchMode.Contains => text.Contains(value, StringComparison.OrdinalIgnoreCase),
+            TextMatchMode.NotContains => !text.Contains(value, StringComparison.OrdinalIgnoreCase),
+            TextMatchMode.StartsWith => text.StartsWith(value, StringComparison.OrdinalIgnoreCase),
+            TextMatchMode.EndsWith => text.EndsWith(value, StringComparison.OrdinalIgnoreCase),
+            TextMatchMode.Equals => text.Equals(value, StringComparison.OrdinalIgnoreCase),
+            TextMatchMode.NotEquals => !text.Equals(value, StringComparison.OrdinalIgnoreCase),
+            TextMatchMode.IsEmpty => string.IsNullOrWhiteSpace(source),
+            TextMatchMode.IsNotEmpty => !string.IsNullOrWhiteSpace(source),
+            _ => true
+        };
+    }
+
+    private static bool TextMatchModeNeedsValue(TextMatchMode mode) =>
+        mode is not TextMatchMode.IsEmpty and not TextMatchMode.IsNotEmpty;
+
+    private static string TextMatchModeLabel(TextMatchMode mode) => mode switch
+    {
+        TextMatchMode.Contains => "包含",
+        TextMatchMode.NotContains => "不包含",
+        TextMatchMode.StartsWith => "开头是",
+        TextMatchMode.EndsWith => "结尾是",
+        TextMatchMode.Equals => "等于",
+        TextMatchMode.NotEquals => "不等于",
+        TextMatchMode.IsEmpty => "为空",
+        TextMatchMode.IsNotEmpty => "不为空",
+        _ => mode.ToString()
+    };
+
+    private void FirstResultsPage() => ChangeResultsPage(1);
+    private void PreviousResultsPage() => ChangeResultsPage(ResultsPage - 1);
+    private void NextResultsPage() => ChangeResultsPage(ResultsPage + 1);
+    private void LastResultsPage() => ChangeResultsPage(ResultsPageCount);
+    private void JumpToResultsPage() => ChangeResultsPage(ResultsPageTarget);
+
+    private void ChangeResultsPage(int page)
+    {
+        ResultsPage = Math.Clamp(page, 1, ResultsPageCount);
+        ResultsPageTarget = ResultsPage;
+        ExpandedResultKey = null;
+        RebuildDisplayedResults();
+    }
+
+    private async Task AddAssertion()
+    {
+        BusinessAssertion.Conditions.Add(new BusinessAssertionCondition());
+        await PersistPressureDraftAsync();
+    }
+
+    private async Task RemoveAssertion(BusinessAssertionCondition condition)
+    {
+        BusinessAssertion.Conditions.Remove(condition);
+        await PersistPressureDraftAsync();
+    }
+
+    private void OpenAssertionDebugDialog()
+    {
+        if (BusinessAssertion.Conditions.Count == 0) return;
+        AssertionDebugConfiguration = BusinessAssertion.Clone();
+        ClearAssertionDebugResult();
+        ShowAssertionDebugDialog = true;
+    }
+
+    private void CloseAssertionDebugDialog()
+    {
+        ShowAssertionDebugDialog = false;
+        AssertionDebugConfiguration = null;
+        ClearAssertionDebugResult();
+    }
+
+    private void ClearAssertionDebugResult()
+    {
+        AssertionDebugResultState = AssertionDebugState.None;
+        AssertionDebugResultMessage = string.Empty;
+    }
+
+    private void EvaluateAssertionDebug()
+    {
+        if (AssertionDebugConfiguration is null) return;
+
+        try
+        {
+            PressureTestBusinessAssertionEvaluator.Validate(AssertionDebugConfiguration);
+            BusinessAssertionEvaluation evaluation = PressureTestBusinessAssertionEvaluator.Evaluate(
+                AssertionDebugConfiguration,
+                AssertionDebugResponse);
+            AssertionDebugResultState = evaluation.Success
+                ? AssertionDebugState.Success
+                : AssertionDebugState.Failure;
+            AssertionDebugResultMessage = evaluation.Success
+                ? "模拟响应满足当前配置的业务断言。"
+                : evaluation.Error ?? "模拟响应不满足当前业务断言。";
+        }
+        catch (ArgumentException exception)
+        {
+            AssertionDebugResultState = AssertionDebugState.InvalidConfiguration;
+            AssertionDebugResultMessage = exception.Message;
+        }
+    }
+
+    private async Task BackToHome()
+    {
+        await PersistPressureDraftAsync();
+        DraftStore.Capture(Settings, Input);
+        Navigation.NavigateTo("/");
+    }
+
+    private async Task FormatTemplate()
+    {
+        try
+        {
+            Input.RequestJson = PressureTestTemplateResolver.FormatJsonTemplate(Input.RequestJson);
+            await PersistPressureDraftAsync();
+            SetNotice("参数模板已格式化");
+        }
+        catch (Exception exception) { SetNotice($"模板格式错误：{GetErrorMessage(exception)}", true); }
+    }
+
+    private async Task HandleLimitModeChangedAsync()
+    {
+        ClampStepIntervalToDuration();
+        await PersistPressureDraftAsync();
+    }
+
+    private async Task HandleDurationLimitChangedAsync()
+    {
+        ClampStepIntervalToDuration();
+        await PersistPressureDraftAsync();
+    }
+
+    private async Task HandleStepStartIntervalChangedAsync()
+    {
+        ClampStepIntervalToDuration();
+        await PersistPressureDraftAsync();
+    }
+
+    private async Task HandleSlowThresholdChangedAsync()
+    {
+        SlowRequestThresholdMilliseconds = Math.Max(1, SlowRequestThresholdMilliseconds);
+        SlowDistributionHoverIndex = null;
+        RebuildDistributionBuckets();
+        await PersistPressureDraftAsync();
+    }
+
+    private void ClampStepIntervalToDuration()
+    {
+        if (LimitMode == PressureTestLimitMode.Duration
+            && DurationLimitSeconds >= 0
+            && StepStartIntervalSeconds > DurationLimitSeconds)
+        {
+            StepStartIntervalSeconds = DurationLimitSeconds;
+        }
+    }
+
+    private async Task PersistPressureDraftAsync()
+    {
+        if (!DraftStorageReady || IsRunning) return;
+
+        var draft = new PressureTestPageDraft
+        {
+            Invocation = Input.Clone(),
+            UserCount = UserCount,
+            TcpReuseMode = TcpReuseMode,
+            LimitMode = LimitMode,
+            IterationsPerUser = IterationsPerUser,
+            DurationLimitSeconds = DurationLimitSeconds,
+            UserStartIntervalMs = UserStartIntervalMs,
+            StepStartIntervalSeconds = StepStartIntervalSeconds,
+            StepUserCount = StepUserCount,
+            RequestIntervalMs = RequestIntervalMs,
+            SlowRequestThresholdMilliseconds = SlowRequestThresholdMilliseconds,
+            RecordRequestResponse = RecordRequestResponse,
+            BusinessAssertion = BusinessAssertion.Clone()
+        };
+
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "dubboTester.indexedDb.savePressureDraft",
+                JsonSerializer.Serialize(draft, StorageJsonOptions));
+            await JS.InvokeVoidAsync(
+                "dubboTester.save",
+                SettingsStorageKey,
+                JsonSerializer.Serialize(Settings, StorageJsonOptions));
+        }
+        catch (JSException exception)
+        {
+            SetNotice($"保存压测草稿失败：{GetErrorMessage(exception)}", true);
+        }
+    }
+
+    private string BuildPolyline(
+        Func<PressureTestPoint, int, double> selector,
+        double zoom,
+        double? scaleMaximum = null)
+    {
+        IReadOnlyList<PressureTestPoint> points = Snapshot.Timeline;
+        if (points.Count == 0) return string.Empty;
+        double maximum = scaleMaximum ?? points.Select(selector).DefaultIfEmpty(0).Max();
+        maximum = Math.Max(maximum, 1);
+        return string.Join(' ', points.Select((point, index) =>
+        {
+            double x = ChartX(index, points.Count, zoom);
+            double y = ChartY(selector(point, index), maximum);
+            return $"{x.ToString("F1", CultureInfo.InvariantCulture)},{y.ToString("F1", CultureInfo.InvariantCulture)}";
+        }));
+    }
+
+    private void RebuildDistributionBuckets()
+    {
+        DistributionBuckets = Snapshot.IsRunning
+            ? Snapshot.DistributionBuckets
+            : PressureTestDistributionBuilder.Build(
+                Snapshot.RequestResults,
+                Snapshot.ElapsedSeconds,
+                SlowRequestThresholdMilliseconds);
+        if (ErrorDistributionHoverIndex is int errorIndex && errorIndex >= DistributionBuckets.Count)
+            ErrorDistributionHoverIndex = null;
+        if (SlowDistributionHoverIndex is int slowIndex && slowIndex >= DistributionBuckets.Count)
+            SlowDistributionHoverIndex = null;
+    }
+
+    private string BuildDistributionPolyline(
+        Func<PressureTestDistributionBucket, double> selector,
+        double zoom,
+        double scaleMaximum)
+    {
+        if (DistributionBuckets.Count == 0) return string.Empty;
+        return string.Join(' ', DistributionBuckets.Select((bucket, index) =>
+            $"{SvgNumber(DistributionX(index, zoom))},{SvgNumber(ChartY(selector(bucket), scaleMaximum))}"));
+    }
+
+    private double DistributionBarX(int index, double zoom) =>
+        DistributionX(index, zoom) - DistributionBarWidth(zoom) / 2;
+
+    private double DistributionX(int index, double zoom) =>
+        DistributionX((index + .5) / Math.Max(DistributionBuckets.Count, 1), zoom);
+
+    private static double DistributionX(double ratio, double zoom) =>
+        ChartPlotLeft(zoom)
+        + Math.Clamp(ratio, 0, 1) * (DistributionPlotRight(zoom) - ChartPlotLeft(zoom));
+
+    private double DistributionHitStart(int index, double zoom) =>
+        DistributionX(index / (double)Math.Max(DistributionBuckets.Count, 1), zoom);
+
+    private double DistributionHitWidth(double zoom) =>
+        (DistributionPlotRight(zoom) - ChartPlotLeft(zoom)) / Math.Max(DistributionBuckets.Count, 1);
+
+    private string FormatDistributionTimelineTime(double ratio)
+    {
+        if (DistributionBuckets.Count == 0) return "--:--:--";
+        double start = DistributionBuckets[0].StartedAtSeconds;
+        double end = DistributionBuckets[^1].EndedAtSeconds;
+        return FormatClockTime(start + Math.Clamp(ratio, 0, 1) * (end - start));
+    }
+
+    private string FormatDistributionBucketTime(PressureTestDistributionBucket bucket) =>
+        $"{FormatClockTime(bucket.StartedAtSeconds)}–{FormatClockTime(bucket.EndedAtSeconds)}";
+
+    private string DistributionTooltipStyle(int index, double zoom)
+    {
+        double percentage = DistributionX(index, zoom) * 100 / ChartViewWidth;
+        return $"left:{percentage.ToString("F2", CultureInfo.InvariantCulture)}%";
+    }
+
+    private string DistributionTooltipAlignmentClass(int index, double zoom)
+    {
+        double percentage = DistributionX(index, zoom) * 100 / ChartViewWidth;
+        return percentage < 18 ? "align-left" : percentage > 82 ? "align-right" : string.Empty;
+    }
+
+    private double SelectedPeakTps => PressureTestChartMetrics.CalculatePeakSmoothedTps(
+        Snapshot.Timeline,
+        ThroughputSmoothingSeconds);
+
+    private double SmoothedTpsAt(int index) => PressureTestChartMetrics.CalculateSmoothedTps(
+        Snapshot.Timeline,
+        index,
+        ThroughputSmoothingSeconds);
+
+    private double ThroughputScaleMaximum => Math.Max(
+        1,
+        Snapshot.Timeline.Select((_, index) => SmoothedTpsAt(index)).DefaultIfEmpty(0).Max());
+
+    private double LatencyScaleMaximum => Math.Max(
+        1,
+        Snapshot.Timeline.Count == 0
+            ? 0
+            : Snapshot.Timeline.Max(point => Math.Max(
+                LatencyAverage(point),
+                Math.Max(LatencyP95(point), LatencyP99(point)))));
+
+    private double LatencyAverage(PressureTestPoint point) => LatencyMode == LatencyTrendMode.Recent
+        ? point.RecentAverageMilliseconds
+        : point.AverageMilliseconds;
+
+    private double LatencyP95(PressureTestPoint point) => LatencyMode == LatencyTrendMode.Recent
+        ? point.RecentP95Milliseconds
+        : point.P95Milliseconds;
+
+    private double LatencyP99(PressureTestPoint point) => LatencyMode == LatencyTrendMode.Recent
+        ? point.RecentP99Milliseconds
+        : point.P99Milliseconds;
+
+    private string LatencyModeLabel => LatencyMode == LatencyTrendMode.Recent
+        ? "最近 5 秒"
+        : "累计";
+
+    private double ActiveUserScaleMaximum => Math.Max(
+        1,
+        _lastRunConfiguration?.UserCount ?? UserCount);
+
+    private void ToggleChartsExpanded()
+    {
+        ChartsExpanded = !ChartsExpanded;
+        ThroughputHoverIndex = null;
+        LatencyHoverIndex = null;
+        ErrorDistributionHoverIndex = null;
+        SlowDistributionHoverIndex = null;
+    }
+
+    private void RefreshThroughputChart() => ThroughputHoverIndex = null;
+
+    private void RefreshLatencyChart() => LatencyHoverIndex = null;
+
+    private void ChangeChartZoom(ChartKind chart, double change)
+    {
+        switch (chart)
+        {
+            case ChartKind.Throughput:
+                ThroughputZoom = Math.Clamp(ThroughputZoom + change, MinimumChartZoom, MaximumChartZoom);
+                ThroughputHoverIndex = null;
+                break;
+            case ChartKind.Latency:
+                LatencyZoom = Math.Clamp(LatencyZoom + change, MinimumChartZoom, MaximumChartZoom);
+                LatencyHoverIndex = null;
+                break;
+            case ChartKind.ErrorDistribution:
+                ErrorDistributionZoom = Math.Clamp(ErrorDistributionZoom + change, MinimumChartZoom, MaximumChartZoom);
+                ErrorDistributionHoverIndex = null;
+                break;
+            case ChartKind.SlowDistribution:
+                SlowDistributionZoom = Math.Clamp(SlowDistributionZoom + change, MinimumChartZoom, MaximumChartZoom);
+                SlowDistributionHoverIndex = null;
+                break;
+        }
+    }
+
+    private static string ChartCanvasStyle(double zoom) =>
+        $"width:{(zoom * 100).ToString("F0", CultureInfo.InvariantCulture)}%";
+
+    private static double ChartPlotLeft(double zoom) => ChartLeftMargin / zoom;
+
+    private static double ChartPlotRight(double zoom) =>
+        ChartViewWidth - (ChartRightMargin / zoom);
+
+    private static double DistributionPlotRight(double zoom) =>
+        ChartViewWidth - (DistributionChartRightMargin / zoom);
+
+    private static double ChartYAxisLabelX(double zoom) =>
+        ChartPlotLeft(zoom) - (7 / zoom);
+
+    private static double ChartX(double ratio, double zoom) =>
+        ChartPlotLeft(zoom)
+        + Math.Clamp(ratio, 0, 1) * (ChartPlotRight(zoom) - ChartPlotLeft(zoom));
+
+    private static double ChartX(int index, int count, double zoom) =>
+        count <= 1
+            ? ChartX(.5, zoom)
+            : ChartX(index / (double)(count - 1), zoom);
+
+    private static double ChartY(double value, double maximum) =>
+        ChartPlotBottom
+        - Math.Clamp(value / Math.Max(maximum, 1), 0, 1) * (ChartPlotBottom - ChartPlotTop);
+
+    private static double ChartHitStart(int index, int count, double zoom)
+    {
+        if (count <= 1) return ChartPlotLeft(zoom);
+        double halfWidth = (ChartPlotRight(zoom) - ChartPlotLeft(zoom)) / (2 * (count - 1));
+        return Math.Max(ChartPlotLeft(zoom), ChartX(index, count, zoom) - halfWidth);
+    }
+
+    private static double ChartHitWidth(int index, int count, double zoom)
+    {
+        if (count <= 1) return ChartPlotRight(zoom) - ChartPlotLeft(zoom);
+        double halfWidth = (ChartPlotRight(zoom) - ChartPlotLeft(zoom)) / (2 * (count - 1));
+        double start = Math.Max(ChartPlotLeft(zoom), ChartX(index, count, zoom) - halfWidth);
+        double end = Math.Min(ChartPlotRight(zoom), ChartX(index, count, zoom) + halfWidth);
+        return end - start;
+    }
+
+    private string TooltipStyle(int index, double zoom)
+    {
+        double percentage = ChartX(index, Snapshot.Timeline.Count, zoom) * 100 / ChartViewWidth;
+        return $"left:{percentage.ToString("F2", CultureInfo.InvariantCulture)}%";
+    }
+
+    private string TooltipAlignmentClass(int index, double zoom)
+    {
+        double percentage = ChartX(index, Snapshot.Timeline.Count, zoom) * 100 / ChartViewWidth;
+        return percentage < 18 ? "align-left" : percentage > 82 ? "align-right" : string.Empty;
+    }
+
+    private static double HoverPointRadiusX(double zoom) =>
+        ChartHoverPointRadius / Math.Max(zoom, MinimumChartZoom);
+
+    private static string AxisTextTransform(double x, double zoom)
+    {
+        double inverseZoom = 1 / Math.Max(zoom, MinimumChartZoom);
+        return $"translate({SvgNumber(x)} 0) scale({SvgNumber(inverseZoom)} 1) translate({SvgNumber(-x)} 0)";
+    }
+
+    private static MarkupString AxisLabel(
+        string className,
+        double x,
+        double y,
+        string textAnchor,
+        double zoom,
+        string label) => new(
+            $"<text class=\"{WebUtility.HtmlEncode(className)}\" "
+            + $"x=\"{SvgNumber(x)}\" y=\"{SvgNumber(y)}\" "
+            + $"text-anchor=\"{WebUtility.HtmlEncode(textAnchor)}\" "
+            + "style=\"fill:#8490a0;font-size:8px;dominant-baseline:middle;pointer-events:none\" "
+            + $"transform=\"{AxisTextTransform(x, zoom)}\">"
+            + $"{WebUtility.HtmlEncode(label)}</text>");
+
+    private string FormatTimelineTime(double ratio)
+    {
+        if (Snapshot.Timeline.Count == 0) return "--:--:--";
+        double first = Snapshot.Timeline[0].ElapsedSeconds;
+        double last = Snapshot.Timeline[^1].ElapsedSeconds;
+        return FormatClockTime(first + Math.Clamp(ratio, 0, 1) * (last - first));
+    }
+
+    private static string FormatAxisValue(double value, string unit)
+    {
+        string number = value switch
+        {
+            >= 1_000 => value.ToString("N0", CultureInfo.InvariantCulture),
+            >= 100 => value.ToString("F0", CultureInfo.InvariantCulture),
+            >= 10 => value.ToString("F1", CultureInfo.InvariantCulture),
+            _ => value.ToString("F2", CultureInfo.InvariantCulture)
+        };
+        return $"{number} {unit}";
+    }
+
+    private static string FormatPercentageAxisValue(double value) =>
+        $"{Math.Max(0, value).ToString("0.####", CultureInfo.InvariantCulture)}%";
+
+    private static string FormatCountAxisValue(double value) =>
+        $"{Math.Max(0, value).ToString("N0", CultureInfo.InvariantCulture)} 次";
+
+    private static string SvgNumber(double value) => value.ToString("F2", CultureInfo.InvariantCulture);
+
+    private static string SanitizeFileName(string value)
+    {
+        string sanitized = string.Concat(value.Select(character =>
+            char.IsLetterOrDigit(character) || character is '.' or '-' or '_'
+                ? character
+                : '-'));
+        sanitized = sanitized.Trim('-');
+        if (string.IsNullOrWhiteSpace(sanitized)) sanitized = "report";
+        return sanitized.Length <= 80 ? sanitized : sanitized[..80];
+    }
+
+    private static string FormatMilliseconds(double value) => $"{value:F2} ms";
+    private void SetNotice(string text, bool isError = false) { Notice = text; NoticeIsError = isError; }
+    private static string GetErrorMessage(Exception exception)
+    {
+        Exception current = exception;
+        while (current.InnerException is not null) current = current.InnerException;
+        return current.Message;
+    }
+
+    private enum ResultFilterColumn
+    {
+        CompletedTime,
+        User,
+        Elapsed,
+        Status,
+        Error,
+        Request,
+        Response
+    }
+
+    private enum ChartKind
+    {
+        Throughput,
+        Latency,
+        ErrorDistribution,
+        SlowDistribution
+    }
+
+    private enum LatencyTrendMode
+    {
+        Cumulative,
+        Recent
+    }
+
+    private enum ResultStatusFilter
+    {
+        All,
+        Success,
+        Failure
+    }
+
+    private enum TextMatchMode
+    {
+        Contains,
+        NotContains,
+        StartsWith,
+        EndsWith,
+        Equals,
+        NotEquals,
+        IsEmpty,
+        IsNotEmpty
+    }
+
+    private enum AssertionDebugState
+    {
+        None,
+        Success,
+        Failure,
+        InvalidConfiguration
+    }
+
+    private sealed class TextResultFilter
+    {
+        public TextMatchMode Mode { get; set; } = TextMatchMode.Contains;
+        public string Value { get; set; } = string.Empty;
+
+        public void Reset()
+        {
+            Mode = TextMatchMode.Contains;
+            Value = string.Empty;
+        }
+    }
+
+    public void Dispose()
+    {
+        IsDisposed = true;
+        _runCancellation?.Cancel();
+        _runCancellation?.Dispose();
+    }
+}

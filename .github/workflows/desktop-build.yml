@@ -1,0 +1,271 @@
+name: Build desktop apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - release1.3
+    tags:
+      - "v*"
+    paths:
+      - .github/workflows/desktop-build.yml
+      - global.json
+      - DubboTester.sln
+      - src/shared/DubboTester.Core/**
+      - src/shared/DubboTester.Hosting/**
+      - src/shared/DubboTester.UI/**
+      - src/apps/DubboTester.Desktop/**
+  pull_request:
+    paths:
+      - .github/workflows/desktop-build.yml
+      - global.json
+      - DubboTester.sln
+      - src/shared/DubboTester.Core/**
+      - src/shared/DubboTester.Hosting/**
+      - src/shared/DubboTester.UI/**
+      - src/apps/DubboTester.Desktop/**
+
+permissions:
+  contents: read
+
+env:
+  DESKTOP_PROJECT: src/apps/DubboTester.Desktop/DubboTester.Desktop.csproj
+
+jobs:
+  macos:
+    name: macOS universal app
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Select compatible Xcode
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.0.1.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install Mac Catalyst workload
+        run: dotnet workload install maui-maccatalyst --skip-manifest-update
+
+      - name: Restore desktop project
+        run: dotnet restore "$DESKTOP_PROJECT" -p:Configuration=Release
+
+      - name: Publish ad-hoc signed universal app
+        id: package_macos
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet publish "$DESKTOP_PROJECT" \
+            --configuration Release \
+            --framework net10.0-maccatalyst \
+            --no-restore \
+            -p:CreatePackage=false \
+            -p:EnableCodeSigning=false
+
+          project_version="$(dotnet msbuild "$DESKTOP_PROJECT" -nologo -getProperty:ApplicationDisplayVersion)"
+          artifact_version="$project_version"
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            release_version="${GITHUB_REF_NAME#v}"
+            release_base_version="${release_version%%-*}"
+
+            if [[ "$release_base_version" != "$project_version" ]]; then
+              echo "::error::Tag version $release_version does not match desktop application version $project_version."
+              exit 1
+            fi
+
+            artifact_version="$release_version"
+          fi
+
+          app_path="src/apps/DubboTester.Desktop/bin/Release/net10.0-maccatalyst/Dubbo Tester.app"
+
+          if [[ ! -d "$app_path" ]]; then
+            echo "::error::Universal macOS app bundle was not found at $app_path."
+            find src/apps/DubboTester.Desktop/bin/Release/net10.0-maccatalyst \
+              -type d -name 'Dubbo Tester.app' -print || true
+            exit 1
+          fi
+
+          executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
+          executable_path="$app_path/Contents/MacOS/$executable_name"
+          architectures="$(lipo -archs "$executable_path")"
+
+          for architecture in x86_64 arm64; do
+            if [[ " $architectures " != *" $architecture "* ]]; then
+              echo "::error::Universal app is missing $architecture. Found: $architectures"
+              exit 1
+            fi
+          done
+
+          codesign \
+            --force \
+            --deep \
+            --sign - \
+            --entitlements src/apps/DubboTester.Desktop/Platforms/MacCatalyst/Entitlements.plist \
+            "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+
+          mkdir -p artifacts
+          artifact_name="DubboTester-macOS-universal-${artifact_version}.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$app_path" \
+            "artifacts/$artifact_name"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package_macos.outputs.artifact_name }}
+          path: artifacts/${{ steps.package_macos.outputs.artifact_name }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows x64 app
+    runs-on: windows-2025
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install Windows MAUI workload
+        shell: pwsh
+        run: dotnet workload install maui-windows --skip-manifest-update
+
+      - name: Restore desktop project
+        shell: pwsh
+        run: |
+          dotnet restore $env:DESKTOP_PROJECT `
+            -p:Configuration=Release `
+            -p:RuntimeIdentifierOverride=win-x64 `
+            -p:WindowsPackageType=None `
+            -p:SelfContained=true `
+            -p:WindowsAppSDKSelfContained=true
+
+      - name: Publish self-contained Windows app
+        id: package_windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publishDirectory = Join-Path $env:RUNNER_TEMP 'dubbo-tester-windows'
+          $artifactDirectory = Join-Path $env:GITHUB_WORKSPACE 'artifacts'
+
+          dotnet publish $env:DESKTOP_PROJECT `
+            --configuration Release `
+            --framework net10.0-windows10.0.19041.0 `
+            --no-restore `
+            --output $publishDirectory `
+            -p:RuntimeIdentifierOverride=win-x64 `
+            -p:WindowsPackageType=None `
+            -p:SelfContained=true `
+            -p:WindowsAppSDKSelfContained=true
+
+          $projectVersion = (dotnet msbuild $env:DESKTOP_PROJECT -nologo -getProperty:ApplicationDisplayVersion).Trim()
+          $artifactVersion = $projectVersion
+
+          if ($env:GITHUB_REF.StartsWith('refs/tags/v')) {
+            $releaseVersion = $env:GITHUB_REF_NAME.Substring(1)
+            $releaseBaseVersion = ($releaseVersion -split '-', 2)[0]
+
+            if ($releaseBaseVersion -ne $projectVersion) {
+              throw "Tag version $releaseVersion does not match desktop application version $projectVersion."
+            }
+
+            $artifactVersion = $releaseVersion
+          }
+
+          New-Item -ItemType Directory -Force -Path $artifactDirectory | Out-Null
+          $artifactName = "DubboTester-Windows-x64-$artifactVersion.zip"
+          Compress-Archive `
+            -Path (Join-Path $publishDirectory '*') `
+            -DestinationPath (Join-Path $artifactDirectory $artifactName) `
+            -Force
+          "artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package_windows.outputs.artifact_name }}
+          path: artifacts/${{ steps.package_windows.outputs.artifact_name }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - macos
+      - windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: DubboTester-*.zip
+          path: release-assets
+          merge-multiple: true
+          skip-decompress: true
+
+      - name: Validate versioned assets and generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME#v}"
+          expected_assets=(
+            "release-assets/DubboTester-macOS-universal-${version}.zip"
+            "release-assets/DubboTester-Windows-x64-${version}.zip"
+          )
+
+          for asset in "${expected_assets[@]}"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "::error::Expected release asset was not produced: $asset"
+              exit 1
+            fi
+          done
+
+          cd release-assets
+          sha256sum ./*.zip > SHA256SUMS.txt
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          release_flags=(
+            --verify-tag
+            --generate-notes
+            --title "DubboTester ${GITHUB_REF_NAME}"
+          )
+
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_flags+=(--prerelease --latest=false)
+          else
+            release_flags+=(--latest)
+          fi
+
+          gh release create \
+            "$GITHUB_REF_NAME" \
+            "${release_flags[@]}" \
+            release-assets/*

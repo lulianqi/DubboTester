@@ -1,0 +1,8 @@
+<Router AppAssembly="typeof(DubboTester.Components.Pages.Home).Assembly"
+        NotFoundPage="typeof(DubboTester.Components.Pages.NotFound)">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData"
+                   DefaultLayout="typeof(DubboTester.Components.Layout.MainLayout)" />
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+</Router>

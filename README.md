@@ -2,28 +2,118 @@
 
 从 `testengineer/independent-pages/dubbo` 独立出来的 .NET 10 Blazor Server Dubbo 调试工具。
 
+## 获取与安装
+
+[前往 GitHub Releases 下载最新版本](https://github.com/lulianqi/DubboTester/releases/latest)
+
+从 `v1.3.0` 开始，桌面版随 GitHub Release 提供，不会直接提交到源码仓库：
+
+| 平台 | Release 资源 | 说明 |
+| --- | --- | --- |
+| Windows x64 | `DubboTester-Windows-x64-<版本号>.zip` | 自包含免安装版本，解压后运行 |
+| macOS Intel / Apple Silicon | `DubboTester-macOS-universal-<版本号>.zip` | ad-hoc 签名的 Universal App，解压后运行 |
+| 完整性校验 | `SHA256SUMS.txt` | 两个平台压缩包的 SHA-256 摘要 |
+
+当前 macOS 桌面包仅使用本地 ad-hoc 签名，尚未进行 Developer ID 签名和 Apple 公证，首次运行可能需要在
+“系统设置 → 隐私与安全性”中确认打开。需要容器部署时，可使用
+[`ghcr.io/lulianqi/dubbo-tester`](https://github.com/lulianqi/DubboTester/pkgs/container/dubbo-tester)
+或 [`lulianqi/dubbo-tester`](https://hub.docker.com/r/lulianqi/dubbo-tester)。
+
 ## 技术与调用方式
 
 - .NET 10 / Blazor Interactive Server
-- NuGet `DubboNet` **2.0.0**
+- NuGet `DubboNet` **3.1.0**
 - ZooKeeper 用于服务发现和元数据读取
 - 业务请求通过 Dubbo2 TCP + Hessian2 `$invoke` 泛化调用发送，不使用 Telnet `invoke`
 - 可选注册中心负载均衡调用，或指定 Provider 直连调用
 
 `DubboNet` 在元数据中心不可用时可能在包内部用 Provider Telnet `ls -l` 读取一次方法签名；这只用于签名发现，不用于业务调用。使用界面中的精确 Java 参数类型即可跳过签名自动发现。
 
-DubboNet 2.0.0 可读取元数据中心 `FullServiceDefinition.types`。当方法包含 POJO、集合、数组、枚举等结构型参数时，可以在“Java 签名”区域查看参数结构，并按该结构生成可编辑的请求 JSON 示例。类型结构仅由元数据中心提供；Telnet 签名来源不包含这部分信息。
+DubboNet 3.1.0 可读取元数据中心 `FullServiceDefinition.types`。当方法包含 POJO、集合、数组、枚举等结构型参数时，可以在“Java 签名”区域查看参数结构，并按该结构生成可编辑的请求 JSON 示例。类型结构仅由元数据中心提供；Telnet 签名来源不包含这部分信息。
 
 Dubbo 2.7.x 可能把 `String`、`Long`、`Integer` 等 JDK 类型的内部实现字段也写入 `properties`，例如 `String.value`、`String.hash`。DubboTester 会按字段声明类型识别这些标量/包装类型，不会将其内部字段当作业务请求字段；业务 POJO 自身声明的同名字段仍会正常保留。
 
 ## 运行
 
 ```bash
-dotnet restore
-dotnet run
+dotnet restore src/apps/DubboTester.Web/DubboTester.csproj
+dotnet run --project src/apps/DubboTester.Web/DubboTester.csproj
 ```
 
 默认开发地址见 `Properties/launchSettings.json`。首次打开后，在设置里填写 ZooKeeper 地址并刷新服务目录。
+
+### 浏览器本地存储
+
+Web 版按数据性质使用混合存储，桌面版通过共享 UI 使用相同策略：
+
+- `localStorage` 保存 ZooKeeper、超时、筛选项等连接与页面设置，便于启动时快速恢复少量配置。
+- `IndexedDB` 保存调用历史（含响应正文和收藏状态）、各方法的请求参数草稿以及压力测试草稿，适合容量更大、更新更频繁的数据。
+- 从旧版本升级时，原有 `localStorage` 调用历史和 `sessionStorage` 请求草稿会自动迁移到 `IndexedDB`，迁移成功后再清理旧数据。
+
+浏览器存储按 Origin（协议、域名和端口）隔离；更换访问地址、使用隐私模式或清除站点数据时，看到的会是另一份或全新的本地数据。正式部署应保持固定访问地址，并避免把清理站点数据当作普通缓存清理操作。
+
+## 项目结构
+
+```text
+src/
+├── apps/
+│   ├── DubboTester.Web/       # Web 与 Docker 启动入口
+│   └── DubboTester.Desktop/   # Windows/macOS MAUI 桌面入口
+└── shared/
+    ├── DubboTester.Core/      # Dubbo、缓存、压测和 MCP 核心业务
+    ├── DubboTester.Hosting/   # ASP.NET Core 与 MCP HTTP 宿主适配
+    └── DubboTester.UI/        # Web 与桌面端共享 Razor UI
+tests/
+└── DubboTester.Tests/         # 核心逻辑测试
+```
+
+解决方案中按相同职责划分为 `Apps`、`Shared` 和 `Tests` 三个逻辑目录。
+仓库根目录只保留解决方案、构建部署文件和项目级文档。
+
+桌面版位于同一个解决方案和仓库中，但拥有独立入口。它通过 `BlazorWebView`
+直接加载共享页面，并在进程内提供 `http://localhost:5154/mcp`。Web 与 Docker
+继续只发布 `src/apps/DubboTester.Web/DubboTester.csproj`，不会包含 MAUI 桌面运行时。详细设计见
+[`docs/desktop-architecture.md`](docs/desktop-architecture.md)。
+
+### 桌面版开发运行
+
+安装 .NET 10 Mac Catalyst workload 后，在 macOS 上运行：
+
+```bash
+sudo dotnet workload install maui-maccatalyst
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  dotnet build src/apps/DubboTester.Desktop/DubboTester.Desktop.csproj -c Debug
+```
+
+Debug 构建产物位于
+`src/apps/DubboTester.Desktop/bin/Debug/net10.0-maccatalyst/<runtime>/Dubbo Tester.app`。
+当前项目的 Debug 配置允许在旧版 Xcode 上进行迁移验证，并采用 `SdkOnly` 链接；正式
+Release 打包仍会执行 Mac Catalyst workload 对 Xcode 版本的严格校验。
+
+Windows 使用同一个项目，目标框架会自动切换为
+`net10.0-windows10.0.19041.0`，构建机安装 `maui-windows` workload 即可。桌面配置
+保存在操作系统应用数据目录，和 Web/Docker 的 `App_Data` 相互独立。
+
+仓库中的 `Build desktop apps` GitHub Actions 工作流会在 `release1.3` 分支更新、
+相关 Pull Request 或手动触发时分别构建：
+
+- 同时支持 Intel 与 Apple Silicon、经过架构校验和 ad-hoc 签名的 macOS `.app` 压缩包。
+- 包含 .NET 与 Windows App SDK 运行组件的 Windows x64 免安装压缩包。
+
+macOS 的 ad-hoc 签名产物用于开发验证。面向普通用户正式发布 macOS 版本时，仍需要 Apple Developer
+证书、Developer ID 签名和公证；Windows 后续也可以在该工作流基础上增加证书签名或
+MSIX 打包。
+
+普通提交和手动运行产生的平台 ZIP 会作为单层 Actions artifact 保留 14 天，可以直接
+下载和解压。推送与桌面项目
+`ApplicationDisplayVersion` 基础版本一致的标签（例如 `v1.3.0`）后，工作流会自动汇总
+两个平台的压缩包、生成 `SHA256SUMS.txt`，并创建对应的 GitHub Release。带连字符的标签
+（例如 `v1.3.0-beta.1`）会发布为预发行版本，其他 `v*` 标签会标记为最新版。
+
+```bash
+git tag -a v1.3.0 -m "DubboTester v1.3.0"
+git push origin v1.3.0
+```
 
 ### Docker
 
@@ -68,7 +158,7 @@ docker run --rm \
 - 阶梯启动间隔：相邻两个用户的启动时间差；默认 `0`，表示全部用户同时启动。
 - 请求间隔：同一用户相邻两次请求之间的等待时间；默认 `0`，表示连续发送。
 
-趋势图支持鼠标悬停查看对应采样时刻的即时 TPS、平均响应、P95 和 P99。运行明细默认只显示失败请求，也可切换为显示全部请求；明细按每页 100 条分页。默认不保存请求和响应正文，开启“记录请求&响应”后会在本次页面内存中保存参数化后的请求和完整响应，并提供独立列、悬浮提示及详情展开查看，不会写入历史记录或数据库。
+趋势图支持鼠标悬停查看对应采样时刻的即时 TPS、平均响应、P95 和 P99。运行明细默认只显示失败请求，也可切换为显示全部请求；明细按每页 100 条分页。默认不保存请求和响应正文，开启“记录请求&响应”后会在本次页面内存中保存参数化后的请求和完整响应，并提供独立列、悬浮提示及详情展开查看，不会写入历史记录或数据库。请求与响应正文采用约 200 MB 的内存预算，超过后先清理最旧的成功请求正文；只有失败请求正文自身也超过预算时才清理最旧的失败正文，基础明细和统计不会被删除。
 
 请求模板下方可以配置可选的业务断言。断言支持响应正文包含指定内容，以及通过 JSONPath（例如 `$.code`、`$.data.items[0].id`）读取字段后判断存在、不存在、等于、不等于、包含或数值大小；多个条件可以按 AND 或 OR 组合。Dubbo 调用成功但业务断言不满足时，该请求仍会计为压测失败。
 

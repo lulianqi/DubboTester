@@ -5,9 +5,9 @@ ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
 COPY . ./
-RUN dotnet restore DubboTester.csproj
+RUN dotnet restore src/apps/DubboTester.Web/DubboTester.csproj
 
-RUN dotnet publish DubboTester.csproj \
+RUN dotnet publish src/apps/DubboTester.Web/DubboTester.csproj \
     --configuration ${BUILD_CONFIGURATION} \
     --output /app/publish \
     --no-restore \
@@ -18,7 +18,8 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 
 ENV ASPNETCORE_HTTP_PORTS=8080 \
-    DOTNET_EnableDiagnostics=0
+    DOTNET_EnableDiagnostics=0 \
+    TZ=Asia/Shanghai
 
 EXPOSE 8080
 
