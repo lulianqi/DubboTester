@@ -27,6 +27,8 @@ public static class DubboTesterServiceCollectionExtensions
         services.TryAddSingleton<IAppDataDirectoryProvider, WebAppDataDirectoryProvider>();
         services.TryAddSingleton<IMcpRequestContextAccessor, AspNetMcpRequestContextAccessor>();
         services.TryAddSingleton<IMcpEndpointAddressProvider, WebMcpEndpointAddressProvider>();
+        services.TryAddSingleton<PressureTestReportDownloadStore>();
+        services.TryAddSingleton<IPressureTestReportExportService, WebPressureTestReportExportService>();
         return services.AddDubboTesterApplication();
     }
 

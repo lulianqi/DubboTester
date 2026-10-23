@@ -5,6 +5,7 @@
 @implements IDisposable
 @inject DubboPressureTestRunner Runner
 @inject PressureTestDraftStore DraftStore
+@inject IPressureTestReportExportService ReportExporter
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 
@@ -248,7 +249,9 @@
                 <div class="progress-track"><span style="width: @($"{Snapshot.ProgressPercent:F2}%")"></span></div>
             </div>
             <div class="control-actions">
-                <button class="export-button" disabled="@(IsRunning || Snapshot.CompletedRequests == 0)" @onclick="ExportReportAsync">⇩ 导出报告</button>
+                <button class="export-button" disabled="@(IsRunning || IsExporting || Snapshot.CompletedRequests == 0)" @onclick="ExportReportAsync">
+                    @(IsExporting ? "正在生成…" : "⇩ 导出报告")
+                </button>
                 @if (IsRunning)
                 {
                     <button class="stop-button" @onclick="Stop">停止压测</button>
@@ -716,7 +719,7 @@
             <div class="card-heading">
                 <div><h2>运行明细</h2><p>@DetailsDescription</p></div>
                 <div class="details-heading-actions">
-                    <label class="result-toggle" title="开启后在页面内存中保存请求和响应；约 200 MB 后自动清理较旧正文，失败请求优先保留">
+                    <label class="result-toggle" title="开启后在页面内存中保存请求和响应；约 100 MB 后自动清理较旧正文，失败请求优先保留">
                         <input type="checkbox" @bind="RecordRequestResponse" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" />
                         <span>记录请求&amp;响应</span>
                     </label>
@@ -1111,6 +1114,7 @@
     private string Notice { get; set; } = "配置负载与参数模板后开始压测";
     private bool NoticeIsError { get; set; }
     private bool IsRunning { get; set; }
+    private bool IsExporting { get; set; }
     private bool ShowTcpReuseSettings { get; set; }
     private bool _hasDraft;
     private bool DraftStorageReady { get; set; }
@@ -1205,11 +1209,11 @@
     private string DetailsDescription => Snapshot.CompletedRequests > 0
         ? Snapshot.RecordsRequestResponse
             ? Snapshot.DiscardedPayloadCount > 0
-                ? $"请求与响应正文当前约占 {FormatMegabytes(Snapshot.ApproximatePayloadBytes)} MB；已按约 200 MB 上限清理 {Snapshot.DiscardedPayloadCount:N0} 条较旧正文，失败请求优先保留"
+                ? $"请求与响应正文当前约占 {FormatMegabytes(Snapshot.ApproximatePayloadBytes)} MB；已按约 100 MB 上限清理 {Snapshot.DiscardedPayloadCount:N0} 条较旧正文，失败请求优先保留"
                 : $"本次压测在当前页面内存中记录请求与响应，当前约 {FormatMegabytes(Snapshot.ApproximatePayloadBytes)} MB，不写入历史记录或数据库"
             : "本次压测未记录请求与响应正文，也不写入历史记录或数据库"
         : RecordRequestResponse
-            ? "压测开始后将在当前页面内存中记录请求与响应；约 200 MB 后自动清理较旧正文，失败请求优先保留"
+            ? "压测开始后将在当前页面内存中记录请求与响应；约 100 MB 后自动清理较旧正文，失败请求优先保留"
             : "默认不记录请求与响应正文，也不写入历史记录或数据库";
 
     protected override void OnInitialized()
@@ -1407,25 +1411,44 @@
 
     private async Task ExportReportAsync()
     {
-        if (_lastRunConfiguration is null || Snapshot.CompletedRequests == 0) return;
-        DateTimeOffset finishedAt = _runFinishedAt == default ? DateTimeOffset.Now : _runFinishedAt;
-        string html = PressureTestHtmlReportBuilder.Build(
-            _lastRunConfiguration,
-            Snapshot,
-            _runStartedAt,
-            finishedAt,
-            includeAllRequests: true,
-            ThroughputSmoothingSeconds,
-            LatencyMode == LatencyTrendMode.Recent);
-        string endpoint = SanitizeFileName(
-            $"{_lastRunConfiguration.Invocation.ServiceName}-{_lastRunConfiguration.Invocation.MethodName}");
-        string fileName = $"dubbo-pressure-{endpoint}-{DateTime.Now:yyyyMMdd-HHmmss}.html";
-        await JS.InvokeVoidAsync(
-            "dubboTester.download",
-            fileName,
-            html,
-            "text/html;charset=utf-8");
-        SetNotice($"压测报告已导出：{fileName}");
+        if (_lastRunConfiguration is null || Snapshot.CompletedRequests == 0 || IsExporting) return;
+
+        IsExporting = true;
+        NoticeIsError = false;
+        Notice = "正在生成压测报告…";
+        await Task.Yield();
+        try
+        {
+            DateTimeOffset finishedAt = _runFinishedAt == default ? DateTimeOffset.Now : _runFinishedAt;
+            string endpoint = SanitizeFileName(
+                $"{_lastRunConfiguration.Invocation.ServiceName}-{_lastRunConfiguration.Invocation.MethodName}");
+            string fileName = $"dubbo-pressure-{endpoint}-{DateTime.Now:yyyyMMdd-HHmmss}.html";
+            PressureTestReportExportResult result = await ReportExporter.ExportAsync(new(
+                _lastRunConfiguration,
+                Snapshot,
+                _runStartedAt,
+                finishedAt,
+                IncludeAllRequests: true,
+                ThroughputSmoothingSeconds,
+                LatencyMode == LatencyTrendMode.Recent,
+                fileName));
+            if (!string.IsNullOrWhiteSpace(result.DownloadUrl))
+            {
+                await JS.InvokeVoidAsync("dubboTester.downloadUrl", result.DownloadUrl);
+            }
+
+            SetNotice(!string.IsNullOrWhiteSpace(result.SavedPath)
+                ? $"压测报告已保存：{result.SavedPath}"
+                : $"压测报告已导出：{result.FileName}");
+        }
+        catch (Exception exception)
+        {
+            SetNotice($"压测报告导出失败：{GetErrorMessage(exception)}", true);
+        }
+        finally
+        {
+            IsExporting = false;
+        }
     }
 
     private void ToggleRequestDetail(PressureTestRequestResult result)

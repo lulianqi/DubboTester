@@ -33,6 +33,7 @@ public static class MauiProgram
 		builder.Services.AddScoped<DubboSession>();
 		builder.Services.AddScoped<DubboPressureTestRunner>();
 		builder.Services.AddScoped<PressureTestDraftStore>();
+		builder.Services.AddSingleton<IPressureTestReportExportService, DesktopPressureTestReportExportService>();
 #if WINDOWS
 		builder.Services.AddSingleton<IDesktopMcpServer, WindowsDesktopMcpServer>();
 #else

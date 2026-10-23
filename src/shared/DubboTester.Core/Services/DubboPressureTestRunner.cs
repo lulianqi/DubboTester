@@ -5,7 +5,7 @@ namespace DubboTester.Services;
 
 public sealed class DubboPressureTestRunner(DubboSession session)
 {
-    public const long MaximumRetainedPayloadBytes = 200L * 1024 * 1024;
+    public const long MaximumRetainedPayloadBytes = 100L * 1024 * 1024;
     private const int MaximumTotalRequests = 1_000_000;
     private const int MaximumIntervalMilliseconds = 3_600_000;
     private const int MaximumStepIntervalSeconds = 3_600;

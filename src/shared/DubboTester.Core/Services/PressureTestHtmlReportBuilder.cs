@@ -17,15 +17,35 @@ public static class PressureTestHtmlReportBuilder
         int throughputSmoothingSeconds = 5,
         bool useRecentLatency = false)
     {
+        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+        WriteAsync(
+            writer,
+            configuration,
+            snapshot,
+            startedAt,
+            finishedAt,
+            includeAllRequests,
+            throughputSmoothingSeconds,
+            useRecentLatency).GetAwaiter().GetResult();
+        return writer.ToString();
+    }
+
+    public static async Task WriteAsync(
+        TextWriter writer,
+        PressureTestConfiguration configuration,
+        PressureTestSnapshot snapshot,
+        DateTimeOffset startedAt,
+        DateTimeOffset finishedAt,
+        bool includeAllRequests,
+        int throughputSmoothingSeconds = 5,
+        bool useRecentLatency = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(snapshot);
 
-        PressureTestRequestResult[] filtered = snapshot.RequestResults
-            .Where(item => includeAllRequests || !item.Success)
-            .OrderByDescending(item => item.CompletedAtSeconds)
-            .ThenByDescending(item => item.IterationIndex)
-            .ThenByDescending(item => item.UserIndex)
-            .ToArray();
+        int[] filteredIndexes = GetFilteredResultIndexes(snapshot.RequestResults, includeAllRequests);
         string title = $"Dubbo 压测报告 - {configuration.Invocation.ServiceName}#{configuration.Invocation.MethodName}";
         var html = new StringBuilder(64_000);
         html.Append("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">")
@@ -101,7 +121,7 @@ public static class PressureTestHtmlReportBuilder
             .Append(snapshot.RecordsRequestResponse ? "；包含当前保留的请求与响应" : "；未记录请求与响应正文");
         if (snapshot.DiscardedPayloadCount > 0)
         {
-            html.Append("；已因约 200 MB 内存上限清理 ")
+            html.Append("；已因约 100 MB 内存上限清理 ")
                 .Append(snapshot.DiscardedPayloadCount.ToString("N0", CultureInfo.InvariantCulture))
                 .Append(" 条较旧正文（失败请求优先保留）");
         }
@@ -111,7 +131,7 @@ public static class PressureTestHtmlReportBuilder
             .Append(snapshot.MaximumMilliseconds.ToString("F2", CultureInfo.InvariantCulture))
             .Append(" ms</b></div>");
 
-        if (filtered.Length == 0)
+        if (filteredIndexes.Length == 0)
         {
             html.Append("<div class=\"empty\">")
                 .Append(includeAllRequests ? "暂无请求结果" : "暂无失败请求")
@@ -128,13 +148,45 @@ public static class PressureTestHtmlReportBuilder
             }
             html.Append("</tr></thead><tbody id=\"detail-body\"></tbody></table></div>")
                 .Append("<div class=\"detail-pagination\"><button id=\"page-first\">«</button><button id=\"page-prev\">‹</button><b id=\"page-label\"></b><button id=\"page-next\">›</button><button id=\"page-last\">»</button><span>跳至 <input id=\"page-target\" type=\"number\" min=\"1\" step=\"1\"><button id=\"page-go\">跳转</button></span></div>");
-            AppendDetailData(html, filtered, startedAt, snapshot.RecordsRequestResponse);
         }
 
-        html.Append("</section><footer>由 Dubbo Tester 生成 · 报告包含本次压测的全部轻量级运行明细</footer></main>")
-            .Append(filtered.Length > 0 ? DetailScript : string.Empty)
-            .Append("</body></html>");
-        return html.ToString();
+        await writer.WriteAsync(html.ToString().AsMemory(), cancellationToken).ConfigureAwait(false);
+        if (filteredIndexes.Length > 0)
+        {
+            await WriteDetailDataAsync(
+                writer,
+                snapshot.RequestResults,
+                filteredIndexes,
+                startedAt,
+                snapshot.RecordsRequestResponse,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        string footer = "</section><footer>由 Dubbo Tester 生成 · 报告包含本次压测的全部轻量级运行明细</footer></main>"
+            + (filteredIndexes.Length > 0 ? DetailScript : string.Empty)
+            + "</body></html>";
+        await writer.WriteAsync(footer.AsMemory(), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static int[] GetFilteredResultIndexes(
+        IReadOnlyList<PressureTestRequestResult> results,
+        bool includeAllRequests)
+    {
+        int[] indexes = Enumerable.Range(0, results.Count)
+            .Where(index => includeAllRequests || !results[index].Success)
+            .ToArray();
+        Array.Sort(indexes, (leftIndex, rightIndex) =>
+        {
+            PressureTestRequestResult left = results[leftIndex];
+            PressureTestRequestResult right = results[rightIndex];
+            int comparison = right.CompletedAtSeconds.CompareTo(left.CompletedAtSeconds);
+            if (comparison != 0) return comparison;
+            comparison = right.IterationIndex.CompareTo(left.IterationIndex);
+            return comparison != 0
+                ? comparison
+                : right.UserIndex.CompareTo(left.UserIndex);
+        });
+        return indexes;
     }
 
     private static string TcpReuseModeLabel(PressureTestTcpReuseMode mode) => mode switch
@@ -324,35 +376,51 @@ public static class PressureTestHtmlReportBuilder
         html.Append("<div class=\"detail-filter-actions\"><button id=\"filter-clear\">清除</button><button id=\"filter-apply\" class=\"primary\">应用筛选</button></div></div>");
     }
 
-    private static void AppendDetailData(
-        StringBuilder html,
+    private static async Task WriteDetailDataAsync(
+        TextWriter writer,
         IReadOnlyList<PressureTestRequestResult> results,
+        IReadOnlyList<int> resultIndexes,
         DateTimeOffset startedAt,
-        bool includesPayload)
+        bool includesPayload,
+        CancellationToken cancellationToken)
     {
-        html.Append("<script id=\"detail-data\" type=\"application/json\">[");
-        for (int index = 0; index < results.Count; index++)
+        await writer.WriteAsync(
+            "<script id=\"detail-data\" type=\"application/json\">[".AsMemory(),
+            cancellationToken).ConfigureAwait(false);
+        var buffer = new StringBuilder(64 * 1024);
+        for (int index = 0; index < resultIndexes.Count; index++)
         {
-            if (index > 0) html.Append(',');
-            PressureTestRequestResult item = results[index];
-            html.Append("{\"u\":").Append(item.UserIndex)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (index > 0) buffer.Append(',');
+            PressureTestRequestResult item = results[resultIndexes[index]];
+            buffer.Append("{\"u\":").Append(item.UserIndex)
                 .Append(",\"i\":").Append(item.IterationIndex)
                 .Append(",\"t\":");
-            AppendJsonString(html, startedAt.AddSeconds(Math.Max(0, item.CompletedAtSeconds)).ToString("HH:mm:ss", CultureInfo.InvariantCulture));
-            html.Append(",\"ms\":").Append(item.ElapsedMilliseconds.ToString("F3", CultureInfo.InvariantCulture))
+            AppendJsonString(buffer, startedAt.AddSeconds(Math.Max(0, item.CompletedAtSeconds)).ToString("HH:mm:ss", CultureInfo.InvariantCulture));
+            buffer.Append(",\"ms\":").Append(item.ElapsedMilliseconds.ToString("F3", CultureInfo.InvariantCulture))
                 .Append(",\"ok\":").Append(item.Success ? "true" : "false")
                 .Append(",\"e\":");
-            AppendJsonString(html, item.Error ?? string.Empty);
+            AppendJsonString(buffer, item.Error ?? string.Empty);
             if (includesPayload)
             {
-                html.Append(",\"q\":");
-                AppendJsonString(html, RequestText(item));
-                html.Append(",\"r\":");
-                AppendJsonString(html, ResponseText(item));
+                buffer.Append(",\"q\":");
+                AppendJsonString(buffer, RequestText(item));
+                buffer.Append(",\"r\":");
+                AppendJsonString(buffer, ResponseText(item));
             }
-            html.Append('}');
+            buffer.Append('}');
+
+            if (buffer.Length >= 64 * 1024)
+            {
+                await writer.WriteAsync(buffer.ToString().AsMemory(), cancellationToken).ConfigureAwait(false);
+                buffer.Clear();
+            }
         }
-        html.Append("]</script>");
+        if (buffer.Length > 0)
+        {
+            await writer.WriteAsync(buffer.ToString().AsMemory(), cancellationToken).ConfigureAwait(false);
+        }
+        await writer.WriteAsync("]</script>".AsMemory(), cancellationToken).ConfigureAwait(false);
     }
 
     private static void AppendJsonString(StringBuilder html, string value) =>

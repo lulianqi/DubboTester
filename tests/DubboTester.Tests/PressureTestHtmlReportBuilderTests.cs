@@ -1,5 +1,6 @@
 using DubboTester.Models;
 using DubboTester.Services;
+using System.Text;
 using System.Text.Json;
 using Xunit;
 
@@ -152,7 +153,7 @@ public sealed class PressureTestHtmlReportBuilderTests
             DateTimeOffset.Now,
             includeAllRequests: true);
 
-        Assert.Contains("约 200 MB 内存上限清理", html);
+        Assert.Contains("约 100 MB 内存上限清理", html);
         JsonElement detail = Assert.Single(ReadDetails(html));
         Assert.Equal("（已因运行明细内存达到上限而清理）", detail.GetProperty("q").GetString());
         Assert.Equal("（已因运行明细内存达到上限而清理）", detail.GetProperty("r").GetString());
@@ -213,6 +214,49 @@ public sealed class PressureTestHtmlReportBuilderTests
         Assert.DoesNotContain("仅展示前", html);
     }
 
+    [Fact]
+    public async Task WriteAsync_EmitsLargeDetailSetsInBoundedChunks()
+    {
+        const int resultCount = 5_000;
+        var configuration = new PressureTestConfiguration
+        {
+            RecordRequestResponse = true,
+            Settings = new TesterSettings(),
+            Invocation = new InvocationInput()
+        };
+        PressureTestRequestResult[] results = Enumerable.Range(1, resultCount)
+            .Select(index => new PressureTestRequestResult(
+                index % 10 + 1,
+                index,
+                12.5,
+                index / 1_000d,
+                true,
+                null,
+                Request: $"request-{index:D5}-{new string('q', 80)}",
+                Response: $"response-{index:D5}-{new string('r', 80)}"))
+            .ToArray();
+        var snapshot = new PressureTestSnapshot
+        {
+            CompletedRequests = resultCount,
+            SuccessCount = resultCount,
+            RecordsRequestResponse = true,
+            RequestResults = results
+        };
+        var writer = new MeasuringTextWriter();
+
+        await PressureTestHtmlReportBuilder.WriteAsync(
+            writer,
+            configuration,
+            snapshot,
+            DateTimeOffset.Parse("2026-09-30T10:00:00+08:00"),
+            DateTimeOffset.Parse("2026-09-30T10:01:00+08:00"),
+            includeAllRequests: true);
+
+        Assert.True(writer.WriteCount > 10);
+        Assert.True(writer.TotalCharacters > 500_000);
+        Assert.True(writer.MaximumWriteLength < 100_000);
+    }
+
     private static JsonElement[] ReadDetails(string html)
     {
         const string startMarker = "<script id=\"detail-data\" type=\"application/json\">";
@@ -236,5 +280,24 @@ public sealed class PressureTestHtmlReportBuilderTests
             index += search.Length;
         }
         return count;
+    }
+
+    private sealed class MeasuringTextWriter : TextWriter
+    {
+        public override Encoding Encoding => Encoding.UTF8;
+        public int WriteCount { get; private set; }
+        public long TotalCharacters { get; private set; }
+        public int MaximumWriteLength { get; private set; }
+
+        public override Task WriteAsync(
+            ReadOnlyMemory<char> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            WriteCount++;
+            TotalCharacters += buffer.Length;
+            MaximumWriteLength = Math.Max(MaximumWriteLength, buffer.Length);
+            return Task.CompletedTask;
+        }
     }
 }

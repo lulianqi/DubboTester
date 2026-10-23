@@ -437,6 +437,14 @@ window.dubboTester = {
         link.click();
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     },
+    downloadUrl: url => {
+        const link = document.createElement("a");
+        link.href = url;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    },
     positionPopover: (anchorId, preferredWidth = 420, preferredHeight = 520) => {
         const anchor = document.getElementById(anchorId);
         const margin = 12;
