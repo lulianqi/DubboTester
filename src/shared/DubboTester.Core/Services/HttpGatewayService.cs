@@ -20,12 +20,14 @@ public sealed class HttpGatewayService : IDisposable
     public const int MaximumBodyBytes = 1024 * 1024;
     public const int MaximumHistoryRecords = 2_000;
     public const int HistoryPageSize = 50;
+    private const int DiscoveryConcurrency = 6;
     private const int RetainedTextLength = 16_384;
     private readonly object _sync = new();
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     private readonly DubboCatalogCache _cache;
     private readonly string _path;
     private HttpGatewayConfiguration _configuration;
+    private HttpGatewayDiscoveryProgress _discoveryProgress = HttpGatewayDiscoveryProgress.Empty;
     private Runtime? _runtime;
     private readonly List<HttpCallRecord> _history = [];
     private bool _disposed;
@@ -45,6 +47,7 @@ public sealed class HttpGatewayService : IDisposable
     public event Action? Changed;
     public HttpGatewayConfiguration GetConfiguration() { lock (_sync) return _configuration.Clone(); }
     public IReadOnlyList<HttpGatewayMethod> GetMethods() { lock (_sync) return _runtime?.Methods ?? []; }
+    public HttpGatewayDiscoveryProgress GetDiscoveryProgress() { lock (_sync) return _discoveryProgress; }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -52,7 +55,7 @@ public sealed class HttpGatewayService : IDisposable
         try
         {
             if (_runtime is not null || !_configuration.Enabled || string.IsNullOrWhiteSpace(_configuration.Settings.RegistryAddress)) return;
-            Runtime runtime = await DiscoverAsync(_configuration.Settings, cancellationToken);
+            Runtime runtime = await DiscoverAsync(_configuration.Settings, forceRefresh: false, cancellationToken);
             lock (_sync) _runtime = runtime;
         }
         finally { _saveGate.Release(); }
@@ -81,7 +84,7 @@ public sealed class HttpGatewayService : IDisposable
             bool changed = SettingsKey(candidate.Settings) != SettingsKey(_configuration.Settings);
             bool rebuild = candidate.Enabled && (changed || refresh || !_configuration.Enabled || _runtime is null);
             if (rebuild && !string.IsNullOrWhiteSpace(candidate.Settings.RegistryAddress))
-                replacement = await DiscoverAsync(candidate.Settings, cancellationToken);
+                replacement = await DiscoverAsync(candidate.Settings, forceRefresh: changed || refresh, cancellationToken);
             await PersistAsync(candidate, cancellationToken);
             Runtime? previous = null;
             lock (_sync)
@@ -136,25 +139,72 @@ public sealed class HttpGatewayService : IDisposable
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    private async Task<Runtime> DiscoverAsync(TesterSettings settings, CancellationToken cancellationToken)
+    private async Task<Runtime> DiscoverAsync(
+        TesterSettings settings,
+        bool forceRefresh,
+        CancellationToken cancellationToken)
     {
-        using var session = new DubboSession(_cache);
         TesterSettings snapshot = settings.Clone();
         snapshot.OnlyRefreshServiceNames = false;
-        var catalog = await session.LoadServicesAsync(snapshot, forceRefresh: true, cancellationToken);
-        var methods = new Dictionary<string, HttpGatewayMethod>(StringComparer.Ordinal);
-        foreach (DubboServiceItem service in catalog.Services)
+
+        ReportDiscoveryProgress($"正在校验 {snapshot.RegistryDisplayName} 连接");
+        await DubboSession.TestRegistryAsync(
+            snapshot,
+            Math.Clamp(snapshot.RequestTimeoutMs, 1_000, 10_000),
+            cancellationToken);
+
+        ReportDiscoveryProgress(forceRefresh ? "正在强制刷新服务目录" : "正在读取服务目录缓存");
+        DubboCatalogLoadResult catalog;
+        using (var catalogSession = new DubboSession(_cache))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
+            catalog = await catalogSession.LoadServicesAsync(snapshot, forceRefresh, cancellationToken);
+        }
+
+        var services = new ConcurrentQueue<DubboServiceItem>(catalog.Services);
+        var methods = new ConcurrentDictionary<string, HttpGatewayMethod>(StringComparer.Ordinal);
+        int totalServices = services.Count;
+        int completedServices = 0;
+        ReportDiscoveryProgress("正在读取服务详情与方法签名", 0, totalServices, 0);
+
+        async Task DiscoverServiceAsync(DubboSession session, DubboServiceItem service)
+        {
+            async Task AddServiceMethodsAsync()
             {
-                await session.LoadServiceDetailsAsync(snapshot, service, forceRefresh: true, cancellationToken);
+                await session.LoadServiceDetailsAsync(snapshot, service, forceRefresh, cancellationToken);
+                IReadOnlyList<MethodSignatureItem> serviceSignatures;
+                try
+                {
+                    serviceSignatures = await session.LoadServiceMethodSignaturesAsync(
+                        snapshot,
+                        service.Name,
+                        service.RegistryRootPath,
+                        cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    foreach (string methodName in service.Methods)
+                    {
+                        AddUnavailable(methodName, exception.Message);
+                    }
+                    return;
+                }
+
+                Dictionary<string, MethodSignatureItem[]> signaturesByMethod = serviceSignatures
+                    .GroupBy(signature => signature.MethodName, StringComparer.Ordinal)
+                    .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
                 foreach (string name in service.Methods.Order(StringComparer.Ordinal))
                 {
                     try
                     {
-                        var signatures = await session.LoadMethodSignaturesAsync(snapshot, service.Name, name, service.RegistryRootPath, cancellationToken);
-                        if (signatures.Count == 0) throw new InvalidOperationException("未读取到精确方法签名，不能安全开放 HTTP 接口。");
+                        if (!signaturesByMethod.TryGetValue(name, out MethodSignatureItem[]? signatures)
+                            || signatures.Length == 0)
+                        {
+                            throw new InvalidOperationException("未读取到精确方法签名，不能安全开放 HTTP 接口。");
+                        }
                         foreach (var signature in signatures)
                         {
                             var variants = service.Providers.Where(provider => !provider.Disabled
@@ -177,17 +227,73 @@ public sealed class HttpGatewayService : IDisposable
                     catch (Exception exception) { AddUnavailable(name, exception.Message); }
                 }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception exception) { AddUnavailable("（方法加载失败）", exception.Message); }
 
             void AddUnavailable(string name, string error)
             {
                 string id = MethodId(snapshot, service, name, [], "", "") + "-unavailable";
                 methods[id] = new(id, service.RegistryRootPath, service.Name, name, [], "", "", name, "[]", error);
             }
+
+            try
+            {
+                await AddServiceMethodsAsync();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                AddUnavailable("（方法加载失败）", exception.Message);
+            }
         }
-        return new Runtime(snapshot, methods.Values.OrderBy(method => method.RegistryRootPath, StringComparer.Ordinal)
-            .ThenBy(method => method.ServiceName, StringComparer.Ordinal).ThenBy(method => method.Signature, StringComparer.Ordinal).ToArray(), _cache);
+
+        async Task WorkerAsync()
+        {
+            using var session = new DubboSession(_cache);
+            while (services.TryDequeue(out DubboServiceItem? service))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await DiscoverServiceAsync(session, service);
+                int completed = Interlocked.Increment(ref completedServices);
+                ReportDiscoveryProgress(
+                    "正在读取服务详情与方法签名",
+                    completed,
+                    totalServices,
+                    methods.Count);
+            }
+        }
+
+        Task[] workers = Enumerable
+            .Range(0, Math.Min(DiscoveryConcurrency, totalServices))
+            .Select(_ => WorkerAsync())
+            .ToArray();
+        await Task.WhenAll(workers);
+
+        ReportDiscoveryProgress("正在整理 HTTP 路由", totalServices, totalServices, methods.Count);
+        HttpGatewayMethod[] orderedMethods = methods.Values
+            .OrderBy(method => method.RegistryRootPath, StringComparer.Ordinal)
+            .ThenBy(method => method.ServiceName, StringComparer.Ordinal)
+            .ThenBy(method => method.Signature, StringComparer.Ordinal)
+            .ToArray();
+        return new Runtime(snapshot, orderedMethods, _cache);
+    }
+
+    private void ReportDiscoveryProgress(
+        string stage,
+        int completedServices = 0,
+        int totalServices = 0,
+        int discoveredMethods = 0)
+    {
+        lock (_sync)
+        {
+            if (_discoveryProgress.Stage == stage
+                && completedServices < _discoveryProgress.CompletedServices)
+            {
+                return;
+            }
+            _discoveryProgress = new(stage, completedServices, totalServices, discoveredMethods);
+        }
     }
 
     private static string MethodId(TesterSettings settings, DubboServiceItem service, string method, string[] types, string version, string group) =>

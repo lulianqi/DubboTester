@@ -130,7 +130,7 @@
 
 @if (Busy)
 {
-    <div class="http-backdrop loading"><section class="loading-card" role="status"><span class="spinner"></span><div><strong>正在连接 @Draft.Settings.RegistryDisplayName</strong><p>正在校验注册中心并读取服务与方法签名，请稍候…</p></div></section></div>
+    <div class="http-backdrop loading"><section class="loading-card" role="status"><span class="spinner"></span><div class="loading-content"><strong>@LoadingStage</strong><p>@LoadingDescription</p>@if (DiscoveryProgress.TotalServices > 0) { <progress max="@DiscoveryProgress.TotalServices" value="@DiscoveryProgress.CompletedServices"></progress> }</div></section></div>
 }
 @if (Usage is not null)
 {
@@ -157,6 +157,7 @@
 
 @code {
     private HttpGatewayConfiguration Draft = new(), Active = new();
+    private HttpGatewayDiscoveryProgress DiscoveryProgress = HttpGatewayDiscoveryProgress.Empty;
     private IReadOnlyList<HttpGatewayMethod> Methods = [];
     private HttpCallRecordPage History = new([], 0, 0);
     private HttpGatewayMethod? Usage;
@@ -176,6 +177,12 @@
     private IEnumerable<HttpGatewayMethod> FilteredMethods => Methods.Where(method =>
         $"{method.RegistryRootPath} {method.ServiceName} {method.Signature} {method.Group} {method.Version}".Contains(Search.Trim(), StringComparison.OrdinalIgnoreCase));
     private bool IsMethodEnabled(HttpGatewayMethod method) => method.Available && (Active.EnableAllMethods || Active.EnabledMethodIds.Contains(method.Id));
+    private string LoadingStage => string.IsNullOrWhiteSpace(DiscoveryProgress.Stage)
+        ? $"正在连接 {Draft.Settings.RegistryDisplayName}"
+        : DiscoveryProgress.Stage;
+    private string LoadingDescription => DiscoveryProgress.TotalServices > 0
+        ? $"已处理 {DiscoveryProgress.CompletedServices}/{DiscoveryProgress.TotalServices} 个服务，发现 {DiscoveryProgress.DiscoveredMethods} 个方法签名"
+        : "正在校验注册中心并读取服务目录，请稍候…";
 
     private async Task SetRegistryTypeAsync(RegistryCenterType type)
     {
@@ -235,7 +242,12 @@
         try
         {
             while (await timer.WaitForNextTickAsync(Lifetime.Token))
-                await InvokeAsync(() => { if (!Busy) { Reload(); StateHasChanged(); } });
+                await InvokeAsync(() =>
+                {
+                    DiscoveryProgress = Gateway.GetDiscoveryProgress();
+                    if (!Busy) Reload();
+                    StateHasChanged();
+                });
         }
         catch (OperationCanceledException) { }
     }
@@ -243,6 +255,7 @@
     {
         Active = Gateway.GetConfiguration();
         Methods = Gateway.GetMethods();
+        DiscoveryProgress = Gateway.GetDiscoveryProgress();
         History = Gateway.GetHistoryPage(HistoryPage, HistoryMethod, HistoryRequest, HistoryResponse);
         HistoryPage = Math.Min(HistoryPage, HistoryPages);
     }

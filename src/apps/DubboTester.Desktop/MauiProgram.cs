@@ -19,7 +19,7 @@ public static class MauiProgram
 		builder.Services.AddMauiBlazorWebView();
 		builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
 		{
-			["DubboTester:Version"] = "1.3.0"
+			["DubboTester:Version"] = "2.1.0"
 		});
 
 		builder.Services.AddSingleton<IAppDataDirectoryProvider, DesktopAppDataDirectoryProvider>();

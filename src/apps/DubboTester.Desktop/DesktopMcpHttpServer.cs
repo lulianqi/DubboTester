@@ -227,7 +227,7 @@ internal sealed class DesktopMcpHttpServer : IDesktopMcpServer
         ServerInfo = new Implementation
         {
             Name = "Dubbo Tester",
-            Version = "1.3.0"
+            Version = "2.1.0"
         },
         ServerInstructions = "仅提供在 Dubbo Tester 的 MCP 管理页面中明确启用的 Dubbo 方法。",
         Handlers = new McpServerHandlers

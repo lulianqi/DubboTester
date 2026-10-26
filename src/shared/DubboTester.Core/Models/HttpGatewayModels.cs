@@ -61,3 +61,12 @@ public sealed record HttpCallRecord(
 }
 
 public sealed record HttpCallRecordPage(IReadOnlyList<HttpCallRecord> Records, int MatchCount, int TotalCount);
+
+public sealed record HttpGatewayDiscoveryProgress(
+    string Stage,
+    int CompletedServices = 0,
+    int TotalServices = 0,
+    int DiscoveredMethods = 0)
+{
+    public static HttpGatewayDiscoveryProgress Empty { get; } = new(string.Empty);
+}

@@ -106,13 +106,13 @@ MSIX 打包。
 
 普通提交和手动运行产生的平台 ZIP 会作为单层 Actions artifact 保留 14 天，可以直接
 下载和解压。推送与桌面项目
-`ApplicationDisplayVersion` 基础版本一致的标签（例如 `v1.3.0`）后，工作流会自动汇总
+`ApplicationDisplayVersion` 基础版本一致的标签（例如 `v2.1.0`）后，工作流会自动汇总
 两个平台的压缩包、生成 `SHA256SUMS.txt`，并创建对应的 GitHub Release。带连字符的标签
-（例如 `v1.3.0-beta.1`）会发布为预发行版本，其他 `v*` 标签会标记为最新版。
+（例如 `v2.1.0-beta.1`）会发布为预发行版本，其他 `v*` 标签会标记为最新版。
 
 ```bash
-git tag -a v1.3.0 -m "DubboTester v1.3.0"
-git push origin v1.3.0
+git tag -a v2.1.0 -m "DubboTester v2.1.0"
+git push origin v2.1.0
 ```
 
 ### Docker

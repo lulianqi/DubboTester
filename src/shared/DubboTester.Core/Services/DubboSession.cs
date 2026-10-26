@@ -280,6 +280,26 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
             .ToArray();
     }
 
+    public async Task<IReadOnlyList<MethodSignatureItem>> LoadServiceMethodSignaturesAsync(
+        TesterSettings settings,
+        string serviceName,
+        string? registryRootPath = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureConfiguredAsync(settings, registryRootPath, cancellationToken);
+        IReadOnlyList<DubboMethodMetadata> metadata =
+            await _client!.GetServiceMethodsMetadataAsync(serviceName);
+        IReadOnlyList<DubboTypeMetadata> serviceTypes = [];
+        if (metadata.Any(method => method.MetadataSource == DubboMetadataSource.MetadataCenter))
+        {
+            serviceTypes = await _client.GetServiceTypesMetadataAsync(serviceName);
+        }
+
+        return metadata
+            .Select(method => MethodSignatureItem.FromMetadata(method, serviceTypes))
+            .ToArray();
+    }
+
     public async Task<InvocationOutput> InvokeAsync(
         TesterSettings settings,
         InvocationInput input,
