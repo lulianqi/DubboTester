@@ -27,7 +27,7 @@ public sealed class TesterSettingsTests
     }
 
     [Fact]
-    public void NacosSettings_BuildDubboNetConnectionAndDefaultMetadataGroup()
+    public void NacosSettings_BuildConnectionAndMetadataFollowsSelectedGroup()
     {
         var settings = new TesterSettings
         {
@@ -39,8 +39,19 @@ public sealed class TesterSettingsTests
             "nacos://nacos.example:8848?namespace=prod",
             settings.RegistryConnectionString);
         Assert.Equal(
-            "dubbo",
+            "DEFAULT_GROUP",
             RegistryConnectionSettings.ResolveMetadataRoot(settings, "/DEFAULT_GROUP", null));
+        Assert.Equal(
+            "blue",
+            RegistryConnectionSettings.ResolveMetadataRoot(settings, "/blue", null));
+        settings.MetadataRootPath = "/";
+        Assert.Equal(
+            "blue",
+            RegistryConnectionSettings.ResolveMetadataRoot(settings, "/blue", null));
+        settings.MetadataRootPath = "dubbo-metadata";
+        Assert.Equal(
+            "dubbo-metadata",
+            RegistryConnectionSettings.ResolveMetadataRoot(settings, "/blue", null));
         Assert.Equal("DEFAULT_GROUP", RegistryConnectionSettings.NacosGroup("/"));
         Assert.Equal("blue", RegistryConnectionSettings.NacosGroup("/blue"));
     }

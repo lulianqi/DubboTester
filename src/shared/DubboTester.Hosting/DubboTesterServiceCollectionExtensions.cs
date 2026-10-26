@@ -14,6 +14,7 @@ public static class DubboTesterServiceCollectionExtensions
         services.AddSingleton<DubboCatalogCache>();
         services.AddSingleton<DubboCatalogPreloadService>();
         services.AddSingleton<McpGatewayService>();
+        services.AddSingleton<HttpGatewayService>();
         services.AddScoped<DubboSession>();
         services.AddScoped<DubboPressureTestRunner>();
         services.AddScoped<PressureTestDraftStore>();

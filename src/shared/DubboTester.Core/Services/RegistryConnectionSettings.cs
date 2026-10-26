@@ -42,17 +42,21 @@ public static class RegistryConnectionSettings
         string registryRoot,
         string? metadataConnectionString)
     {
-        if (!string.IsNullOrWhiteSpace(settings.MetadataRootPath))
-        {
-            return settings.MetadataRootPath.Trim();
-        }
-
         bool metadataUsesNacos = metadataConnectionString is null
             ? settings.RegistryType == RegistryCenterType.Nacos
             : metadataConnectionString.StartsWith(NacosPrefix, StringComparison.OrdinalIgnoreCase);
+        bool followsSelectedRegistryRoot = string.IsNullOrWhiteSpace(settings.MetadataRootPath)
+            || RegistryRootPaths.NormalizeRoot(settings.MetadataRootPath) == "/";
+        if (followsSelectedRegistryRoot)
+        {
+            return metadataUsesNacos
+                ? NacosGroup(registryRoot)
+                : RegistryRootPaths.NormalizeRoot(registryRoot);
+        }
+
         return metadataUsesNacos
-            ? "dubbo"
-            : RegistryRootPaths.NormalizeRoot(registryRoot);
+            ? NacosGroup(settings.MetadataRootPath)
+            : RegistryRootPaths.NormalizeRoot(settings.MetadataRootPath);
     }
 
     public static string NacosGroup(string? root) =>

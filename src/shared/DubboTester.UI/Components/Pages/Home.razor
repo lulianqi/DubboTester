@@ -36,6 +36,26 @@
                 </svg>
                 <span>MCP 服务</span>
             </a>
+            <details class="feature-menu" data-dismiss-on-outside>
+                <summary title="更多功能" aria-label="更多功能"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></summary>
+                <nav aria-label="更多功能菜单">
+                    <a href="/http-service">
+                        <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+                            <circle cx="9" cy="9" r="6.5"></circle>
+                            <path d="M2.8 9h12.4M9 2.5c2 1.8 3 4 3 6.5s-1 4.7-3 6.5C7 13.7 6 11.5 6 9s1-4.7 3-6.5Z"></path>
+                        </svg>
+                        <span>HTTP 服务</span>
+                    </a>
+                    <a href="/pressure-test">
+                        <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+                            <path d="M3.1 14a6.5 6.5 0 1 1 11.8 0"></path>
+                            <path d="m9 10.2 3.2-3.1M5.2 12.8h7.6"></path>
+                            <circle cx="9" cy="10.2" r="1"></circle>
+                        </svg>
+                        <span>压力测试</span>
+                    </a>
+                </nav>
+            </details>
             <button class="icon-button"
                     title="@(ClientStorageReady ? "设置" : "正在读取本地设置")"
                     disabled="@(!ClientStorageReady)"
@@ -100,57 +120,64 @@
                     <div class="tree-root"><span>▾</span><b>/</b></div>
                     @foreach (IGrouping<string, DubboServiceItem> registryGroup in FilteredServiceGroups)
                     {
-                        <div class="tree-root tree-indent" title="@registryGroup.Key">
-                            <span>▾</span><b>@RegistryRootPaths.DisplayName(registryGroup.Key)</b>
-                        </div>
-                        @foreach (DubboServiceItem service in registryGroup)
+                        <button type="button"
+                                class="tree-root tree-indent registry-root-row"
+                                title="@registryGroup.Key"
+                                aria-expanded="@(IsRegistryRootExpanded(registryGroup.Key) ? "true" : "false")"
+                                @onclick="() => ToggleRegistryRoot(registryGroup.Key)">
+                            <span>@(IsRegistryRootExpanded(registryGroup.Key) ? "▾" : "›")</span><b>@RegistryRootPaths.DisplayName(registryGroup.Key)</b>
+                        </button>
+                        @if (IsRegistryRootExpanded(registryGroup.Key))
                         {
-                            <div class="service-node @(ReferenceEquals(SelectedService, service) ? "active-service" : null)"
-                                @key="service">
-                                <button class="service-row" @onclick="() => ToggleServiceAsync(service)">
-                                    <span class="chevron">@(IsServiceExpanded(service) ? "▾" : "›")</span>
-                                    <span class="service-icon">⬡</span>
-                                    <span class="service-name" title="@service.Name">@service.Name</span>
-                                    @if (service.IsLoaded)
-                                    {
-                                        <span class="count-pill">@service.Methods.Count</span>
-                                    }
-                                </button>
+                            @foreach (DubboServiceItem service in registryGroup)
+                            {
+                                <div class="service-node @(ReferenceEquals(SelectedService, service) ? "active-service" : null)"
+                                    @key="service">
+                                    <button class="service-row" @onclick="() => ToggleServiceAsync(service)">
+                                        <span class="chevron">@(IsServiceExpanded(service) ? "▾" : "›")</span>
+                                        <span class="service-icon">⬡</span>
+                                        <span class="service-name" title="@service.Name">@service.Name</span>
+                                        @if (service.IsLoaded)
+                                        {
+                                            <span class="count-pill">@service.Methods.Count</span>
+                                        }
+                                    </button>
 
-                                @if (IsServiceExpanded(service))
-                                {
-                                    <div class="service-children">
-                                        @if (IsServiceLoading(service))
-                                        {
-                                            <div class="loading-row"><span class="spinner"></span>加载 Provider…</div>
-                                        }
-                                        else if (service.IsLoaded)
-                                        {
-                                            @foreach (DubboProviderItem provider in service.Providers)
+                                    @if (IsServiceExpanded(service))
+                                    {
+                                        <div class="service-children">
+                                            @if (IsServiceLoading(service))
                                             {
-                                                <button class="tree-item provider-item @(SelectedProvider?.RegistryUrl == provider.RegistryUrl ? "selected" : null)"
-                                                        title="@provider.RegistryUrl"
-                                                        @onclick="() => SelectProvider(service, provider)">
-                                                    <span class="status-led @(provider.Disabled ? "disabled" : null)"></span>
-                                                    <span>@provider.Address</span>
-                                                    <small>@provider.Scheme</small>
-                                                </button>
+                                                <div class="loading-row"><span class="spinner"></span>加载 Provider…</div>
                                             }
-                                            @foreach (string method in FilterMethods(service.Methods))
+                                            else if (service.IsLoaded)
                                             {
-                                                <button class="tree-item method-item @(Input.RegistryRootPath == service.RegistryRootPath && Input.ServiceName == service.Name && Input.MethodName == method ? "selected" : null)"
-                                                        @onclick="() => SelectMethodAsync(service, method)">
-                                                    <span>↪</span><span title="@method">@method</span>
-                                                </button>
+                                                @foreach (DubboProviderItem provider in service.Providers)
+                                                {
+                                                    <button class="tree-item provider-item @(SelectedProvider?.RegistryUrl == provider.RegistryUrl ? "selected" : null)"
+                                                            title="@provider.RegistryUrl"
+                                                            @onclick="() => SelectProvider(service, provider)">
+                                                        <span class="status-led @(provider.Disabled ? "disabled" : null)"></span>
+                                                        <span>@provider.Address</span>
+                                                        <small>@provider.Scheme</small>
+                                                    </button>
+                                                }
+                                                @foreach (string method in FilterMethods(service.Methods))
+                                                {
+                                                    <button class="tree-item method-item @(Input.RegistryRootPath == service.RegistryRootPath && Input.ServiceName == service.Name && Input.MethodName == method ? "selected" : null)"
+                                                            @onclick="() => SelectMethodAsync(service, method)">
+                                                        <span>↪</span><span title="@method">@method</span>
+                                                    </button>
+                                                }
+                                                @if (service.Providers.Count == 0)
+                                                {
+                                                    <div class="muted-row">没有可用 Provider</div>
+                                                }
                                             }
-                                            @if (service.Providers.Count == 0)
-                                            {
-                                                <div class="muted-row">没有可用 Provider</div>
-                                            }
-                                        }
-                                    </div>
-                                }
-                            </div>
+                                        </div>
+                                    }
+                                </div>
+                            }
                         }
                     }
                     @if (!FilteredServices.Any())
@@ -285,6 +312,7 @@
                 </div>
                 <textarea spellcheck="false"
                           value="@Input.RequestJson"
+                          placeholder="@RequestJsonPlaceholder"
                           @oninput="RequestJsonChanged"
                           @onchange="PersistCurrentRequestDraftAsync"></textarea>
             </section>
@@ -774,7 +802,12 @@
 }
 
 @code {
-    private const string DubboNetVersion = "3.2.0";
+    private const string DubboNetVersion = "3.2.1";
+    private const string RequestJsonPlaceholder =
+        "请输入 JSON 参数数组，例如：[\"text\", 123]\n"
+        + "Class 对象直接按字段填写，例如：{\"name\": \"张三\", \"age\": 18}\n"
+        + "多个参数时将对象放入数组，例如：[{\"name\": \"张三\"}, 123]\n"
+        + "也可以点击上方“按结构生成示例”自动生成示例参数";
     private string DubboTesterVersion => Configuration["DubboTester:Version"] ?? "未知";
     private const string SettingsStorageKey = "dubbo-tester.settings.v1";
     private const string LegacyHistoryStorageKey = "dubbo-tester.history.v1";
@@ -798,6 +831,7 @@
     private List<InvocationHistory> History { get; set; } = [];
     private Dictionary<string, string> RequestDrafts { get; set; } = new(StringComparer.Ordinal);
     private DubboServiceItem? SelectedService { get; set; }
+    private HashSet<string> CollapsedRegistryRootKeys { get; } = new(StringComparer.Ordinal);
     private HashSet<string> ExpandedServiceKeys { get; } = new(StringComparer.Ordinal);
     private HashSet<string> LoadingServiceKeys { get; } = new(StringComparer.Ordinal);
     private DubboProviderItem? SelectedProvider { get; set; }
@@ -847,7 +881,7 @@
             : null;
     private bool HasParameterStructure =>
         DubboTypeStructureBuilder.HasDetailedStructure(ParameterStructures);
-    private bool CanGenerateRequestExample => ParameterStructures.Count > 0;
+    private bool CanGenerateRequestExample => SelectedSignature is not null;
     private bool IsCatalogPreloading =>
         PreloadStatus?.State == CatalogPreloadState.Running;
     private bool IsCatalogActive => IsCatalogBusy || IsCatalogPreloading;
@@ -1086,6 +1120,7 @@
     private async Task RefreshCatalogAsync(bool forceRefresh = false)
     {
         if (IsCatalogBusy) return;
+        if (forceRefresh) CollapsedRegistryRootKeys.Clear();
         CancelCatalogPreloadTracking();
         PreloadStatus = null;
         var cancellation = new CancellationTokenSource();
@@ -1133,7 +1168,7 @@
                     && RegistryRootPaths.Parse(Settings.RegistryRootPath).AutoDiscover)
                 {
                     SetNotice(Settings.RegistryType == RegistryCenterType.Nacos
-                        ? "已扫描 Nacos 默认分组，但未发现可用的 Dubbo Provider"
+                        ? "已扫描 Nacos 全部分组，但未发现可用的 Dubbo Provider"
                         : "已扫描 ZooKeeper 一级节点，但未发现包含可用 Provider 的 Dubbo 注册目录", true);
                     return;
                 }
@@ -1322,6 +1357,21 @@
         finally { LoadingServiceKeys.Remove(serviceKey); }
     }
 
+    private bool IsRegistryRootExpanded(string registryRootPath) =>
+        !CollapsedRegistryRootKeys.Contains(RegistryRootExpansionKey(registryRootPath));
+
+    private void ToggleRegistryRoot(string registryRootPath)
+    {
+        string key = RegistryRootExpansionKey(registryRootPath);
+        if (!CollapsedRegistryRootKeys.Add(key))
+        {
+            CollapsedRegistryRootKeys.Remove(key);
+        }
+    }
+
+    private static string RegistryRootExpansionKey(string registryRootPath) =>
+        RegistryRootPaths.NormalizeRoot(registryRootPath);
+
     private void SelectProvider(DubboServiceItem service, DubboProviderItem provider)
     {
         SelectedService = service;
@@ -1509,10 +1559,14 @@
     private async Task GenerateRequestExample()
     {
         if (!CanGenerateRequestExample) return;
-        Input.RequestJson = DubboTypeStructureBuilder.GenerateExampleJson(ParameterStructures);
+        Input.RequestJson = ParameterStructures.Count == 0
+            ? string.Empty
+            : DubboTypeStructureBuilder.GenerateExampleJson(ParameterStructures);
         await PersistCurrentRequestDraftAsync();
         TypeStructureVisible = false;
-        SetNotice("已根据 Java 参数类型和元数据结构生成请求 JSON 示例，请按实际业务含义修改字段值");
+        SetNotice(ParameterStructures.Count == 0
+            ? "该方法无需请求参数，已清空请求参数框"
+            : "已根据 Java 参数类型和元数据结构生成请求 JSON 示例，请按实际业务含义修改字段值");
     }
 
     private async Task TestProviderAsync()
@@ -1985,7 +2039,7 @@
         string? key = CurrentRequestDraftKey();
         if (key is null)
         {
-            Input.RequestJson = "{}";
+            Input.RequestJson = string.Empty;
             return;
         }
 
@@ -2018,7 +2072,7 @@
         }
 
         // Do not carry another method/overload's arguments into a newly selected method.
-        Input.RequestJson = "{}";
+        Input.RequestJson = string.Empty;
     }
 
     private string? CurrentRequestDraftKey()
@@ -2068,11 +2122,11 @@
         : "支持 DubboNet 的 digest 认证连接字符串格式";
 
     private string RegistryRootPlaceholder => SettingsDraft.RegistryType == RegistryCenterType.Nacos
-        ? "DEFAULT_GROUP；多个分组用逗号或空格分隔"
+        ? "/（自动扫描）；例如 DEFAULT_GROUP、dubbo-prod"
         : "/dubbo-a, /dubbo-b；留空或 / 自动扫描";
 
     private string RegistryRootHelp => SettingsDraft.RegistryType == RegistryCenterType.Nacos
-        ? "对应 Nacos Naming 分组；留空或填写 / 时使用 DEFAULT_GROUP"
+        ? "对应 Nacos Naming 分组；多个分组用逗号、分号或空格分隔，留空或 / 自动扫描全部分组"
         : "多个目录用逗号、分号或空格分隔；留空或填写 / 时自动扫描一级目录";
 
     private string MetadataAddressPlaceholder => SettingsDraft.RegistryType == RegistryCenterType.Nacos
@@ -2080,11 +2134,11 @@
         : "留空则复用注册中心";
 
     private string MetadataRootPlaceholder => SettingsDraft.RegistryType == RegistryCenterType.Nacos
-        ? "留空使用 Nacos Config 分组 dubbo"
+        ? "留空则跟随当前服务的注册分组"
         : "留空则复用当前服务的注册目录";
 
     private string MetadataRootHelp => SettingsDraft.RegistryType == RegistryCenterType.Nacos
-        ? "Nacos 元数据由 Config 管理；留空使用 Dubbo 默认分组 dubbo"
+        ? "Nacos 元数据由 Config 管理；留空或 / 时随当前服务所属分组自动切换，填写后固定使用指定分组"
         : "留空时随当前服务所属注册目录自动切换；填写后固定使用指定目录";
 
     private void SetRegistryType(RegistryCenterType type)

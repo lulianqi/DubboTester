@@ -22,14 +22,14 @@
 ## 技术与调用方式
 
 - .NET 10 / Blazor Interactive Server
-- NuGet `DubboNet` **3.2.0**
+- NuGet `DubboNet` **3.2.1**
 - 支持 ZooKeeper 和 Nacos 注册中心，用于服务发现和元数据读取
 - 业务请求通过 Dubbo2 TCP + Hessian2 `$invoke` 泛化调用发送，不使用 Telnet `invoke`
 - 可选注册中心负载均衡调用，或指定 Provider 直连调用
 
 `DubboNet` 在元数据中心不可用时可能在包内部用 Provider Telnet `ls -l` 读取一次方法签名；这只用于签名发现，不用于业务调用。使用界面中的精确 Java 参数类型即可跳过签名自动发现。
 
-DubboNet 3.2.0 可读取元数据中心 `FullServiceDefinition.types`。当方法包含 POJO、集合、数组、枚举等结构型参数时，可以在“Java 签名”区域查看参数结构，并按该结构生成可编辑的请求 JSON 示例。类型结构仅由元数据中心提供；Telnet 签名来源不包含这部分信息。
+DubboNet 3.2.1 可读取元数据中心 `FullServiceDefinition.types`。当方法包含 POJO、集合、数组、枚举等结构型参数时，可以在“Java 签名”区域查看参数结构，并按该结构生成可编辑的请求 JSON 示例。类型结构仅由元数据中心提供；Telnet 签名来源不包含这部分信息。
 
 Dubbo 2.7.x 可能把 `String`、`Long`、`Integer` 等 JDK 类型的内部实现字段也写入 `properties`，例如 `String.value`、`String.hash`。DubboTester 会按字段声明类型识别这些标量/包装类型，不会将其内部字段当作业务请求字段；业务 POJO 自身声明的同名字段仍会正常保留。
 
@@ -126,7 +126,7 @@ docker run --rm \
   dubbo-tester
 ```
 
-启动后访问 `http://localhost:5154`。命名卷用于持久化 MCP 配置；容器需要能够访问所配置的 ZooKeeper/Nacos 和 Dubbo Provider 地址。
+启动后访问 `http://localhost:5154`。命名卷用于持久化 MCP 和 HTTP 服务配置；容器需要能够访问所配置的 ZooKeeper/Nacos 和 Dubbo Provider 地址。
 
 ## 请求参数约定
 
@@ -171,3 +171,26 @@ docker run --rm \
 MCP 使用官方 .NET SDK 的 Streamable HTTP 传输。鉴权默认启用，客户端连接时需要设置 `Authorization: Bearer <访问令牌>`，令牌可在管理页复制或重新生成；也可以在全局配置中关闭鉴权，让可访问该 Endpoint 的客户端直接调用。配置持久化到 `App_Data/mcp-config.json`（已从 Git 忽略），应用重启时自动恢复。调用记录只保存在进程内存中，可在页面设置保留 10–2000 条，默认 200 条。
 
 远程访问时还需要让应用监听可达网卡并通过 HTTPS/反向代理暴露 `/mcp`；不要把管理页面或 Bearer 令牌公开给不受信任的网络。
+
+## Dubbo HTTP 服务
+
+主页“MCP 服务”右侧的下拉菜单提供“HTTP 服务”和“压力测试”入口。HTTP 服务管理页为 `/http-service`，配置独立于 MCP，支持 ZooKeeper / Nacos、注册目录自动扫描和独立元数据中心。保存配置后会读取服务与精确方法签名，直接在列表中打开方法开关即可，无需填写工具描述；全局开关和方法开关同时开启才允许调用。无法读取签名或没有匹配 Provider 的方法不可开启。
+
+“全部开启”会开放当前及后续刷新发现的所有可用方法；关闭此配置会关闭全部方法。处于全部开启模式时，单独关闭一个方法会转为逐项控制，保留其他当前方法。方法开关仍按完整服务身份分别保存，避免重载或不同版本、分组互相影响。
+
+点击“调用方式”可复制包含实际地址、鉴权头和示例参数的 curl。接口为 `POST /api/dubbo/{注册目录}/{服务全名}/{方法名}`，例如 `/api/dubbo/dubbo/com.example.dubbonet.api.EchoService/echoBytes`。多级目录保留层级（如 `/team/dubbo`），实际注册目录为 `/` 时省略目录段；特殊字符按 URL 编码。旧的哈希 ID 调用地址不再支持。
+
+路径匹配到唯一方法时可直接调用；同一路径存在多个版本、分组或重载时，必须用查询参数 `version`、`group`、`parameterTypes` 消除歧义，否则返回 HTTP 409，不会按开启状态或参数值自动选择另一个方法。`parameterTypes` 按 Java 参数顺序用逗号分隔，例如 `?version=1.0.0&group=demo&parameterTypes=java.lang.String,int`；显式空值表示无版本、无分组或无参数（`parameterTypes=`），省略参数表示不限制该维度。存在歧义时，页面生成的地址和 curl 会自动补齐这些参数。
+
+请求使用 `Content-Type: application/json`：
+
+```json
+{
+  "arguments": [1, 2],
+  "attachments": {"traceId": "example"}
+}
+```
+
+`arguments` 必须按 Java 参数顺序填写；无参数方法使用 `[]`，单个数组参数使用 `[[1, 2]]`。`attachments` 可省略，仅支持字符串键值对，不能覆盖服务、版本或分组等路由参数。请求正文上限为 1 MB。响应包含 `success`、`data`、`error` 和 `elapsedMs`；成功为 HTTP 200，参数错误 400、鉴权失败 401、接口未开启或不存在 404、不支持的 HTTP 方法 405、路由有歧义 409、正文过大 413、内容类型不支持 415、Dubbo 调用失败 502、全局服务关闭 503。
+
+全局开关默认关闭，Bearer Token 鉴权默认开启；请在对外访问时保留鉴权并使用 HTTPS，仅将调用路径暴露给可信客户端，不要公开管理页面。网页端使用当前站点地址；桌面端共用本机 5154 监听端口，仍仅允许本机访问。配置持久化到 `App_Data/http-config.json`，调用记录仅在内存中保存，可按服务/方法、请求和响应筛选，每页 50 条；过长记录会截断并标注，不影响实际 HTTP 响应。

@@ -81,7 +81,11 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         {
             if (registryType == RegistryCenterType.Nacos)
             {
-                roots.Add(RegistryConnectionSettings.RegistryRoot(registryType, "/"));
+                foreach (string group in await _nacosRegistry!
+                             .DiscoverGroupsAsync(cancellationToken))
+                {
+                    roots.Add(RegistryConnectionSettings.RegistryRoot(registryType, group));
+                }
             }
             else
             {

@@ -1,0 +1,342 @@
+@page "/http-service"
+@using System.Text.Json
+@using System.Security.Cryptography
+@implements IDisposable
+@inject HttpGatewayService Gateway
+@inject IMcpEndpointAddressProvider EndpointAddress
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Dubbo HTTP 服务</PageTitle>
+
+<div class="http-shell" inert="@(Busy || Usage is not null || Record is not null)" aria-busy="@Busy">
+    <header class="http-header">
+        <a class="back" href="/">← 返回主页</a>
+        <div class="http-brand"><span>D</span><div><h1>Dubbo HTTP 服务</h1><p>全局后台服务 · HTTP JSON API</p></div></div>
+        <div class="http-state @(Active.Enabled ? "enabled" : "")"><i></i><strong>@(Active.Enabled ? "服务已启用" : "服务未启用")</strong><span>@EnabledCount 个接口已开启</span></div>
+    </header>
+    <main class="http-content">
+        <section class="http-card">
+            <div class="card-heading settings-heading">
+                <button class="heading-toggle" @onclick="() => SettingsOpen = !SettingsOpen" aria-expanded="@SettingsOpen">@(SettingsOpen ? "▾" : "▸") <h2>全局配置</h2></button>
+                <div class="settings-summary" aria-label="已保存的全局配置摘要">
+                    <span class="endpoint-summary" title="@ApiBase"><b>HTTP：</b><code>@ApiBase</code><button type="button" title="复制 HTTP Endpoint" @onclick="CopyEndpointAsync">复制</button></span>
+                    <span title="@Active.Settings.RegistryAddress">@Active.Settings.RegistryDisplayName：@(string.IsNullOrWhiteSpace(Active.Settings.RegistryAddress) ? "未配置" : Active.Settings.RegistryAddress)</span>
+                    <span>鉴权：@(Active.AuthenticationEnabled ? "Bearer Token" : "关闭")</span>
+                    <span>记录上限：@Active.HistoryLimit</span>
+                    @if (!string.IsNullOrEmpty(EndpointCopyNotice)) { <span class="copy-feedback" role="status">@EndpointCopyNotice</span> }
+                    @if (NoticeError && NoticeInSettings) { <span class="settings-error" role="alert" title="@Notice">@Notice</span> }
+                </div>
+                <label class="switch"><input type="checkbox" checked="@Active.Enabled" disabled="@Busy" @onchange="ToggleGlobalAsync" /><span></span>全局开关</label>
+            </div>
+            @if (SettingsOpen)
+            {
+                <div class="settings-grid">
+                    <div class="wide registry-connection-field">
+                        <div class="registry-connection-heading">
+                            <div class="registry-type-switch" role="group" aria-label="注册中心类型">
+                                <button type="button" class="@(!IsNacos ? "active" : null)" aria-pressed="@(!IsNacos)" disabled="@(Active.Enabled || Busy)" @onclick="() => SetRegistryTypeAsync(RegistryCenterType.ZooKeeper)">ZooKeeper</button>
+                                <button type="button" class="@(IsNacos ? "active" : null)" aria-pressed="@IsNacos" disabled="@(Active.Enabled || Busy)" @onclick="() => SetRegistryTypeAsync(RegistryCenterType.Nacos)">Nacos</button>
+                            </div>
+                            <label for="http-registry-address">@Draft.Settings.RegistryDisplayName 连接地址<b>*</b></label>
+                        </div>
+                        <input id="http-registry-address" disabled="@SettingsLocked" @bind="Draft.Settings.RegistryAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="@(IsNacos ? "nacos-1:8848,nacos-2:8848?namespace=prod" : "127.0.0.1:2181 或 zk1:2181,zk2:2181")" />
+                        <small>@(IsNacos ? "支持 namespace、username、password、accessKey、secretKey 参数；可省略 nacos:// 前缀" : "支持 ZooKeeper 集群地址及 digest 认证。")</small>
+                    </div>
+                    <label>注册目录<input disabled="@SettingsLocked" @bind="Draft.Settings.RegistryRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="/" /><small>留空或 / 自动扫描；@(IsNacos ? "分组示例：DEFAULT_GROUP" : "目录示例：/dubbo")</small></label>
+                    <label>元数据中心地址（选填）<input disabled="@SettingsLocked" @bind="Draft.Settings.MetadataCenterAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="留空则复用注册中心" /></label>
+                    <label>元数据目录（选填）<input disabled="@SettingsLocked" @bind="Draft.Settings.MetadataRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="留空则跟随当前服务的注册目录" /></label>
+                    <label>调用超时（ms）<input disabled="@SettingsLocked" type="number" min="100" max="300000" @bind="Draft.Settings.RequestTimeoutMs" @bind:after="AutoSaveConfigurationAsync" /></label>
+                    <label>内存记录上限<input disabled="@SettingsLocked" type="number" min="10" max="2000" @bind="Draft.HistoryLimit" @bind:after="AutoSaveConfigurationAsync" /><small>仅保存在内存，最多 2000 条；过长正文只截断记录，不影响接口响应。</small></label>
+                    <div class="wide endpoint-field">
+                        <label for="http-endpoint">HTTP Endpoint</label>
+                        <div class="copy-field"><input id="http-endpoint" readonly value="@ApiBase" /><button type="button" @onclick="CopyEndpointAsync">复制</button></div>
+                        <small>接口基础地址，由当前访问地址自动确定；完整调用地址请在具体方法的“调用方式”中查看。</small>
+                    </div>
+                    <div class="auth-field wide @(SettingsLocked ? "disabled-setting" : null)">
+                        <label class="switch"><input type="checkbox" disabled="@SettingsLocked" @bind="Draft.AuthenticationEnabled" @bind:after="AutoSaveConfigurationAsync" /><span></span>启用鉴权</label>
+                        <small>@(Draft.AuthenticationEnabled ? "启用后，客户端必须携带 Bearer 访问令牌。对外开放建议使用 HTTPS。" : "鉴权已关闭，任何能访问 HTTP Endpoint 的客户端均可调用已开启接口。对外开放建议启用鉴权并使用 HTTPS。")</small>
+                    </div>
+                    @if (Draft.AuthenticationEnabled)
+                    {
+                        <label class="wide">访问令牌<div class="token-field"><input type="@(ShowToken ? "text" : "password")" readonly value="@Draft.AccessToken" /><button class="link" @onclick="() => ShowToken = !ShowToken">@(ShowToken ? "隐藏" : "显示")</button><button class="link" disabled="@SettingsLocked" @onclick="RegenerateTokenAsync">重新生成</button></div></label>
+                    }
+                </div>
+            }
+        </section>
+
+        <section class="http-card">
+            <div class="card-heading">
+                <div><h2>服务与方法列表</h2><p>@Methods.Select(method => method.RegistryRootPath).Distinct().Count() 个注册目录 · @Methods.Select(method => (method.RegistryRootPath, method.ServiceName)).Distinct().Count() 个服务 · @Methods.Count 个方法签名</p></div>
+                <div class="heading-actions"><button class="link" disabled="@(!Active.Enabled || Busy)" @onclick="RefreshAsync">刷新列表</button><label class="switch" title="自动开放当前及后续刷新发现的所有可用方法"><input type="checkbox" checked="@Active.EnableAllMethods" @onchange="ToggleAllAsync" /><span></span>全部开启</label></div>
+            </div>
+            <div class="catalog-toolbar"><span>⌕</span><input placeholder="搜索服务或方法…" @bind="Search" @bind:event="oninput" /></div>
+            @if (NoticeError && !NoticeInSettings)
+            {
+                <div class="context-notice error" role="alert">@Notice</div>
+            }
+            @if (UnavailableMethodCount > 0)
+            {
+                <div class="context-notice warning" role="status">@UnavailableMethodCount 个方法未通过签名校验，已保持关闭；展开对应服务可查看原因。</div>
+            }
+            @if (Active.EnableAllMethods)
+            {
+                <div class="all-hint">已启用全部开启：刷新后新发现的可用方法也会开放。单独关闭任意方法将转为逐项控制。</div>
+            }
+            <div class="service-list">
+                @foreach (var root in FilteredMethods.GroupBy(method => method.RegistryRootPath))
+                {
+                    <details class="root-group" open>
+                        <summary><strong>@root.Key</strong><span>@root.Count() 个方法签名</span></summary>
+                        @foreach (var service in root.GroupBy(method => method.ServiceName))
+                        {
+                            <details class="service-group" open="@(!string.IsNullOrWhiteSpace(Search))">
+                                <summary><strong>@service.Key</strong><span>@service.Count(method => IsMethodEnabled(method)) / @service.Count() 已开启</span></summary>
+                                @foreach (var method in service)
+                                {
+                                    <div class="method-row" @key="method.Id">
+                                        <div class="method-info"><code>@method.Signature</code><small>版本：@(string.IsNullOrEmpty(method.Version) ? "未指定" : method.Version) · 分组：@(string.IsNullOrEmpty(method.Group) ? "未指定" : method.Group)</small>
+                                            @if (!method.Available) { <small class="method-error">@method.Error</small> }
+                                        </div>
+                                        <label class="switch"><input type="checkbox" aria-label="@($"开启 {method.Signature} {method.Version} {method.Group}")" disabled="@(!method.Available)" checked="@IsMethodEnabled(method)" @onchange="e => ToggleMethodAsync(method, e)" /><span></span>@(IsMethodEnabled(method) ? "已开启" : "未开启")</label>
+                                        <button class="link" disabled="@(!method.Available)" @onclick="() => ShowUsage(method)">调用方式</button>
+                                    </div>
+                                }
+                            </details>
+                        }
+                    </details>
+                }
+                @if (!FilteredMethods.Any()) { <div class="empty">@(Methods.Count == 0 ? "配置注册中心并打开全局开关后加载服务与方法。" : "没有匹配的服务或方法。")</div> }
+            </div>
+        </section>
+
+        <section class="http-card">
+            <div class="card-heading"><div><h2>HTTP 调用记录</h2><p>共 @History.TotalCount 条 · 筛选后 @History.MatchCount 条 · 最新请求在前 · 仅保存在内存，最多保留 @Active.HistoryLimit 条</p></div><button class="link danger" @onclick="Gateway.ClearHistory">清空</button></div>
+            <div class="history-filters"><input placeholder="筛选注册目录、服务或方法名称" @bind="HistoryMethod" @bind:event="oninput" @bind:after="FilterHistory" /><input placeholder="筛选请求内容" @bind="HistoryRequest" @bind:event="oninput" @bind:after="FilterHistory" /><input placeholder="筛选响应内容" @bind="HistoryResponse" @bind:event="oninput" @bind:after="FilterHistory" /></div>
+            <div class="history-table"><table><thead><tr><th>完成时刻</th><th>服务 / 方法</th><th>HTTP 状态</th><th>耗时</th><th>来源</th><th>操作</th></tr></thead><tbody>
+                @foreach (var record in History.Records)
+                {
+                    <tr><td>@record.CreatedAt.ToString("MM-dd HH:mm:ss")</td><td><span class="history-target" title="@FormatRecordTarget(record)"><code>@DisplayRegistryRoot(record.RegistryRootPath)</code><span>@record.Method</span></span></td><td><span class="badge @(record.StatusCode == 200 ? "success" : "failure")">@record.StatusCode</span></td><td>@record.ElapsedMs ms</td><td title="@FormatRemoteAddressTitle(record.RemoteAddress)">@DisplayRemoteAddress(record.RemoteAddress)</td><td><button class="link" @onclick="() => Record = record">详情</button></td></tr>
+                }
+            </tbody></table></div>
+            @if (History.Records.Count == 0) { <div class="empty">暂无匹配的 HTTP 调用记录</div> }
+            @if (History.MatchCount > HttpGatewayService.HistoryPageSize)
+            {
+                <div class="pager"><span>每页 @HttpGatewayService.HistoryPageSize 条</span><button disabled="@(HistoryPage <= 1)" @onclick="() => ChangePage(-1)">上一页</button><span>第 @HistoryPage / @HistoryPages 页</span><button disabled="@(HistoryPage >= HistoryPages)" @onclick="() => ChangePage(1)">下一页</button></div>
+            }
+        </section>
+    </main>
+</div>
+
+@if (Busy)
+{
+    <div class="http-backdrop loading"><section class="loading-card" role="status"><span class="spinner"></span><div><strong>正在连接 @Draft.Settings.RegistryDisplayName</strong><p>正在校验注册中心并读取服务与方法签名，请稍候…</p></div></section></div>
+}
+@if (Usage is not null)
+{
+    <div class="http-backdrop" @onclick="() => Usage = null"><section class="http-dialog" role="dialog" aria-modal="true" aria-labelledby="usage-title" @onclick:stopPropagation="true">
+        <header><h2 id="usage-title">HTTP 调用方式</h2><button class="link" aria-label="关闭" @onclick="() => Usage = null">✕</button></header>
+        <div class="dialog-content">
+            <strong>@Usage.ServiceName</strong><code class="signature">@Usage.Signature</code>
+            @if (!Active.Enabled || !IsMethodEnabled(Usage)) { <p class="warning">此接口尚不可调用，请先打开全局开关和对应方法开关。</p> }
+            <p><b>POST</b> <code class="url">@(Origin + UsagePath)</code></p>
+            <p>路径按注册目录 / 服务名称 / 方法名称组成。存在多个版本、分组或重载时，示例地址会自动带上 version、group、parameterTypes；请保留这些参数以确定调用目标。</p>
+            <p>arguments 按 Java 参数顺序填写数组；无参数使用 []，单个数组参数使用 [[…]]。示例值可以直接发送，也可按业务要求修改。</p>
+            <div class="example-heading"><h3>curl 命令（终端）</h3><button class="link" @onclick="() => CopyAsync(Curl)">复制 curl</button></div>
+            <pre>@Curl</pre>
+            <p>返回 JSON：success 表示调用成功，data 为 Dubbo 返回值，error 为错误信息，elapsedMs 为耗时。错误请求会返回相应 HTTP 状态码。</p>
+            <small>可选 attachments 为字符串键值对象（例如 traceId），不能覆盖服务路由。接口请求正文上限 1 MB。桌面端仅监听本机地址。</small>
+            @if (!string.IsNullOrEmpty(CopyNotice)) { <p role="status">@CopyNotice</p> }
+        </div>
+    </section></div>
+}
+@if (Record is not null)
+{
+    <div class="http-backdrop" @onclick="() => Record = null"><section class="http-dialog" role="dialog" aria-modal="true" aria-labelledby="record-title" @onclick:stopPropagation="true"><header><h2 id="record-title">HTTP 调用详情</h2><button class="link" aria-label="关闭" @onclick="() => Record = null">✕</button></header><div class="dialog-content"><strong>@FormatRecordTarget(Record)</strong><p>@Record.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss.fff") · HTTP @Record.StatusCode · @Record.ElapsedMs ms · 来源：@DisplayRemoteAddress(Record.RemoteAddress)</p><code class="url">@Record.Path</code><h3>请求</h3><pre>@FormatRecordBody(Record.Request, "（请求正文为空）")</pre><h3>响应</h3><pre>@FormatRecordBody(Record.Response, "（响应正文为空）")</pre></div></section></div>
+}
+
+@code {
+    private HttpGatewayConfiguration Draft = new(), Active = new();
+    private IReadOnlyList<HttpGatewayMethod> Methods = [];
+    private HttpCallRecordPage History = new([], 0, 0);
+    private HttpGatewayMethod? Usage;
+    private HttpCallRecord? Record;
+    private bool Busy, ShowToken, NoticeError, NoticeInSettings, SettingsOpen = true;
+    private string Notice = "", Search = "", HistoryMethod = "", HistoryRequest = "", HistoryResponse = "", CopyNotice = "";
+    private string EndpointCopyNotice = "";
+    private int HistoryPage = 1;
+    private readonly CancellationTokenSource Lifetime = new();
+    private bool IsNacos => Draft.Settings.RegistryType == RegistryCenterType.Nacos;
+    private bool SettingsLocked => Active.Enabled || Busy;
+    private string Origin => new Uri(EndpointAddress.EndpointOverride ?? Navigation.BaseUri).GetLeftPart(UriPartial.Authority);
+    private string ApiBase => Origin + "/api/dubbo/";
+    private int EnabledCount => Methods.Count(IsMethodEnabled);
+    private int UnavailableMethodCount => Methods.Count(method => !method.Available);
+    private int HistoryPages => Math.Max(1, (History.MatchCount + HttpGatewayService.HistoryPageSize - 1) / HttpGatewayService.HistoryPageSize);
+    private IEnumerable<HttpGatewayMethod> FilteredMethods => Methods.Where(method =>
+        $"{method.RegistryRootPath} {method.ServiceName} {method.Signature} {method.Group} {method.Version}".Contains(Search.Trim(), StringComparison.OrdinalIgnoreCase));
+    private bool IsMethodEnabled(HttpGatewayMethod method) => method.Available && (Active.EnableAllMethods || Active.EnabledMethodIds.Contains(method.Id));
+
+    private async Task SetRegistryTypeAsync(RegistryCenterType type)
+    {
+        if (Active.Enabled || Busy || Draft.Settings.RegistryType == type) return;
+        Draft.Settings.RegistryType = type;
+        Draft.Settings.RegistryAddress = string.Empty;
+        Draft.Settings.RegistryRootPath = "/";
+        Draft.Settings.MetadataCenterAddress = string.Empty;
+        Draft.Settings.MetadataRootPath = string.Empty;
+        await AutoSaveConfigurationAsync();
+    }
+
+    private static string FormatRecordBody(string value, string emptyText)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return emptyText;
+        try
+        {
+            using var document = JsonDocument.Parse(value);
+            return JsonSerializer.Serialize(document.RootElement, HttpGatewayService.JsonOptions);
+        }
+        catch (JsonException) { return value; } // Keep invalid or truncated requests readable as plain text.
+    }
+
+    private static string DisplayRegistryRoot(string? root) =>
+        string.IsNullOrWhiteSpace(root) ? "—" : root.Trim();
+
+    private static string FormatRecordTarget(HttpCallRecord record) =>
+        $"{DisplayRegistryRoot(record.RegistryRootPath)} · {record.Method}";
+
+    private static string DisplayRemoteAddress(string? address) => address switch
+    {
+        "::1" => "本机（::1）",
+        "127.0.0.1" => "本机（127.0.0.1）",
+        _ when address?.StartsWith("::ffff:", StringComparison.OrdinalIgnoreCase) == true =>
+            $"{address[7..]}（IPv4 映射）",
+        _ => string.IsNullOrWhiteSpace(address) ? "未知来源" : address
+    };
+
+    private static string FormatRemoteAddressTitle(string? address) =>
+        string.IsNullOrWhiteSpace(address) ? "未获取到调用方地址" : $"调用方地址：{address}";
+
+    protected override void OnInitialized()
+    {
+        Reload();
+        Draft = Active.Clone();
+        SettingsOpen = !Active.Enabled;
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await RunAsync(() => Gateway.InitializeAsync(Lifetime.Token), "HTTP 服务配置已加载。", noticeInSettings: true);
+        _ = PollAsync();
+    }
+    private async Task PollAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(Lifetime.Token))
+                await InvokeAsync(() => { if (!Busy) { Reload(); StateHasChanged(); } });
+        }
+        catch (OperationCanceledException) { }
+    }
+    private void Reload()
+    {
+        Active = Gateway.GetConfiguration();
+        Methods = Gateway.GetMethods();
+        History = Gateway.GetHistoryPage(HistoryPage, HistoryMethod, HistoryRequest, HistoryResponse);
+        HistoryPage = Math.Min(HistoryPage, HistoryPages);
+    }
+    private async Task RunAsync(Func<Task> action, string success, bool reloadDraft = false, bool noticeInSettings = false)
+    {
+        if (Busy) return;
+        Busy = true;
+        Notice = "";
+        NoticeInSettings = noticeInSettings;
+        StateHasChanged();
+        try
+        {
+            await action();
+            Reload();
+            if (reloadDraft) Draft = Active.Clone();
+            Notice = success;
+            NoticeError = false;
+        }
+        catch (OperationCanceledException) when (Lifetime.IsCancellationRequested) { }
+        catch (Exception exception) { Notice = exception.Message; NoticeError = true; }
+        finally { Busy = false; if (!Lifetime.IsCancellationRequested) StateHasChanged(); }
+    }
+    private Task RefreshAsync() => RunAsync(() => Gateway.SaveConfigurationAsync(Active, true, Lifetime.Token), "列表已刷新，方法开关已保留。");
+    private Task ToggleGlobalAsync(ChangeEventArgs args)
+    {
+        bool enabled = args.Value is true;
+        var config = enabled ? SettingsCandidate(true) : Gateway.GetConfiguration();
+        config.Enabled = enabled;
+        return RunAsync(() => Gateway.SaveConfigurationAsync(config, cancellationToken: Lifetime.Token), enabled ? "HTTP 服务已启用。" : "HTTP 服务已关闭。", reloadDraft: true, noticeInSettings: true);
+    }
+    private HttpGatewayConfiguration SettingsCandidate(bool enabled)
+    {
+        var candidate = Draft.Clone();
+        var current = Gateway.GetConfiguration();
+        // Method switches are saved immediately; connection edits must not restore older switches.
+        candidate.Enabled = enabled;
+        candidate.EnableAllMethods = current.EnableAllMethods;
+        candidate.EnabledMethodIds = current.EnabledMethodIds;
+        return candidate;
+    }
+    private Task ToggleAllAsync(ChangeEventArgs args)
+    {
+        var config = Active.Clone();
+        config.EnableAllMethods = args.Value is true;
+        config.EnabledMethodIds.Clear();
+        return RunAsync(() => Gateway.SaveConfigurationAsync(config, cancellationToken: Lifetime.Token), config.EnableAllMethods ? "已开启所有可用方法（包括后续刷新发现的方法）。" : "所有方法已关闭，可逐项开启。");
+    }
+    private Task ToggleMethodAsync(HttpGatewayMethod method, ChangeEventArgs args) =>
+        RunAsync(() => Gateway.SetMethodEnabledAsync(method.Id, args.Value is true), "方法开关已保存。");
+    private async Task RegenerateTokenAsync()
+    {
+        Draft.AccessToken = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+        await AutoSaveConfigurationAsync();
+    }
+    private async Task AutoSaveConfigurationAsync()
+    {
+        if (Active.Enabled || Busy) return;
+        Notice = "";
+        NoticeInSettings = true;
+        try
+        {
+            await Gateway.SaveConfigurationAsync(SettingsCandidate(false), cancellationToken: Lifetime.Token);
+            Reload();
+            Draft = Active.Clone();
+            NoticeError = false;
+        }
+        catch (OperationCanceledException) when (Lifetime.IsCancellationRequested) { }
+        catch (Exception exception) { Notice = exception.Message; NoticeError = true; }
+    }
+    private void FilterHistory() { HistoryPage = 1; Reload(); }
+    private void ChangePage(int delta) { HistoryPage = Math.Clamp(HistoryPage + delta, 1, HistoryPages); Reload(); }
+    private void ShowUsage(HttpGatewayMethod method) { Usage = method; CopyNotice = ""; }
+    private string UsagePath => Usage?.GetInvocationPath(Methods) ?? "";
+    private string Curl
+    {
+        get
+        {
+            if (Usage is null) return "";
+            using var example = JsonDocument.Parse(Usage.ExampleArgumentsJson);
+            string json = JsonSerializer.Serialize(new { arguments = example.RootElement }, HttpGatewayService.JsonOptions);
+            string auth = Active.AuthenticationEnabled ? $" \\\n  -H {ShellQuote("Authorization: Bearer " + Active.AccessToken)}" : "";
+            return $"curl -X POST {ShellQuote(Origin + UsagePath)} \\\n  -H 'Content-Type: application/json'{auth} \\\n  --data-raw {ShellQuote(json)}";
+        }
+    }
+    private static string ShellQuote(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
+    private async Task CopyEndpointAsync()
+    {
+        try { await JS.InvokeVoidAsync("dubboTester.copy", ApiBase); EndpointCopyNotice = "HTTP Endpoint 已复制。"; }
+        catch (JSException) { EndpointCopyNotice = "浏览器未允许复制，请手动选择并复制 Endpoint。"; }
+    }
+    private async Task CopyAsync(string value)
+    {
+        try { await JS.InvokeVoidAsync("dubboTester.copy", value); CopyNotice = "已复制，可直接粘贴到终端执行。"; }
+        catch (JSException) { CopyNotice = "浏览器未允许复制，请手动选择并复制命令。"; }
+    }
+    public void Dispose() { Lifetime.Cancel(); Lifetime.Dispose(); }
+}

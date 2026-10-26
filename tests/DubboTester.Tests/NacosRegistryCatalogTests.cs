@@ -1,50 +1,29 @@
+using DubboNet.Clients.DataModle;
 using DubboTester.Services;
-using Nacos.V2.Naming.Dtos;
 using Xunit;
 
 namespace DubboTester.Tests;
 
 public sealed class NacosRegistryCatalogTests
 {
-    [Theory]
-    [InlineData("providers:com.example.DemoService:1.0.0:blue", "com.example.DemoService")]
-    [InlineData("providers:com.example.DemoService", "com.example.DemoService")]
-    [InlineData("com.example.DemoService", "com.example.DemoService")]
-    [InlineData("ordinary-web-service", null)]
-    public void ExtractInterfaceName_RecognizesDubboNacosServiceNames(
-        string serviceName,
-        string? expected)
-    {
-        Assert.Equal(expected, NacosRegistryCatalogClient.ExtractInterfaceName(serviceName));
-    }
-
     [Fact]
-    public void ConvertInstance_PreservesProviderMetadataForTreeAndDirectRouting()
+    public void ConvertProvider_PreservesDubboNetProviderMetadataForTreeAndDirectRouting()
     {
-        var instance = new Instance
-        {
-            Ip = "10.0.0.8",
-            Port = 50051,
-            Healthy = true,
-            Enabled = true,
-            Ephemeral = true,
-            Weight = 1,
-            Metadata = new Dictionary<string, string>
-            {
-                ["protocol"] = "tri",
-                ["interface"] = "com.example.DemoService",
-                ["application"] = "demo-provider",
-                ["methods"] = "sayHello,echo",
-                ["version"] = "1.0.0",
-                ["group"] = "blue"
-            }
-        };
+        DubboServiceEndPointInfo endpoint = DubboServiceEndPointInfo.GetDubboServiceEndPointInfo(
+            new Uri(
+                "tri://10.0.0.8:50051/com.example.DemoService"
+                + "?interface=com.example.DemoService"
+                + "&application=demo-provider"
+                + "&methods=sayHello%2Cecho"
+                + "&version=1.0.0"
+                + "&group=blue"
+                + "&weight=100"
+                + "&disabled=false"));
 
-        var provider = NacosRegistryCatalogClient.ConvertInstance(
-            instance,
+        var provider = NacosRegistryCatalogClient.ConvertProvider(
+            endpoint,
             "com.example.FallbackService");
 
-        Assert.NotNull(provider);
         Assert.Equal("tri", provider.Scheme);
         Assert.Equal("10.0.0.8:50051", provider.Address);
         Assert.Equal("com.example.DemoService", provider.ServiceName);

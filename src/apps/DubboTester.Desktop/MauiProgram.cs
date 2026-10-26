@@ -30,6 +30,7 @@ public static class MauiProgram
 		builder.Services.AddSingleton<DubboCatalogCache>();
 		builder.Services.AddSingleton<DubboCatalogPreloadService>();
 		builder.Services.AddSingleton<McpGatewayService>();
+		builder.Services.AddSingleton<HttpGatewayService>();
 		builder.Services.AddScoped<DubboSession>();
 		builder.Services.AddScoped<DubboPressureTestRunner>();
 		builder.Services.AddScoped<PressureTestDraftStore>();

@@ -15,16 +15,19 @@ namespace DubboTester.Desktop;
 internal sealed class WindowsDesktopMcpServer : IDesktopMcpServer
 {
     private readonly McpGatewayService _gateway;
+    private readonly HttpGatewayService _httpGateway;
     private readonly DesktopMcpRequestContextAccessor _requestContextAccessor;
     private readonly ILogger<WindowsDesktopMcpServer> _logger;
     private WebApplication? _application;
 
     public WindowsDesktopMcpServer(
         McpGatewayService gateway,
+        HttpGatewayService httpGateway,
         DesktopMcpRequestContextAccessor requestContextAccessor,
         ILogger<WindowsDesktopMcpServer> logger)
     {
         _gateway = gateway;
+        _httpGateway = httpGateway;
         _requestContextAccessor = requestContextAccessor;
         _logger = logger;
     }
@@ -39,6 +42,7 @@ internal sealed class WindowsDesktopMcpServer : IDesktopMcpServer
         });
         builder.WebHost.UseUrls(DesktopMcpEndpoint.ListenerAddresses);
         builder.Services.AddSingleton(_gateway);
+        builder.Services.AddSingleton(_httpGateway);
         builder.Services.AddDubboTesterMcpServer();
 
         WebApplication application = builder.Build();
@@ -49,6 +53,7 @@ internal sealed class WindowsDesktopMcpServer : IDesktopMcpServer
             await next();
         });
         application.MapDubboTesterMcpServer();
+        application.MapDubboTesterHttpGateway();
 
         try
         {

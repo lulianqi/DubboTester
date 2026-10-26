@@ -25,19 +25,20 @@
         <section class="pressure-card setup-card">
             <div class="card-heading">
                 <div><h2>目标请求</h2><p>从请求页带入，可在开始前继续调整</p></div>
-                <span class="route-badge">@(Input.Route == InvocationRoute.Registry ? "注册中心" : "直连 Provider")</span>
+                <span class="route-badge">@(Input.Route == InvocationRoute.Registry ? $"{Settings.RegistryDisplayName} 注册中心" : "直连 Provider")</span>
             </div>
 
             <div class="target-grid">
                 <label>调用方式
-                    <select @bind="Input.Route" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning">
-                        <option value="@InvocationRoute.Registry">注册中心</option>
-                        <option value="@InvocationRoute.DirectProvider">直连 Provider</option>
+                    <select value="@InvocationMode" @onchange="HandleInvocationModeChangedAsync" disabled="@IsRunning">
+                        <option value="zookeeper">ZooKeeper 注册中心</option>
+                        <option value="nacos">Nacos 注册中心</option>
+                        <option value="direct-provider">直连 Provider</option>
                     </select>
                 </label>
                 @if (Input.Route == InvocationRoute.Registry)
                 {
-                    <label>@Settings.RegistryDisplayName
+                    <label>@Settings.RegistryDisplayName 地址
                         <input @bind="Settings.RegistryAddress" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="@RegistryAddressPlaceholder" />
                     </label>
                     <label>注册目录
@@ -1044,6 +1045,9 @@
     private string RegistryAddressPlaceholder => Settings.RegistryType == RegistryCenterType.Nacos
         ? "127.0.0.1:8848?namespace=prod"
         : "127.0.0.1:2181";
+    private string InvocationMode => Input.Route == InvocationRoute.DirectProvider
+        ? "direct-provider"
+        : Settings.RegistryType == RegistryCenterType.Nacos ? "nacos" : "zookeeper";
     private const string SettingsStorageKey = "dubbo-tester.settings.v1";
     private const string UserToken = "{{user}}";
     private const string IterationToken = "{{iteration}}";
@@ -1401,6 +1405,31 @@
             _runCancellation?.Dispose();
             _runCancellation = null;
         }
+    }
+
+    private async Task HandleInvocationModeChangedAsync(ChangeEventArgs args)
+    {
+        if (IsRunning) return;
+        string mode = args.Value?.ToString() ?? "zookeeper";
+        if (mode == "direct-provider")
+        {
+            Input.Route = InvocationRoute.DirectProvider;
+        }
+        else
+        {
+            RegistryCenterType type = mode == "nacos"
+                ? RegistryCenterType.Nacos
+                : RegistryCenterType.ZooKeeper;
+            Input.Route = InvocationRoute.Registry;
+            if (Settings.RegistryType != type)
+            {
+                Settings.RegistryType = type;
+                Settings.RegistryAddress = string.Empty;
+                Settings.RegistryRootPath = "/";
+                Input.RegistryRootPath = "/";
+            }
+        }
+        await PersistPressureDraftAsync();
     }
 
     private void Stop()
