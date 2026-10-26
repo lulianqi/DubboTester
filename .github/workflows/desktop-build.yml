@@ -2,6 +2,11 @@ name: Build desktop apps
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing Release tag to build and attach assets to (for example, 2.1.0); leave empty to build artifacts only
+        required: false
+        type: string
   release:
     types:
       - published
@@ -11,7 +16,8 @@ permissions:
 
 env:
   DESKTOP_PROJECT: src/apps/DubboTester.Desktop/DubboTester.Desktop.csproj
-  RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag || '' }}
+  BUILD_REF: ${{ github.event.release.tag_name || inputs.release_tag || github.ref }}
 
 jobs:
   macos:
@@ -23,7 +29,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          ref: ${{ env.BUILD_REF }}
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -122,7 +128,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          ref: ${{ env.BUILD_REF }}
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -194,7 +200,7 @@ jobs:
 
   release:
     name: Attach assets to GitHub release
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || inputs.release_tag != ''
     needs:
       - macos
       - windows
@@ -241,4 +247,5 @@ jobs:
           gh release upload \
             "$RELEASE_TAG" \
             release-assets/* \
-            --clobber
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"

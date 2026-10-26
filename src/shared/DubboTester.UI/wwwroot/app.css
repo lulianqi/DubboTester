@@ -96,8 +96,8 @@ body.resizing-catalog { cursor: col-resize; user-select: none; }
 .search-box button { border: 0; background: none; color: #9299a5; cursor: pointer; font-size: 18px; }
 .service-tree { flex: 1 1 0; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 2px 8px 20px; font-size: 13px; }
 .tree-root { display: flex; align-items: center; gap: 7px; height: 28px; padding: 0 6px; }
-.tree-root > span { width: 14px; font-size: 19px; line-height: 1; text-align: center; }
-.tree-indent { padding-left: 24px; }
+.tree-root > span { width: 16px; font-size: 21px; line-height: 1; text-align: center; }
+.tree-indent { padding-left: 14px; }
 .registry-root-row { width: 100%; border: 0; border-radius: 5px; color: inherit; background: transparent; cursor: pointer; font: inherit; text-align: left; }
 .registry-root-row:hover { background: #f1f6fc; }
 .registry-root-row > span { color: #87909c; }
