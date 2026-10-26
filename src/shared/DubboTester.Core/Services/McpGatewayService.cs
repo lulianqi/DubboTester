@@ -123,10 +123,11 @@ public sealed class McpGatewayService : IDisposable
     {
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(right);
-        return string.Equals(
-                left.ZooKeeperAddress.Trim(),
-                right.ZooKeeperAddress.Trim(),
-                StringComparison.OrdinalIgnoreCase)
+        return left.RegistryType == right.RegistryType
+            && string.Equals(
+                left.RegistryConnectionString,
+                right.RegistryConnectionString,
+                StringComparison.Ordinal)
             && string.Equals(
                 RegistryRootPaths.Parse(left.RegistryRootPath).CacheKey,
                 RegistryRootPaths.Parse(right.RegistryRootPath).CacheKey,
@@ -148,8 +149,8 @@ public sealed class McpGatewayService : IDisposable
         McpGatewayConfiguration snapshot = GetConfiguration();
         if (snapshot.Methods.Count == 0)
             return new McpToolValidationSummary(0, 0, 0);
-        if (string.IsNullOrWhiteSpace(snapshot.ZooKeeperAddress))
-            throw new ArgumentException("重新校验 MCP 工具前必须填写 ZooKeeper 地址。");
+        if (string.IsNullOrWhiteSpace(snapshot.RegistryAddress))
+            throw new ArgumentException($"重新校验 MCP 工具前必须填写 {snapshot.RegistryDisplayName} 地址。");
 
         var results = new Dictionary<string, ToolValidationResult>(StringComparer.Ordinal);
         DateTimeOffset validatedAt = DateTimeOffset.Now;
@@ -643,7 +644,7 @@ public sealed class McpGatewayService : IDisposable
 
     private static McpGatewayConfiguration Normalize(McpGatewayConfiguration configuration)
     {
-        configuration.ZooKeeperAddress = configuration.ZooKeeperAddress.Trim();
+        configuration.RegistryAddress = configuration.RegistryAddress.Trim();
         configuration.RegistryRootPath = string.IsNullOrWhiteSpace(configuration.RegistryRootPath)
             ? "/"
             : RegistryRootPaths.NormalizeRoot(configuration.RegistryRootPath);
@@ -702,8 +703,10 @@ public sealed class McpGatewayService : IDisposable
 
     public static void Validate(McpGatewayConfiguration configuration)
     {
-        if (configuration.Enabled && string.IsNullOrWhiteSpace(configuration.ZooKeeperAddress))
-            throw new ArgumentException("启用 MCP 服务前必须填写 ZooKeeper 地址。");
+        if (configuration.Enabled && string.IsNullOrWhiteSpace(configuration.RegistryAddress))
+            throw new ArgumentException($"启用 MCP 服务前必须填写 {configuration.RegistryDisplayName} 地址。");
+        if (!string.IsNullOrWhiteSpace(configuration.RegistryAddress))
+            _ = configuration.RegistryConnectionString;
         if (configuration.Enabled
             && configuration.AuthenticationEnabled
             && string.IsNullOrWhiteSpace(configuration.AccessToken))

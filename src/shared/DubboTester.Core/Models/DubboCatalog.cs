@@ -59,7 +59,7 @@ public enum CatalogPreloadState
 }
 
 public sealed record CatalogPreloadStatus(
-    string ZooKeeperAddress,
+    string RegistryAddress,
     string RegistryRoot,
     CatalogPreloadState State,
     int TotalServiceCount,

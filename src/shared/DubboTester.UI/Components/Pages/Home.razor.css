@@ -1,0 +1,9 @@
+.feature-menu { position: relative; margin-left: -8px; }
+.feature-menu > summary { display: grid; place-items: center; width: 27px; height: 32px; color: #1677ff; border-radius: 6px; cursor: pointer; list-style: none; font-size: 19px; }
+.feature-menu > summary::-webkit-details-marker { display: none; }
+.feature-menu > summary svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.feature-menu > summary:hover, .feature-menu[open] > summary { background: #edf4ff; }
+.feature-menu nav { position: absolute; top: calc(100% + 6px); right: 0; z-index: 100; min-width: 140px; padding: 6px; border: 1px solid #dfe5ee; border-radius: 8px; background: white; box-shadow: 0 8px 24px #1a2f4c20; }
+.feature-menu nav a { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 5px; color: #35506f; text-decoration: none; white-space: nowrap; font-size: 13px; }
+.feature-menu nav a svg { width: 17px; height: 17px; flex: 0 0 17px; fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
+.feature-menu nav a:hover, .feature-menu nav a:focus-visible { color: #1677ff; background: #edf4ff; }

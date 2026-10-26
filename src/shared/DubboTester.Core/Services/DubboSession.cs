@@ -15,9 +15,10 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ConcurrentDictionary<string, Lazy<NativeDubboActuatorSuite>> _directSuites = new();
     private DubboClient? _client;
-    private MyZookeeper? _registry;
+    private MyZookeeper? _zooKeeperRegistry;
+    private NacosRegistryCatalogClient? _nacosRegistry;
     private string? _clientConfigurationKey;
-    private string? _registryAddress;
+    private string? _registryConfigurationKey;
     private bool _disposed;
 
     internal DubboSession CreateInvocationSession() => new(catalogCache);
@@ -29,14 +30,14 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
     {
         RegistryRootSelection selection = RegistryRootPaths.Parse(settings.RegistryRootPath);
         return await catalogCache.GetOrLoadAsync(
-            settings.ZooKeeperAddress,
+            settings.RegistryCacheAddress,
             selection.CacheKey,
             requireAllServiceDetails: false,
             forceRefresh,
             async _ =>
             {
                 await EnsureRegistryAsync(settings, cancellationToken);
-                return await LoadCatalogAsync(selection, cancellationToken);
+                return await LoadCatalogAsync(settings.RegistryType, selection, cancellationToken);
             },
             cancellationToken);
     }
@@ -53,7 +54,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
             service.RegistryRootPath);
         if (!forceRefresh
             && catalogCache.TryApplyServiceDetails(
-                settings.ZooKeeperAddress,
+                settings.RegistryCacheAddress,
                 selection.CacheKey,
                 service))
         {
@@ -62,23 +63,36 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
 
         await EnsureRegistryAsync(settings, cancellationToken);
         await LoadServiceDetailsCoreAsync(
+            settings.RegistryType,
             serviceRoot,
             service,
             retryTime: 2,
             cancellationToken);
-        catalogCache.UpdateService(settings.ZooKeeperAddress, selection.CacheKey, service);
+        catalogCache.UpdateService(settings.RegistryCacheAddress, selection.CacheKey, service);
     }
 
     private async Task<IReadOnlyList<DubboServiceItem>> LoadCatalogAsync(
+        RegistryCenterType registryType,
         RegistryRootSelection selection,
         CancellationToken cancellationToken)
     {
         var roots = new HashSet<string>(selection.ExplicitRoots, StringComparer.Ordinal);
         if (selection.AutoDiscover)
         {
-            foreach (string discovered in await DiscoverRegistryRootsAsync(cancellationToken))
+            if (registryType == RegistryCenterType.Nacos)
             {
-                roots.Add(discovered);
+                foreach (string group in await _nacosRegistry!
+                             .DiscoverGroupsAsync(cancellationToken))
+                {
+                    roots.Add(RegistryConnectionSettings.RegistryRoot(registryType, group));
+                }
+            }
+            else
+            {
+                foreach (string discovered in await DiscoverRegistryRootsAsync(cancellationToken))
+                {
+                    roots.Add(discovered);
+                }
             }
         }
 
@@ -89,7 +103,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         {
             try
             {
-                services.AddRange(await LoadServiceNamesAsync(root, cancellationToken));
+                services.AddRange(await LoadServiceNamesAsync(registryType, root, cancellationToken));
                 loadedRootCount++;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -106,10 +120,23 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
     }
 
     private async Task<IReadOnlyList<DubboServiceItem>> LoadServiceNamesAsync(
+        RegistryCenterType registryType,
         string root,
         CancellationToken cancellationToken)
     {
-        var result = await _registry!.GetChildrenAsync(root).WaitAsync(cancellationToken);
+        if (registryType == RegistryCenterType.Nacos)
+        {
+            IReadOnlyList<string> names = await _nacosRegistry!.GetServiceNamesAsync(
+                RegistryConnectionSettings.NacosGroup(root),
+                cancellationToken);
+            return names.Select(name => new DubboServiceItem
+            {
+                Name = name,
+                RegistryRootPath = RegistryConnectionSettings.RegistryRoot(registryType, root)
+            }).ToArray();
+        }
+
+        var result = await _zooKeeperRegistry!.GetChildrenAsync(root).WaitAsync(cancellationToken);
         return ServiceNames(result?.Children ?? [])
             .Select(name => new DubboServiceItem
             {
@@ -122,7 +149,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
     private async Task<IReadOnlyList<string>> DiscoverRegistryRootsAsync(
         CancellationToken cancellationToken)
     {
-        var rootResult = await _registry!
+        var rootResult = await _zooKeeperRegistry!
             .GetChildrenAsync("/", retryTime: 1)
             .WaitAsync(cancellationToken);
         var discovered = new List<string>();
@@ -132,13 +159,13 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
             string candidate = RegistryRootPaths.NormalizeRoot(child);
             try
             {
-                var servicesResult = await _registry
+                var servicesResult = await _zooKeeperRegistry
                     .GetChildrenAsync(candidate, retryTime: 1)
                     .WaitAsync(cancellationToken);
                 string[] serviceNames = ServiceNames(servicesResult?.Children ?? []).ToArray();
                 foreach (string serviceName in serviceNames)
                 {
-                    var branches = await _registry
+                    var branches = await _zooKeeperRegistry
                         .GetChildrenAsync($"{candidate}/{serviceName}", retryTime: 1)
                         .WaitAsync(cancellationToken);
                     if ((branches?.Children ?? []).Contains("providers", StringComparer.Ordinal))
@@ -166,13 +193,24 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
             .Distinct(StringComparer.Ordinal);
 
     private async Task LoadServiceDetailsCoreAsync(
+        RegistryCenterType registryType,
         string root,
         DubboServiceItem service,
         int retryTime,
         CancellationToken cancellationToken)
     {
+        if (registryType == RegistryCenterType.Nacos)
+        {
+            IReadOnlyList<DubboProviderItem> nacosProviders = await _nacosRegistry!.GetProvidersAsync(
+                service.Name,
+                RegistryConnectionSettings.NacosGroup(root),
+                cancellationToken);
+            PopulateServiceDetails(service, nacosProviders);
+            return;
+        }
+
         string providersPath = $"{root}/{service.Name}/providers";
-        var providers = await _registry!
+        var providers = await _zooKeeperRegistry!
             .GetChildrenAsync(providersPath, retryTime: retryTime)
             .WaitAsync(cancellationToken);
         PopulateServiceDetails(service, providers?.Children ?? []);
@@ -190,17 +228,21 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         DubboServiceItem service,
         IEnumerable<string> providerNodes)
     {
+        PopulateServiceDetails(
+            service,
+            providerNodes.Select(providerNode => ParseProvider(providerNode, service.Name))
+                .OfType<DubboProviderItem>());
+    }
+
+    internal static void PopulateServiceDetails(
+        DubboServiceItem service,
+        IEnumerable<DubboProviderItem> providers)
+    {
         service.Providers.Clear();
         service.Methods.Clear();
 
-        foreach (string providerNode in providerNodes)
+        foreach (DubboProviderItem provider in providers)
         {
-            DubboProviderItem? provider = ParseProvider(providerNode, service.Name);
-            if (provider is null)
-            {
-                continue;
-            }
-
             service.Providers.Add(provider);
             foreach (string method in provider.Methods)
             {
@@ -227,6 +269,26 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         await EnsureConfiguredAsync(settings, registryRootPath, cancellationToken);
         IReadOnlyList<DubboMethodMetadata> metadata =
             await _client!.GetMethodMetadataAsync(serviceName, methodName);
+        IReadOnlyList<DubboTypeMetadata> serviceTypes = [];
+        if (metadata.Any(method => method.MetadataSource == DubboMetadataSource.MetadataCenter))
+        {
+            serviceTypes = await _client.GetServiceTypesMetadataAsync(serviceName);
+        }
+
+        return metadata
+            .Select(method => MethodSignatureItem.FromMetadata(method, serviceTypes))
+            .ToArray();
+    }
+
+    public async Task<IReadOnlyList<MethodSignatureItem>> LoadServiceMethodSignaturesAsync(
+        TesterSettings settings,
+        string serviceName,
+        string? registryRootPath = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureConfiguredAsync(settings, registryRootPath, cancellationToken);
+        IReadOnlyList<DubboMethodMetadata> metadata =
+            await _client!.GetServiceMethodsMetadataAsync(serviceName);
         IReadOnlyList<DubboTypeMetadata> serviceTypes = [];
         if (metadata.Any(method => method.MetadataSource == DubboMetadataSource.MetadataCenter))
         {
@@ -373,18 +435,67 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         }
     }
 
+    public static async Task TestRegistryAsync(
+        TesterSettings settings,
+        int timeoutMs = 10_000,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(settings.RegistryAddress))
+        {
+            throw new ArgumentException($"请先填写 {settings.RegistryDisplayName} 地址。");
+        }
+
+        if (settings.RegistryType == RegistryCenterType.ZooKeeper)
+        {
+            await TestZooKeeperAsync(settings.RegistryAddress, timeoutMs, cancellationToken);
+            return;
+        }
+
+        string address = settings.RegistryConnectionString;
+        int effectiveTimeoutMs = Math.Clamp(timeoutMs, 1_000, 30_000);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(effectiveTimeoutMs);
+        try
+        {
+            NacosRegistryCatalogClient client = NacosRegistryCatalogPool.Shared.Get(address);
+            string group = RegistryConnectionSettings.NacosGroup(
+                RegistryRootPaths.Parse(settings.RegistryRootPath).ExplicitRoots.FirstOrDefault());
+            await client.TestAsync(group, timeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"连接 Nacos {settings.RegistryAddress.Trim()} 超时（{effectiveTimeoutMs} ms）。");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new InvalidOperationException(
+                $"无法连接 Nacos {settings.RegistryAddress.Trim()}：{exception.Message}",
+                exception);
+        }
+    }
+
     private async Task EnsureRegistryAsync(
         TesterSettings settings,
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (string.IsNullOrWhiteSpace(settings.ZooKeeperAddress))
+        if (string.IsNullOrWhiteSpace(settings.RegistryAddress))
         {
-            throw new ArgumentException("请先在设置中填写 ZooKeeper 连接地址。");
+            throw new ArgumentException($"请先在设置中填写 {settings.RegistryDisplayName} 连接地址。");
         }
 
-        string address = settings.ZooKeeperAddress.Trim();
-        if (_registry is not null && string.Equals(_registryAddress, address, StringComparison.Ordinal))
+        string address = settings.RegistryConnectionString;
+        string configurationKey = $"{settings.RegistryType}\n{address}";
+        bool configured = settings.RegistryType == RegistryCenterType.Nacos
+            ? _nacosRegistry is not null
+            : _zooKeeperRegistry is not null;
+        if (configured
+            && string.Equals(_registryConfigurationKey, configurationKey, StringComparison.Ordinal))
         {
             return;
         }
@@ -392,17 +503,30 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (_registry is not null && string.Equals(_registryAddress, address, StringComparison.Ordinal))
+            configured = settings.RegistryType == RegistryCenterType.Nacos
+                ? _nacosRegistry is not null
+                : _zooKeeperRegistry is not null;
+            if (configured
+                && string.Equals(_registryConfigurationKey, configurationKey, StringComparison.Ordinal))
             {
                 return;
             }
 
             _client?.Dispose();
-            _registry?.Dispose();
+            _zooKeeperRegistry?.Dispose();
             _client = null;
             _clientConfigurationKey = null;
-            _registry = new MyZookeeper(address);
-            _registryAddress = address;
+            _zooKeeperRegistry = null;
+            _nacosRegistry = null;
+            if (settings.RegistryType == RegistryCenterType.Nacos)
+            {
+                _nacosRegistry = NacosRegistryCatalogPool.Shared.Get(address);
+            }
+            else
+            {
+                _zooKeeperRegistry = new MyZookeeper(address);
+            }
+            _registryConfigurationKey = configurationKey;
         }
         finally
         {
@@ -416,23 +540,26 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (string.IsNullOrWhiteSpace(settings.ZooKeeperAddress))
+        if (string.IsNullOrWhiteSpace(settings.RegistryAddress))
         {
-            throw new ArgumentException("请先在设置中填写 ZooKeeper 连接地址。");
+            throw new ArgumentException($"请先在设置中填写 {settings.RegistryDisplayName} 连接地址。");
         }
 
-        string address = settings.ZooKeeperAddress.Trim();
+        string address = settings.RegistryConnectionString;
         string registryRoot = RegistryRootPaths.ResolveInvocationRoot(
             settings.RegistryRootPath,
             registryRootPath);
-        string metadataRoot = RegistryRootPaths.ResolveMetadataRoot(
-            settings.MetadataRootPath,
-            registryRoot);
+        string? metadataAddress = RegistryConnectionSettings.BuildMetadataConnectionString(settings);
+        string metadataRoot = RegistryConnectionSettings.ResolveMetadataRoot(
+            settings,
+            registryRoot,
+            metadataAddress);
         string configurationKey = JsonSerializer.Serialize(new
         {
-            ZooKeeperAddress = address,
+            settings.RegistryType,
+            RegistryAddress = address,
             Root = registryRoot,
-            settings.MetadataCenterAddress,
+            MetadataCenterAddress = metadataAddress,
             MetadataRoot = metadataRoot,
             settings.RequestTimeoutMs,
             settings.MetadataFallbackTimeoutMs,
@@ -458,7 +585,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
                 new DubboClient.DubboClientConf
                 {
                     DubboRootPath = registryRoot == "/" ? "/" : registryRoot + "/",
-                    MetadataCenterAddress = NullIfWhiteSpace(settings.MetadataCenterAddress),
+                    MetadataCenterAddress = metadataAddress,
                     MetadataRootPath = metadataRoot,
                     DubboRequestTimeout = Math.Clamp(settings.RequestTimeoutMs, 100, 600_000),
                     TelnetMetadataTimeout = Math.Clamp(
@@ -600,7 +727,7 @@ public sealed class DubboSession(DubboCatalogCache catalogCache) : IDisposable
         }
         _directSuites.Clear();
         _client?.Dispose();
-        _registry?.Dispose();
+        _zooKeeperRegistry?.Dispose();
         _gate.Dispose();
     }
 }

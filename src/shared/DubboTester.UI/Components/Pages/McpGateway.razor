@@ -8,7 +8,25 @@
 
 <PageTitle>Dubbo MCP 服务</PageTitle>
 
-<div class="mcp-shell">
+<div class="mcp-shell" @onclick="CloseConfiguredToolFilter">
+    @if (IsEnablingGateway)
+    {
+        <div class="mcp-connection-loading-backdrop"
+             role="alertdialog"
+             aria-modal="true"
+             aria-live="assertive"
+             aria-labelledby="mcp-connection-loading-title"
+             aria-describedby="mcp-connection-loading-description">
+            <div class="mcp-connection-loading-card">
+                <span class="mcp-connection-loading-spinner" aria-hidden="true"></span>
+                <div>
+                    <strong id="mcp-connection-loading-title">正在连接 @Config.RegistryDisplayName</strong>
+                    <p id="mcp-connection-loading-description">正在校验注册中心及已有工具的可用性，请稍候…</p>
+                </div>
+            </div>
+        </div>
+    }
+
     <header class="mcp-header">
         <button class="mcp-back" @onclick='() => Navigation.NavigateTo("/")'>← 返回主页</button>
         <div class="mcp-brand"><span>D</span><div><h1>Dubbo MCP 服务</h1><p>全局后台服务 · Streamable HTTP</p></div></div>
@@ -28,7 +46,7 @@
                 </button>
                 <div class="settings-summary">
                     <span class="endpoint-summary" title="@Endpoint"><b>MCP：</b><code>@Endpoint</code><button type="button" title="复制 MCP 地址" @onclick="() => CopyAsync(Endpoint)" @onclick:stopPropagation="true">复制</button></span>
-                    <span>ZooKeeper：@(string.IsNullOrWhiteSpace(Config.ZooKeeperAddress) ? "未配置" : Config.ZooKeeperAddress)</span>
+                    <span>@Config.RegistryDisplayName：@(string.IsNullOrWhiteSpace(Config.RegistryAddress) ? "未配置" : Config.RegistryAddress)</span>
                     <span>鉴权：@(Config.AuthenticationEnabled ? "Bearer Token" : "关闭")</span>
                     <span>记录上限：@Config.HistoryLimit</span>
                     @if (NoticeIsError || NoticeIsWarning)
@@ -39,22 +57,32 @@
                     }
                 </div>
                 <div class="settings-heading-actions" @onclick:stopPropagation="true">
-                    <label class="mcp-switch" title="全局开关开启时配置会锁定；关闭开关后即可修改，修改后自动保存。"><input type="checkbox" disabled="@IsSaving" @bind="Config.Enabled" @bind:after="AutoSaveConfigurationAsync" /><span></span>全局开关</label>
+                    <label class="mcp-switch" title="全局开关开启时配置会锁定；关闭开关后即可修改，修改后自动保存。"><input type="checkbox" checked="@Config.Enabled" disabled="@IsTogglingGateway" @onchange="ToggleGatewayAsync" /><span></span>全局开关</label>
                 </div>
             </div>
             @if (GlobalSettingsExpanded)
             {
                 <div class="mcp-settings-grid @(Config.Enabled ? "settings-locked" : null)">
-                    <label><span class="field-label">ZooKeeper 地址 <b>*</b></span><input disabled="@(Config.Enabled || IsSaving)" @bind="Config.ZooKeeperAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="例如：127.0.0.1:2181 或 zk1:2181,zk2:2181" /></label>
-                    <label>注册目录<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.RegistryRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="/" /></label>
-                    <label>元数据中心地址（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataCenterAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="默认复用 ZooKeeper" /></label>
-                    <label>元数据目录（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="自动推导" /></label>
+                    <div class="span-two registry-connection-field">
+                        <div class="registry-connection-heading">
+                            <div class="registry-type-switch" role="group" aria-label="注册中心类型">
+                                <button type="button" class="@(Config.RegistryType == RegistryCenterType.ZooKeeper ? "active" : null)" aria-pressed="@(Config.RegistryType == RegistryCenterType.ZooKeeper)" disabled="@(Config.Enabled || IsSaving)" @onclick="() => RegistryTypeChangedAsync(RegistryCenterType.ZooKeeper)">ZooKeeper</button>
+                                <button type="button" class="@(Config.RegistryType == RegistryCenterType.Nacos ? "active" : null)" aria-pressed="@(Config.RegistryType == RegistryCenterType.Nacos)" disabled="@(Config.Enabled || IsSaving)" @onclick="() => RegistryTypeChangedAsync(RegistryCenterType.Nacos)">Nacos</button>
+                            </div>
+                            <label for="mcp-registry-address">@Config.RegistryDisplayName 连接地址<b>*</b></label>
+                        </div>
+                        <input id="mcp-registry-address" disabled="@(Config.Enabled || IsSaving)" @bind="Config.RegistryAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="@RegistryAddressPlaceholder" />
+                        <small>@(Config.RegistryType == RegistryCenterType.Nacos ? "支持 namespace、username、password、accessKey、secretKey 参数；可省略 nacos:// 前缀" : "支持 ZooKeeper 集群地址及 digest 认证。")</small>
+                    </div>
+                    <label>注册目录<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.RegistryRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="@RegistryRootPlaceholder" /><small>@RegistryRootHelp</small></label>
+                    <label>元数据中心地址（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataCenterAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="@MetadataAddressPlaceholder" /></label>
+                    <label>元数据目录（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="@MetadataRootPlaceholder" /></label>
                     <label>调用超时（ms）<input disabled="@(Config.Enabled || IsSaving)" type="number" min="100" max="600000" @bind="Config.RequestTimeoutMs" @bind:after="AutoSaveConfigurationAsync" /></label>
                     <label>内存记录上限<input disabled="@(Config.Enabled || IsSaving)" type="number" min="10" max="5000" @bind="Config.HistoryLimit" @bind:after="AutoSaveConfigurationAsync" /></label>
-                    <label class="span-two">MCP Endpoint
+                    <label class="span-two endpoint-setting">MCP Endpoint
                         <div class="copy-field"><input readonly value="@Endpoint" /><button @onclick="() => CopyAsync(Endpoint)">复制</button></div>
                     </label>
-                    <div class="auth-setting span-two">
+                    <div class="auth-setting span-two @((Config.Enabled || IsSaving) ? "disabled-setting" : null)">
                         <label class="mcp-switch"><input type="checkbox" disabled="@(Config.Enabled || IsSaving)" @bind="Config.AuthenticationEnabled" @bind:after="AutoSaveConfigurationAsync" /><span></span>启用鉴权</label>
                         <small>@(Config.AuthenticationEnabled ? "启用后，远程 Agent 必须携带 Bearer 访问令牌。" : "鉴权已关闭，任何能访问 MCP Endpoint 的客户端都可以直接调用已启用工具。")</small>
                     </div>
@@ -99,7 +127,7 @@
                         <div class="mcp-catalog-list">
                             @if (Services.Count == 0)
                             {
-                                <div class="mcp-empty">暂无服务，请确认 ZooKeeper 配置后刷新列表</div>
+                                <div class="mcp-empty">暂无服务，请确认 @Config.RegistryDisplayName 配置后刷新列表</div>
                             }
                             else
                             {
@@ -186,22 +214,160 @@
                 <div><h2>已配置工具</h2><p>配置会保留；只有在当前连接环境校验通过的工具才会对 MCP 暴露</p></div>
                 <div class="configured-heading-actions">
                     <strong>@AvailableConfigurationCount / @Config.Methods.Count 可用</strong>
+                    @if (HasAnyConfiguredToolFilter)
+                    {
+                        <button class="link-button" @onclick="ResetConfiguredToolFilters">清除筛选</button>
+                    }
                     <button class="link-button availability-check-link"
                             title="重新读取当前注册中心的服务、方法和签名，判断各工具是否仍可对 MCP 客户端提供服务；不会删除现有配置。"
-                            disabled="@(IsBusy || Config.Methods.Count == 0 || string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))"
+                            disabled="@(IsBusy || Config.Methods.Count == 0 || string.IsNullOrWhiteSpace(Config.RegistryAddress))"
                             @onclick="RevalidateToolsAsync">@(IsValidatingTools ? "校验中…" : "可用性校验")</button>
                     <button class="primary small-button" @onclick="OpenAddDialog">＋ 添加配置</button>
                 </div>
             </div>
-            <div class="configured-list">
+            <div class="configured-list @(ActiveConfiguredToolFilter.HasValue ? "filter-open" : null)">
                 @if (Config.Methods.Count == 0)
                 {
                     <div class="mcp-empty small">暂未配置方法</div>
                 }
                 else
                 {
-                    <div class="configured-row configured-table-head"><span>工具名</span><span>注册目录</span><span>服务 / 方法</span><span>方法描述</span><span>当前环境</span><span>启用意图</span><span>操作</span></div>
-                    @foreach (McpDubboMethodConfiguration method in Config.Methods.OrderBy(item => item.ToolName, StringComparer.Ordinal))
+                    <div class="configured-row configured-table-head">
+                        <div class="configured-header-cell">
+                            <span>工具名</span>
+                            <button type="button" class="configured-filter-button @(HasConfiguredTextFilter(ConfiguredToolNameFilter) ? "active" : null)" title="筛选工具名" aria-label="筛选工具名" @onclick="() => ToggleConfiguredToolFilter(ConfiguredToolFilterColumn.ToolName)" @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveConfiguredToolFilter == ConfiguredToolFilterColumn.ToolName)
+                            {
+                                <div class="configured-filter-popover" @onclick:stopPropagation="true">
+                                    <strong>筛选工具名</strong>
+                                    <select @bind="ConfiguredToolNameFilter.Mode">
+                                        @foreach (ConfiguredTextMatchMode mode in Enum.GetValues<ConfiguredTextMatchMode>())
+                                        {
+                                            <option value="@mode">@ConfiguredTextMatchModeLabel(mode)</option>
+                                        }
+                                    </select>
+                                    @if (ConfiguredTextMatchModeNeedsValue(ConfiguredToolNameFilter.Mode))
+                                    {
+                                        <input type="text" placeholder="输入筛选内容" @bind="ConfiguredToolNameFilter.Value" @bind:event="oninput" />
+                                    }
+                                    <div class="configured-filter-actions"><button type="button" class="clear" disabled="@(!HasConfiguredTextFilter(ConfiguredToolNameFilter))" @onclick="() => ClearConfiguredToolFilter(ConfiguredToolFilterColumn.ToolName)">清除</button><button type="button" class="apply" @onclick="ApplyAndCloseConfiguredToolFilter">应用</button></div>
+                                </div>
+                            }
+                        </div>
+                        <div class="configured-header-cell">
+                            <span>注册目录</span>
+                            <button type="button" class="configured-filter-button @(HasConfiguredTextFilter(ConfiguredRegistryRootFilter) ? "active" : null)" title="筛选注册目录" aria-label="筛选注册目录" @onclick="() => ToggleConfiguredToolFilter(ConfiguredToolFilterColumn.RegistryRoot)" @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveConfiguredToolFilter == ConfiguredToolFilterColumn.RegistryRoot)
+                            {
+                                <div class="configured-filter-popover" @onclick:stopPropagation="true">
+                                    <strong>筛选注册目录</strong>
+                                    <select @bind="ConfiguredRegistryRootFilter.Mode">
+                                        @foreach (ConfiguredTextMatchMode mode in Enum.GetValues<ConfiguredTextMatchMode>())
+                                        {
+                                            <option value="@mode">@ConfiguredTextMatchModeLabel(mode)</option>
+                                        }
+                                    </select>
+                                    @if (ConfiguredTextMatchModeNeedsValue(ConfiguredRegistryRootFilter.Mode))
+                                    {
+                                        <input type="text" placeholder="输入筛选内容" @bind="ConfiguredRegistryRootFilter.Value" @bind:event="oninput" />
+                                    }
+                                    <div class="configured-filter-actions"><button type="button" class="clear" disabled="@(!HasConfiguredTextFilter(ConfiguredRegistryRootFilter))" @onclick="() => ClearConfiguredToolFilter(ConfiguredToolFilterColumn.RegistryRoot)">清除</button><button type="button" class="apply" @onclick="ApplyAndCloseConfiguredToolFilter">应用</button></div>
+                                </div>
+                            }
+                        </div>
+                        <div class="configured-header-cell">
+                            <span>服务 / 方法</span>
+                            <button type="button" class="configured-filter-button @(HasConfiguredTextFilter(ConfiguredServiceMethodFilter) ? "active" : null)" title="筛选服务或方法" aria-label="筛选服务或方法" @onclick="() => ToggleConfiguredToolFilter(ConfiguredToolFilterColumn.ServiceMethod)" @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveConfiguredToolFilter == ConfiguredToolFilterColumn.ServiceMethod)
+                            {
+                                <div class="configured-filter-popover" @onclick:stopPropagation="true">
+                                    <strong>筛选服务或方法</strong>
+                                    <select @bind="ConfiguredServiceMethodFilter.Mode">
+                                        @foreach (ConfiguredTextMatchMode mode in Enum.GetValues<ConfiguredTextMatchMode>())
+                                        {
+                                            <option value="@mode">@ConfiguredTextMatchModeLabel(mode)</option>
+                                        }
+                                    </select>
+                                    @if (ConfiguredTextMatchModeNeedsValue(ConfiguredServiceMethodFilter.Mode))
+                                    {
+                                        <input type="text" placeholder="输入筛选内容" @bind="ConfiguredServiceMethodFilter.Value" @bind:event="oninput" />
+                                    }
+                                    <div class="configured-filter-actions"><button type="button" class="clear" disabled="@(!HasConfiguredTextFilter(ConfiguredServiceMethodFilter))" @onclick="() => ClearConfiguredToolFilter(ConfiguredToolFilterColumn.ServiceMethod)">清除</button><button type="button" class="apply" @onclick="ApplyAndCloseConfiguredToolFilter">应用</button></div>
+                                </div>
+                            }
+                        </div>
+                        <div class="configured-header-cell">
+                            <span>方法描述</span>
+                            <button type="button" class="configured-filter-button @(HasConfiguredTextFilter(ConfiguredDescriptionFilter) ? "active" : null)" title="筛选方法描述" aria-label="筛选方法描述" @onclick="() => ToggleConfiguredToolFilter(ConfiguredToolFilterColumn.Description)" @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveConfiguredToolFilter == ConfiguredToolFilterColumn.Description)
+                            {
+                                <div class="configured-filter-popover align-right" @onclick:stopPropagation="true">
+                                    <strong>筛选方法描述</strong>
+                                    <select @bind="ConfiguredDescriptionFilter.Mode">
+                                        @foreach (ConfiguredTextMatchMode mode in Enum.GetValues<ConfiguredTextMatchMode>())
+                                        {
+                                            <option value="@mode">@ConfiguredTextMatchModeLabel(mode)</option>
+                                        }
+                                    </select>
+                                    @if (ConfiguredTextMatchModeNeedsValue(ConfiguredDescriptionFilter.Mode))
+                                    {
+                                        <input type="text" placeholder="输入筛选内容" @bind="ConfiguredDescriptionFilter.Value" @bind:event="oninput" />
+                                    }
+                                    <div class="configured-filter-actions"><button type="button" class="clear" disabled="@(!HasConfiguredTextFilter(ConfiguredDescriptionFilter))" @onclick="() => ClearConfiguredToolFilter(ConfiguredToolFilterColumn.Description)">清除</button><button type="button" class="apply" @onclick="ApplyAndCloseConfiguredToolFilter">应用</button></div>
+                                </div>
+                            }
+                        </div>
+                        <div class="configured-header-cell">
+                            <span>当前环境</span>
+                            <button type="button" class="configured-filter-button @(ConfiguredValidationStatusFilter != ConfiguredValidationFilter.All ? "active" : null)" title="筛选当前环境" aria-label="筛选当前环境" @onclick="() => ToggleConfiguredToolFilter(ConfiguredToolFilterColumn.ValidationStatus)" @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveConfiguredToolFilter == ConfiguredToolFilterColumn.ValidationStatus)
+                            {
+                                <div class="configured-filter-popover compact align-right" @onclick:stopPropagation="true">
+                                    <strong>当前环境状态</strong>
+                                    <select @bind="ConfiguredValidationStatusFilter">
+                                        <option value="@ConfiguredValidationFilter.All">全部</option>
+                                        <option value="@ConfiguredValidationFilter.Available">校验通过</option>
+                                        <option value="@ConfiguredValidationFilter.PendingValidation">等待校验</option>
+                                        <option value="@ConfiguredValidationFilter.ServiceMissing">服务不存在</option>
+                                        <option value="@ConfiguredValidationFilter.MethodMissing">方法不存在</option>
+                                        <option value="@ConfiguredValidationFilter.SignatureMismatch">签名不匹配</option>
+                                        <option value="@ConfiguredValidationFilter.ValidationFailed">校验失败</option>
+                                    </select>
+                                    <div class="configured-filter-actions"><button type="button" class="clear" disabled="@(ConfiguredValidationStatusFilter == ConfiguredValidationFilter.All)" @onclick="() => ClearConfiguredToolFilter(ConfiguredToolFilterColumn.ValidationStatus)">清除</button><button type="button" class="apply" @onclick="ApplyAndCloseConfiguredToolFilter">应用</button></div>
+                                </div>
+                            }
+                        </div>
+                        <div class="configured-header-cell">
+                            <span>启用意图</span>
+                            <button type="button" class="configured-filter-button @(ConfiguredEnabledStatusFilter != ConfiguredEnabledFilter.All ? "active" : null)" title="筛选启用意图" aria-label="筛选启用意图" @onclick="() => ToggleConfiguredToolFilter(ConfiguredToolFilterColumn.Enabled)" @onclick:stopPropagation="true">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14l-5.4 6.1v4.2l-3.2 1.6v-5.8L3 4.5Z" /></svg>
+                            </button>
+                            @if (ActiveConfiguredToolFilter == ConfiguredToolFilterColumn.Enabled)
+                            {
+                                <div class="configured-filter-popover compact align-right" @onclick:stopPropagation="true">
+                                    <strong>启用意图</strong>
+                                    <select @bind="ConfiguredEnabledStatusFilter"><option value="@ConfiguredEnabledFilter.All">全部</option><option value="@ConfiguredEnabledFilter.Enabled">已启用</option><option value="@ConfiguredEnabledFilter.Disabled">未启用</option></select>
+                                    <div class="configured-filter-actions"><button type="button" class="clear" disabled="@(ConfiguredEnabledStatusFilter == ConfiguredEnabledFilter.All)" @onclick="() => ClearConfiguredToolFilter(ConfiguredToolFilterColumn.Enabled)">清除</button><button type="button" class="apply" @onclick="ApplyAndCloseConfiguredToolFilter">应用</button></div>
+                                </div>
+                            }
+                        </div>
+                        <span>操作</span>
+                    </div>
+                    @if (ConfiguredToolsFilteredCount == 0)
+                    {
+                        <div class="mcp-empty small">没有符合筛选条件的工具配置</div>
+                    }
+                    @foreach (McpDubboMethodConfiguration method in PagedConfiguredMethods)
                     {
                         <div class="configured-row" @key="method.Id">
                             <b title="@method.ToolName">@method.ToolName</b>
@@ -215,6 +381,13 @@
                     }
                 }
             </div>
+            @if (ConfiguredToolsFilteredCount > ConfiguredToolsPageSize)
+            {
+                <div class="configured-pagination">
+                    <span>共 @ConfiguredToolsFilteredCount 条，每页 @ConfiguredToolsPageSize 条</span>
+                    <div><button disabled="@(ConfiguredToolsCurrentPage <= 1)" @onclick="() => ChangeConfiguredToolsPage(1)">«</button><button disabled="@(ConfiguredToolsCurrentPage <= 1)" @onclick="() => ChangeConfiguredToolsPage(ConfiguredToolsCurrentPage - 1)">‹</button><b>第 @ConfiguredToolsCurrentPage / @ConfiguredToolsPageCount 页</b><button disabled="@(ConfiguredToolsCurrentPage >= ConfiguredToolsPageCount)" @onclick="() => ChangeConfiguredToolsPage(ConfiguredToolsCurrentPage + 1)">›</button><button disabled="@(ConfiguredToolsCurrentPage >= ConfiguredToolsPageCount)" @onclick="() => ChangeConfiguredToolsPage(ConfiguredToolsPageCount)">»</button></div>
+                </div>
+            }
         </section>
 
         <section class="mcp-card history-card-mcp">
@@ -502,6 +675,8 @@
 
 @code {
     private const int McpHistoryPageSize = 100;
+    private const int ConfiguredToolsPageSize = 20;
+    private readonly SemaphoreSlim _configurationSaveGate = new(1, 1);
     private McpGatewayConfiguration Config { get; set; } = new();
     private List<DubboServiceItem> Services { get; set; } = [];
     private HashSet<string> ExpandedRegistryRoots { get; } = new(StringComparer.Ordinal);
@@ -515,12 +690,22 @@
     private string McpHistoryRequestFilter { get; set; } = string.Empty;
     private string McpHistoryResponseFilter { get; set; } = string.Empty;
     private string? ExpandedMcpRecordId { get; set; }
+    private int ConfiguredToolsPageNumber { get; set; } = 1;
+    private ConfiguredToolFilterColumn? ActiveConfiguredToolFilter { get; set; }
+    private ConfiguredTextFilter ConfiguredToolNameFilter { get; } = new();
+    private ConfiguredTextFilter ConfiguredRegistryRootFilter { get; } = new();
+    private ConfiguredTextFilter ConfiguredServiceMethodFilter { get; } = new();
+    private ConfiguredTextFilter ConfiguredDescriptionFilter { get; } = new();
+    private ConfiguredValidationFilter ConfiguredValidationStatusFilter { get; set; }
+    private ConfiguredEnabledFilter ConfiguredEnabledStatusFilter { get; set; }
     private string SearchText { get; set; } = string.Empty;
-    private string Notice { get; set; } = "配置 ZooKeeper 并扫描服务，然后为需要暴露的方法启用 MCP。";
+    private string Notice { get; set; } = "配置注册中心并扫描服务，然后为需要暴露的方法启用 MCP。";
     private bool NoticeIsError { get; set; }
     private bool NoticeIsWarning { get; set; }
     private bool IsScanning { get; set; }
     private bool IsSaving { get; set; }
+    private bool IsEnablingGateway { get; set; }
+    private bool IsTogglingGateway { get; set; }
     private bool IsValidatingTools { get; set; }
     private bool ShowToken { get; set; }
     private bool GlobalSettingsExpanded { get; set; }
@@ -548,13 +733,34 @@
     private InvocationOutput? DebugOutput { get; set; }
     private string DebugFailure { get; set; } = string.Empty;
 
-    private bool IsBusy => IsScanning || LoadingServiceKeys.Count > 0 || IsSaving || IsValidatingTools || IsDialogBusy;
+    private bool IsBusy => IsScanning || LoadingServiceKeys.Count > 0 || IsSaving || IsTogglingGateway || IsValidatingTools || IsDialogBusy;
     private bool IsGatewayEnabled => Gateway.IsEnabled;
     private string Endpoint => EndpointAddressProvider.EndpointOverride
         ?? Navigation.ToAbsoluteUri("mcp").ToString();
     private int AvailableMethodCount => Config.Methods.Count(method => method.IsAvailableForMcp);
     private int AvailableConfigurationCount => Config.Methods.Count(method =>
         method.ValidationStatus == McpToolValidationStatus.Available);
+    private IEnumerable<McpDubboMethodConfiguration> FilteredConfiguredMethods => Config.Methods
+        .Where(MatchesConfiguredToolFilters)
+        .OrderBy(method => method.ToolName, StringComparer.Ordinal);
+    private int ConfiguredToolsFilteredCount => FilteredConfiguredMethods.Count();
+    private int ConfiguredToolsPageCount => Math.Max(1,
+        (int)Math.Ceiling(ConfiguredToolsFilteredCount / (double)ConfiguredToolsPageSize));
+    private int ConfiguredToolsCurrentPage => Math.Clamp(
+        ConfiguredToolsPageNumber,
+        1,
+        ConfiguredToolsPageCount);
+    private IReadOnlyList<McpDubboMethodConfiguration> PagedConfiguredMethods => FilteredConfiguredMethods
+        .Skip((ConfiguredToolsCurrentPage - 1) * ConfiguredToolsPageSize)
+        .Take(ConfiguredToolsPageSize)
+        .ToArray();
+    private bool HasAnyConfiguredToolFilter =>
+        HasConfiguredTextFilter(ConfiguredToolNameFilter)
+        || HasConfiguredTextFilter(ConfiguredRegistryRootFilter)
+        || HasConfiguredTextFilter(ConfiguredServiceMethodFilter)
+        || HasConfiguredTextFilter(ConfiguredDescriptionFilter)
+        || ConfiguredValidationStatusFilter != ConfiguredValidationFilter.All
+        || ConfiguredEnabledStatusFilter != ConfiguredEnabledFilter.All;
     private int RegistryRootCount => Services.Select(service => NormalizeRegistryRoot(service.RegistryRootPath)).Distinct(StringComparer.Ordinal).Count();
     private IEnumerable<DubboServiceItem> FilteredServices => string.IsNullOrWhiteSpace(SearchText)
         ? Services
@@ -602,6 +808,21 @@
         && !IsSaving
         && !IsDialogBusy
         && string.IsNullOrEmpty(DialogValidationMessage);
+    private string RegistryAddressPlaceholder => Config.RegistryType == RegistryCenterType.Nacos
+        ? "nacos-1:8848,nacos-2:8848?namespace=prod"
+        : "例如：127.0.0.1:2181 或 zk1:2181,zk2:2181";
+    private string MetadataAddressPlaceholder => Config.RegistryType == RegistryCenterType.Nacos
+        ? "默认复用 Nacos"
+        : "默认复用 ZooKeeper";
+    private string RegistryRootPlaceholder => Config.RegistryType == RegistryCenterType.Nacos
+        ? "/（自动扫描）；例如 DEFAULT_GROUP"
+        : "/（自动扫描）";
+    private string RegistryRootHelp => Config.RegistryType == RegistryCenterType.Nacos
+        ? "留空或 / 自动扫描全部 Nacos Naming 分组"
+        : "留空或 / 自动扫描一级目录";
+    private string MetadataRootPlaceholder => Config.RegistryType == RegistryCenterType.Nacos
+        ? "留空则跟随当前服务的注册分组"
+        : "留空则跟随当前服务的注册目录";
     private int McpHistoryPageCount => Math.Max(1,
         (int)Math.Ceiling(McpHistoryTotalCount / (double)McpHistoryPageSize));
     private bool HasMcpHistoryFilters =>
@@ -620,12 +841,43 @@
         ServiceListExpanded = !ServiceListExpanded;
     }
 
+    private async Task RegistryTypeChangedAsync(RegistryCenterType type)
+    {
+        if (Config.Enabled || IsSaving || Config.RegistryType == type) return;
+        Config.RegistryType = type;
+        // A ZooKeeper endpoint is not a valid Nacos endpoint (and vice versa).
+        // Clear protocol-specific values before autosaving so the old address is
+        // never tested using the newly selected registry client.
+        Config.RegistryAddress = string.Empty;
+        Config.RegistryRootPath = "/";
+        Config.MetadataCenterAddress = string.Empty;
+        Config.MetadataRootPath = string.Empty;
+        await AutoSaveConfigurationAsync();
+    }
+
+    private async Task ToggleGatewayAsync(ChangeEventArgs args)
+    {
+        bool enabled = args.Value is bool value && value;
+        Config.Enabled = enabled;
+        IsTogglingGateway = true;
+        IsEnablingGateway = enabled && !Gateway.IsEnabled;
+        try
+        {
+            await AutoSaveConfigurationAsync();
+        }
+        finally
+        {
+            IsEnablingGateway = false;
+            IsTogglingGateway = false;
+        }
+    }
+
     protected override async Task OnInitializedAsync()
     {
         Config = Gateway.GetConfiguration();
         RefreshMcpHistoryPage();
         Gateway.Changed += GatewayChanged;
-        if (!string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))
+        if (!string.IsNullOrWhiteSpace(Config.RegistryAddress))
         {
             await LoadServiceListAsync(forceRefresh: false, refreshDetails: false);
         }
@@ -712,26 +964,171 @@
         RefreshMcpHistoryPage();
     }
 
+    private void ToggleConfiguredToolFilter(ConfiguredToolFilterColumn column)
+    {
+        if (ActiveConfiguredToolFilter == column)
+        {
+            ApplyAndCloseConfiguredToolFilter();
+            return;
+        }
+
+        if (ActiveConfiguredToolFilter.HasValue)
+        {
+            ApplyConfiguredToolFilters();
+        }
+
+        ActiveConfiguredToolFilter = column;
+    }
+
+    private void CloseConfiguredToolFilter()
+    {
+        if (!ActiveConfiguredToolFilter.HasValue) return;
+        ApplyAndCloseConfiguredToolFilter();
+    }
+
+    private void ApplyAndCloseConfiguredToolFilter()
+    {
+        ActiveConfiguredToolFilter = null;
+        ApplyConfiguredToolFilters();
+    }
+
+    private void ApplyConfiguredToolFilters()
+    {
+        ConfiguredToolsPageNumber = 1;
+    }
+
+    private void ClearConfiguredToolFilter(ConfiguredToolFilterColumn column)
+    {
+        switch (column)
+        {
+            case ConfiguredToolFilterColumn.ToolName:
+                ConfiguredToolNameFilter.Reset();
+                break;
+            case ConfiguredToolFilterColumn.RegistryRoot:
+                ConfiguredRegistryRootFilter.Reset();
+                break;
+            case ConfiguredToolFilterColumn.ServiceMethod:
+                ConfiguredServiceMethodFilter.Reset();
+                break;
+            case ConfiguredToolFilterColumn.Description:
+                ConfiguredDescriptionFilter.Reset();
+                break;
+            case ConfiguredToolFilterColumn.ValidationStatus:
+                ConfiguredValidationStatusFilter = ConfiguredValidationFilter.All;
+                break;
+            case ConfiguredToolFilterColumn.Enabled:
+                ConfiguredEnabledStatusFilter = ConfiguredEnabledFilter.All;
+                break;
+        }
+
+        ApplyAndCloseConfiguredToolFilter();
+    }
+
+    private void ResetConfiguredToolFilters()
+    {
+        ConfiguredToolNameFilter.Reset();
+        ConfiguredRegistryRootFilter.Reset();
+        ConfiguredServiceMethodFilter.Reset();
+        ConfiguredDescriptionFilter.Reset();
+        ConfiguredValidationStatusFilter = ConfiguredValidationFilter.All;
+        ConfiguredEnabledStatusFilter = ConfiguredEnabledFilter.All;
+        ApplyAndCloseConfiguredToolFilter();
+    }
+
+    private bool MatchesConfiguredToolFilters(McpDubboMethodConfiguration method) =>
+        MatchesConfiguredText(method.ToolName, ConfiguredToolNameFilter)
+        && MatchesConfiguredText(method.RegistryRootPath, ConfiguredRegistryRootFilter)
+        && MatchesConfiguredText(
+            $"{method.ServiceName}#{method.MethodName} {method.Signature}",
+            ConfiguredServiceMethodFilter)
+        && MatchesConfiguredText(method.Description, ConfiguredDescriptionFilter)
+        && MatchesConfiguredValidationStatus(method.ValidationStatus)
+        && (ConfiguredEnabledStatusFilter == ConfiguredEnabledFilter.All
+            || ConfiguredEnabledStatusFilter == ConfiguredEnabledFilter.Enabled && method.Enabled
+            || ConfiguredEnabledStatusFilter == ConfiguredEnabledFilter.Disabled && !method.Enabled);
+
+    private bool MatchesConfiguredValidationStatus(McpToolValidationStatus status) =>
+        ConfiguredValidationStatusFilter switch
+        {
+            ConfiguredValidationFilter.All => true,
+            ConfiguredValidationFilter.Available => status == McpToolValidationStatus.Available,
+            ConfiguredValidationFilter.PendingValidation => status == McpToolValidationStatus.PendingValidation,
+            ConfiguredValidationFilter.ServiceMissing => status == McpToolValidationStatus.ServiceMissing,
+            ConfiguredValidationFilter.MethodMissing => status == McpToolValidationStatus.MethodMissing,
+            ConfiguredValidationFilter.SignatureMismatch => status == McpToolValidationStatus.SignatureMismatch,
+            ConfiguredValidationFilter.ValidationFailed => status == McpToolValidationStatus.ValidationFailed,
+            _ => true
+        };
+
+    private static bool HasConfiguredTextFilter(ConfiguredTextFilter filter) =>
+        filter.Mode is ConfiguredTextMatchMode.IsEmpty or ConfiguredTextMatchMode.IsNotEmpty
+        || !string.IsNullOrWhiteSpace(filter.Value);
+
+    private static bool MatchesConfiguredText(string? source, ConfiguredTextFilter filter)
+    {
+        if (!HasConfiguredTextFilter(filter)) return true;
+        string text = source ?? string.Empty;
+        string value = filter.Value.Trim();
+        return filter.Mode switch
+        {
+            ConfiguredTextMatchMode.Contains => text.Contains(value, StringComparison.OrdinalIgnoreCase),
+            ConfiguredTextMatchMode.NotContains => !text.Contains(value, StringComparison.OrdinalIgnoreCase),
+            ConfiguredTextMatchMode.StartsWith => text.StartsWith(value, StringComparison.OrdinalIgnoreCase),
+            ConfiguredTextMatchMode.EndsWith => text.EndsWith(value, StringComparison.OrdinalIgnoreCase),
+            ConfiguredTextMatchMode.Equals => text.Equals(value, StringComparison.OrdinalIgnoreCase),
+            ConfiguredTextMatchMode.NotEquals => !text.Equals(value, StringComparison.OrdinalIgnoreCase),
+            ConfiguredTextMatchMode.IsEmpty => string.IsNullOrWhiteSpace(source),
+            ConfiguredTextMatchMode.IsNotEmpty => !string.IsNullOrWhiteSpace(source),
+            _ => true
+        };
+    }
+
+    private static bool ConfiguredTextMatchModeNeedsValue(ConfiguredTextMatchMode mode) =>
+        mode is not ConfiguredTextMatchMode.IsEmpty and not ConfiguredTextMatchMode.IsNotEmpty;
+
+    private static string ConfiguredTextMatchModeLabel(ConfiguredTextMatchMode mode) => mode switch
+    {
+        ConfiguredTextMatchMode.Contains => "包含",
+        ConfiguredTextMatchMode.NotContains => "不包含",
+        ConfiguredTextMatchMode.StartsWith => "开头是",
+        ConfiguredTextMatchMode.EndsWith => "结尾是",
+        ConfiguredTextMatchMode.Equals => "等于",
+        ConfiguredTextMatchMode.NotEquals => "不等于",
+        ConfiguredTextMatchMode.IsEmpty => "为空",
+        ConfiguredTextMatchMode.IsNotEmpty => "不为空",
+        _ => mode.ToString()
+    };
+
+    private void ChangeConfiguredToolsPage(int page)
+    {
+        ConfiguredToolsPageNumber = Math.Clamp(page, 1, ConfiguredToolsPageCount);
+        ActiveConfiguredToolFilter = null;
+    }
+
     private async Task AutoSaveConfigurationAsync()
     {
-        McpGatewayConfiguration previous = Gateway.GetConfiguration();
-        bool isEnablingGateway = Config.Enabled && !Gateway.IsEnabled;
-        bool connectionContextChanged = !McpGatewayService.IsConnectionContextEquivalent(previous, Config);
-        IsSaving = true;
-        SetNotice(
-            isEnablingGateway || connectionContextChanged
-                ? "正在检测新的连接环境…"
-                : "正在自动保存配置…",
-            false);
+        McpGatewayConfiguration requestedConfiguration = Config.Clone();
+        await _configurationSaveGate.WaitAsync();
+        bool isEnablingGateway = false;
         try
         {
+            McpGatewayConfiguration previous = Gateway.GetConfiguration();
+            isEnablingGateway = requestedConfiguration.Enabled && !Gateway.IsEnabled;
+            bool connectionContextChanged = !McpGatewayService.IsConnectionContextEquivalent(previous, requestedConfiguration);
+            IsSaving = true;
+            SetNotice(
+                isEnablingGateway || connectionContextChanged
+                    ? "正在检测新的连接环境…"
+                    : "正在自动保存配置…",
+                false);
+
             if ((isEnablingGateway || connectionContextChanged)
-                && !string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))
+                && !string.IsNullOrWhiteSpace(requestedConfiguration.RegistryAddress))
             {
-                await DubboSession.TestZooKeeperAsync(Config.ZooKeeperAddress);
+                await DubboSession.TestRegistryAsync(requestedConfiguration.ToTesterSettings());
             }
 
-            await Gateway.SaveConfigurationAsync(Config);
+            await Gateway.SaveConfigurationAsync(requestedConfiguration);
             Config = Gateway.GetConfiguration();
             if ((isEnablingGateway || connectionContextChanged) && Config.Methods.Count > 0)
             {
@@ -762,6 +1159,7 @@
         finally
         {
             IsSaving = false;
+            _configurationSaveGate.Release();
         }
     }
 
@@ -797,9 +1195,9 @@
 
     private async Task LoadServiceListAsync(bool forceRefresh, bool refreshDetails)
     {
-        if (string.IsNullOrWhiteSpace(Config.ZooKeeperAddress))
+        if (string.IsNullOrWhiteSpace(Config.RegistryAddress))
         {
-            SetNotice("请先填写 ZooKeeper 地址。", true);
+            SetNotice($"请先填写 {Config.RegistryDisplayName} 地址。", true);
             return;
         }
 
@@ -871,7 +1269,7 @@
         {
             // Expanding a service is an explicit refresh point. This avoids presenting
             // an older cached zero-method snapshot and also updates the shared catalog
-            // cache with the latest providers/methods returned by ZooKeeper.
+            // cache with the latest providers/methods returned by the registry center.
             await Gateway.LoadServiceDetailsAsync(
                 Config.ToTesterSettings(),
                 service,
@@ -1506,6 +1904,58 @@
     public void Dispose()
     {
         Gateway.Changed -= GatewayChanged;
+    }
+
+    private enum ConfiguredToolFilterColumn
+    {
+        ToolName,
+        RegistryRoot,
+        ServiceMethod,
+        Description,
+        ValidationStatus,
+        Enabled
+    }
+
+    private enum ConfiguredTextMatchMode
+    {
+        Contains,
+        NotContains,
+        StartsWith,
+        EndsWith,
+        Equals,
+        NotEquals,
+        IsEmpty,
+        IsNotEmpty
+    }
+
+    private enum ConfiguredValidationFilter
+    {
+        All,
+        Available,
+        PendingValidation,
+        ServiceMissing,
+        MethodMissing,
+        SignatureMismatch,
+        ValidationFailed
+    }
+
+    private enum ConfiguredEnabledFilter
+    {
+        All,
+        Enabled,
+        Disabled
+    }
+
+    private sealed class ConfiguredTextFilter
+    {
+        public ConfiguredTextMatchMode Mode { get; set; } = ConfiguredTextMatchMode.Contains;
+        public string Value { get; set; } = string.Empty;
+
+        public void Reset()
+        {
+            Mode = ConfiguredTextMatchMode.Contains;
+            Value = string.Empty;
+        }
     }
 
     private enum MethodDialogMode

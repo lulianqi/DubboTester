@@ -12,20 +12,20 @@ public sealed class DubboCatalogCache
     private const int MaximumAddressCount = 10;
     private readonly object _sync = new();
     private readonly Dictionary<string, AddressCache> _entries =
-        new(StringComparer.OrdinalIgnoreCase);
+        new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _addressLocks =
-        new(StringComparer.OrdinalIgnoreCase);
+        new(StringComparer.Ordinal);
     private long _accessSequence;
 
     public async Task<DubboCatalogLoadResult> GetOrLoadAsync(
-        string zooKeeperAddress,
+        string registryAddress,
         string registryRoot,
         bool requireAllServiceDetails,
         bool forceRefresh,
         Func<IReadOnlyList<DubboServiceItem>?, Task<IReadOnlyList<DubboServiceItem>>> loader,
         CancellationToken cancellationToken = default)
     {
-        string address = NormalizeAddress(zooKeeperAddress);
+        string address = NormalizeAddress(registryAddress);
         if (!forceRefresh
             && TryGet(address, registryRoot, requireAllServiceDetails, out DubboCatalogLoadResult cached))
         {
@@ -61,11 +61,11 @@ public sealed class DubboCatalogCache
     }
 
     public void UpdateService(
-        string zooKeeperAddress,
+        string registryAddress,
         string registryRoot,
         DubboServiceItem service)
     {
-        string address = NormalizeAddress(zooKeeperAddress);
+        string address = NormalizeAddress(registryAddress);
         lock (_sync)
         {
             if (!TryGetEntry(address, registryRoot, out AddressCache? addressCache, out CacheEntry? entry))
@@ -86,11 +86,11 @@ public sealed class DubboCatalogCache
     }
 
     public bool TryApplyServiceDetails(
-        string zooKeeperAddress,
+        string registryAddress,
         string registryRoot,
         DubboServiceItem target)
     {
-        string address = NormalizeAddress(zooKeeperAddress);
+        string address = NormalizeAddress(registryAddress);
         lock (_sync)
         {
             if (!TryGetEntry(address, registryRoot, out AddressCache? addressCache, out CacheEntry? entry))
@@ -117,9 +117,9 @@ public sealed class DubboCatalogCache
         }
     }
 
-    public void MarkPreloadAttempted(string zooKeeperAddress, string registryRoot)
+    public void MarkPreloadAttempted(string registryAddress, string registryRoot)
     {
-        string address = NormalizeAddress(zooKeeperAddress);
+        string address = NormalizeAddress(registryAddress);
         lock (_sync)
         {
             if (!TryGetEntry(address, registryRoot, out AddressCache? addressCache, out CacheEntry? entry))
@@ -236,7 +236,7 @@ public sealed class DubboCatalogCache
     {
         if (string.IsNullOrWhiteSpace(address))
         {
-            throw new ArgumentException("请先在设置中填写 ZooKeeper 连接地址。", nameof(address));
+            throw new ArgumentException("请先在设置中填写注册中心连接地址。", nameof(address));
         }
 
         return address.Trim();

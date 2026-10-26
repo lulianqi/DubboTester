@@ -14,7 +14,7 @@ public sealed class InvocationInput
     public string MethodName { get; set; } = string.Empty;
     public string Host { get; set; } = string.Empty;
     public int Port { get; set; } = 20_880;
-    public string RequestJson { get; set; } = "{}";
+    public string RequestJson { get; set; } = string.Empty;
     public string JavaParameterTypes { get; set; } = string.Empty;
     public string Version { get; set; } = string.Empty;
     public string Group { get; set; } = string.Empty;

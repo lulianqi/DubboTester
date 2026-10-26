@@ -105,7 +105,7 @@ public static class JsonArgumentParser
     {
         if (string.IsNullOrWhiteSpace(json))
         {
-            return "[]";
+            return string.Empty;
         }
 
         string source = json.Trim();

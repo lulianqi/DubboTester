@@ -17,6 +17,7 @@ internal sealed class DesktopMcpHttpServer : IDesktopMcpServer
 {
     private readonly HttpListener _listener = new();
     private readonly McpGatewayService _gateway;
+    private readonly HttpGatewayService _httpGateway;
     private readonly DesktopMcpRequestContextAccessor _requestContextAccessor;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<DesktopMcpHttpServer> _logger;
@@ -27,11 +28,13 @@ internal sealed class DesktopMcpHttpServer : IDesktopMcpServer
 
     public DesktopMcpHttpServer(
         McpGatewayService gateway,
+        HttpGatewayService httpGateway,
         DesktopMcpRequestContextAccessor requestContextAccessor,
         ILoggerFactory loggerFactory,
         IServiceProvider services)
     {
         _gateway = gateway;
+        _httpGateway = httpGateway;
         _requestContextAccessor = requestContextAccessor;
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<DesktopMcpHttpServer>();
@@ -121,6 +124,21 @@ internal sealed class DesktopMcpHttpServer : IDesktopMcpServer
         HttpListenerRequest request = context.Request;
         HttpListenerResponse response = context.Response;
 
+        const string httpPrefix = "/api/dubbo/";
+        if (request.Url?.AbsolutePath.StartsWith(httpPrefix, StringComparison.Ordinal) == true)
+        {
+            var result = await _httpGateway.HandleAsync(request.RawUrl ?? request.Url.PathAndQuery,
+                request.HttpMethod, request.Headers["Authorization"], request.ContentType,
+                request.InputStream, request.RemoteEndPoint?.Address.ToString() ?? "", shutdownToken);
+            response.StatusCode = result.StatusCode;
+            response.ContentType = "application/json; charset=utf-8";
+            response.Headers["Cache-Control"] = "no-store";
+            if (result.StatusCode == 401) response.Headers["WWW-Authenticate"] = "Bearer";
+            if (result.StatusCode == 405) response.Headers["Allow"] = "POST";
+            await JsonSerializer.SerializeAsync(response.OutputStream, result, HttpGatewayService.JsonOptions, shutdownToken);
+            return;
+        }
+
         if (!string.Equals(request.Url?.AbsolutePath.TrimEnd('/'), "/mcp", StringComparison.Ordinal))
         {
             await WriteJsonAsync(response, 404, new { error = "Not found." });
@@ -209,7 +227,7 @@ internal sealed class DesktopMcpHttpServer : IDesktopMcpServer
         ServerInfo = new Implementation
         {
             Name = "Dubbo Tester",
-            Version = "1.3.0"
+            Version = "2.1.0"
         },
         ServerInstructions = "仅提供在 Dubbo Tester 的 MCP 管理页面中明确启用的 Dubbo 方法。",
         Handlers = new McpServerHandlers
