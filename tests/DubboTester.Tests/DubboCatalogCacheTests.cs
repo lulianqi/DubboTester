@@ -7,6 +7,56 @@ namespace DubboTester.Tests;
 public sealed class DubboCatalogCacheTests
 {
     [Fact]
+    public async Task GetOrLoadAsync_DiscardsLateResultsAfterCancellation()
+    {
+        var cache = new DubboCatalogCache();
+        using var cancellation = new CancellationTokenSource();
+        var lateResponse = new TaskCompletionSource<IReadOnlyList<DubboServiceItem>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<DubboCatalogLoadResult> oldLoad = cache.GetOrLoadAsync(
+            "old:2181", "/dubbo", false, false,
+            _ => lateResponse.Task, cancellation.Token);
+
+        cancellation.Cancel();
+        lateResponse.SetResult([new DubboServiceItem { Name = "stale.Service" }]);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => oldLoad);
+
+        DubboCatalogLoadResult result = await cache.GetOrLoadAsync(
+            "old:2181", "/dubbo", false, false,
+            _ => Task.FromResult<IReadOnlyList<DubboServiceItem>>(
+                [new DubboServiceItem { Name = "fresh.Service" }]));
+
+        Assert.False(result.FromCache);
+        Assert.Equal("fresh.Service", Assert.Single(result.Services).Name);
+    }
+
+    [Fact]
+    public async Task GetOrLoadAsync_NewAddressDoesNotWaitForUnfinishedAddress()
+    {
+        var cache = new DubboCatalogCache();
+        var oldResponse = new TaskCompletionSource<IReadOnlyList<DubboServiceItem>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<DubboCatalogLoadResult> oldLoad = cache.GetOrLoadAsync(
+            "slow:2181", "/dubbo", false, false, _ => oldResponse.Task);
+        try
+        {
+            DubboCatalogLoadResult newResult = await cache.GetOrLoadAsync(
+                "new:2181", "/dubbo", false, false,
+                _ => Task.FromResult<IReadOnlyList<DubboServiceItem>>(
+                    [new DubboServiceItem { Name = "new.Service" }]))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(oldLoad.IsCompleted);
+            Assert.Equal("new.Service", Assert.Single(newResult.Services).Name);
+        }
+        finally
+        {
+            oldResponse.SetResult([]);
+            await oldLoad;
+        }
+    }
+
+    [Fact]
     public async Task GetOrLoadAsync_ReusesAddressCacheAndReturnsIsolatedModels()
     {
         var cache = new DubboCatalogCache();

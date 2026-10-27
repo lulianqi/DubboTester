@@ -43,7 +43,8 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
             TrimCompletedOperations();
         }
 
-        operation.Execution = RunAsync(operation);
+        // 注册中心初始化包含同步等待，必须在线程池执行，不能占用页面渲染线程。
+        operation.Execution = Task.Run(() => RunAsync(operation));
         return operation.GetStatus();
     }
 
@@ -76,8 +77,6 @@ public sealed class DubboCatalogPreloadService(DubboCatalogCache catalogCache) :
 
     private async Task RunAsync(PreloadOperation operation)
     {
-        // 强制切到后台调度，确保命中目录缓存的页面线程不会同步进入注册中心初始化。
-        await Task.Yield();
         using var timeout = new CancellationTokenSource(PreloadTimeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             operation.Cancellation.Token,

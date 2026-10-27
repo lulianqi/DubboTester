@@ -7,7 +7,8 @@ public static class PressureTestChartMetrics
     public static double CalculateSmoothedTps(
         IReadOnlyList<PressureTestPoint> points,
         int pointIndex,
-        double windowSeconds)
+        double windowSeconds,
+        bool successfulOnly = false)
     {
         if (points.Count == 0 || pointIndex < 0 || pointIndex >= points.Count) return 0;
 
@@ -24,30 +25,32 @@ public static class PressureTestChartMetrics
             {
                 PressureTestPoint baseline = points[baselineIndex];
                 baselineSeconds = baseline.ElapsedSeconds;
-                baselineCompleted = baseline.CompletedRequests;
+                baselineCompleted = successfulOnly ? baseline.SuccessfulRequests : baseline.CompletedRequests;
             }
             else if (points[0].ElapsedSeconds > 0 && current.ElapsedSeconds > windowSeconds)
             {
                 PressureTestPoint baseline = points[0];
                 baselineSeconds = baseline.ElapsedSeconds;
-                baselineCompleted = baseline.CompletedRequests;
+                baselineCompleted = successfulOnly ? baseline.SuccessfulRequests : baseline.CompletedRequests;
             }
         }
 
         double elapsed = current.ElapsedSeconds - baselineSeconds;
+        int completed = successfulOnly ? current.SuccessfulRequests : current.CompletedRequests;
         return elapsed <= 0
-            ? current.InstantTps
-            : Math.Max(0, current.CompletedRequests - baselineCompleted) / elapsed;
+            ? successfulOnly ? current.SuccessfulInstantTps : current.InstantTps
+            : Math.Max(0, completed - baselineCompleted) / elapsed;
     }
 
     public static double CalculatePeakSmoothedTps(
         IReadOnlyList<PressureTestPoint> points,
-        double windowSeconds)
+        double windowSeconds,
+        bool successfulOnly = false)
     {
         double peak = 0;
         for (int index = 0; index < points.Count; index++)
         {
-            peak = Math.Max(peak, CalculateSmoothedTps(points, index, windowSeconds));
+            peak = Math.Max(peak, CalculateSmoothedTps(points, index, windowSeconds, successfulOnly));
         }
         return peak;
     }

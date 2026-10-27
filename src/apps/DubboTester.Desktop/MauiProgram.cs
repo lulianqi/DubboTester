@@ -17,9 +17,13 @@ public static class MauiProgram
 			});
 
 		builder.Services.AddMauiBlazorWebView();
+		builder.Services.AddSingleton<GlobalRuntimeSettings>();
+		builder.Services.AddSingleton(new ClientEnvironment(isDesktop: true));
+		builder.Services.AddSingleton<IClipboardService, DesktopClipboardService>();
+		builder.Services.AddSingleton<LocalGatewayListenerStatus>();
 		builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
 		{
-			["DubboTester:Version"] = "2.1.0"
+			["DubboTester:Version"] = "2.1.1"
 		});
 
 		builder.Services.AddSingleton<IAppDataDirectoryProvider, DesktopAppDataDirectoryProvider>();

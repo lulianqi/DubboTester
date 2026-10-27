@@ -11,7 +11,7 @@ let dubboTesterDatabasePromise;
 
 const openDubboTesterDatabase = () => {
     if (!window.indexedDB) {
-        return Promise.reject(new Error("当前浏览器不支持 IndexedDB"));
+        return Promise.reject(new Error("当前运行环境不支持本地数据库存储（IndexedDB）"));
     }
 
     if (dubboTesterDatabasePromise) return dubboTesterDatabasePromise;
@@ -160,7 +160,7 @@ const deleteOldestHistoryRecords = (store, maximum, favorite) =>
     });
 
 const trimHistoryStore = async (store, configuredLimit) => {
-    const limit = Math.max(10, Math.min(5000, Number(configuredLimit) || 5000));
+    const limit = Math.max(10, Math.min(50000, Number(configuredLimit) || 5000));
     const count = await indexedDbRequest(store.count());
     if (count <= limit) return;
 
@@ -345,6 +345,17 @@ window.dubboTester = {
             await writeIndexedDbRecord(dubboTesterStores.requestDrafts, {
                 key,
                 value: value ?? "",
+                updatedAt: new Date().toISOString()
+            });
+        },
+        loadHomeRequestDraft: async () => {
+            const record = await readIndexedDbRecord(dubboTesterStores.metadata, "homeRequestDraft");
+            return record?.value ?? null;
+        },
+        saveHomeRequestDraft: async json => {
+            await writeIndexedDbRecord(dubboTesterStores.metadata, {
+                key: "homeRequestDraft",
+                value: json,
                 updatedAt: new Date().toISOString()
             });
         },

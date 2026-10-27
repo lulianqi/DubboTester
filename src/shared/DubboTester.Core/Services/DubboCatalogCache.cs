@@ -46,6 +46,7 @@ public sealed class DubboCatalogCache
                 ? null
                 : GetSnapshot(address, registryRoot);
             IReadOnlyList<DubboServiceItem> loaded = await loader(seed);
+            cancellationToken.ThrowIfCancellationRequested();
             IReadOnlyList<DubboServiceItem> snapshot = CloneServices(loaded);
             Store(address, registryRoot, snapshot, requireAllServiceDetails);
             return new DubboCatalogLoadResult(

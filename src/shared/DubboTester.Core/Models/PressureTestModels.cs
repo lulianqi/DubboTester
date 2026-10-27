@@ -98,6 +98,7 @@ public sealed class PressureTestConfiguration
 
 public sealed class PressureTestPageDraft
 {
+    public TesterSettings? Settings { get; set; }
     public InvocationInput Invocation { get; set; } = new();
     public int UserCount { get; set; } = 10;
     public PressureTestTcpReuseMode TcpReuseMode { get; set; } = PressureTestTcpReuseMode.FullyShared;
@@ -124,7 +125,16 @@ public sealed record PressureTestPoint(
     int CompletedRequests = 0,
     double RecentAverageMilliseconds = 0,
     double RecentP95Milliseconds = 0,
-    double RecentP99Milliseconds = 0);
+    double RecentP99Milliseconds = 0,
+    int SuccessfulRequests = 0,
+    double SuccessfulInstantTps = 0,
+    double RecentSuccessfulAverageMilliseconds = 0,
+    int RecentSuccessfulRequests = 0,
+    double SuccessfulAverageMilliseconds = 0,
+    double SuccessfulP95Milliseconds = 0,
+    double SuccessfulP99Milliseconds = 0,
+    double RecentSuccessfulP95Milliseconds = 0,
+    double RecentSuccessfulP99Milliseconds = 0);
 
 public readonly record struct PressureTestRequestResult(
     int UserIndex,
@@ -164,7 +174,9 @@ public sealed class PressureTestSnapshot
     public int ActiveUsers { get; init; }
     public double ElapsedSeconds { get; init; }
     public double AverageMilliseconds { get; init; }
+    public double SuccessfulAverageMilliseconds { get; init; }
     public double Tps { get; init; }
+    public double SuccessfulTps => ElapsedSeconds <= 0 ? 0 : SuccessCount / ElapsedSeconds;
     public double PeakTps { get; init; }
     public double SuccessRate { get; init; }
     public double P95Milliseconds { get; init; }

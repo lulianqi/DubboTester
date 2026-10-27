@@ -1,6 +1,7 @@
 using DubboTester.Components;
 using DubboTester.Components.Pages;
 using DubboTester.Hosting;
+using DubboTester.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddJsonFile("version.json", optional: false, reloadOnChange: false);
@@ -10,6 +11,9 @@ builder.Services
     .AddInteractiveServerComponents()
     .AddHubOptions(options => options.MaximumReceiveMessageSize = 256 * 1024);
 builder.Services.AddDubboTesterWebServices();
+builder.Services.AddSingleton(new ClientEnvironment(isDesktop: false));
+builder.Services.AddScoped<IClipboardService, BrowserClipboardService>();
+builder.Services.AddSingleton<LocalGatewayListenerStatus>();
 builder.Services.AddDubboTesterMcpServer();
 
 var app = builder.Build();

@@ -1,0 +1,6 @@
+.gateway-port-backdrop { position: absolute; z-index: 1900; inset: 76px 0 0; display: grid; place-items: center; padding: 24px; background: rgba(243,246,251,.82); backdrop-filter: blur(2px); }
+.gateway-port-card { width: min(440px,calc(100vw - 40px)); padding: 26px 28px; border: 1px solid #efc6ca; border-radius: 12px; color: #34445a; background: #fff; box-shadow: 0 18px 52px rgba(60,35,44,.16); text-align: center; }
+.gateway-port-icon { width: 34px; height: 34px; display: grid; place-items: center; margin: 0 auto 12px; border-radius: 50%; color: #b52c3f; background: #ffedf0; font-size: 20px; font-weight: 700; }
+.gateway-port-card h2 { margin: 0; color: #9e2335; font-size: 17px; }
+.gateway-port-card p { margin: 12px 0 8px; font-size: 12px; line-height: 1.7; }
+.gateway-port-card small { color: #87909f; font-size: 10px; }

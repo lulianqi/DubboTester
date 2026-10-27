@@ -9,7 +9,7 @@ public sealed class HttpGatewayConfiguration
     public TesterSettings Settings { get; set; } = new() { RequestTimeoutMs = 60_000 };
     public bool EnableAllMethods { get; set; }
     public HashSet<string> EnabledMethodIds { get; set; } = new(StringComparer.Ordinal);
-    public bool AuthenticationEnabled { get; set; } = true;
+    public bool AuthenticationEnabled { get; set; }
     public string AccessToken { get; set; } = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
     public int HistoryLimit { get; set; } = 2_000;
 

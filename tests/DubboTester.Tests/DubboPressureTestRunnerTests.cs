@@ -215,6 +215,43 @@ public sealed class DubboPressureTestRunnerTests
         Assert.Equal(15, PressureTestChartMetrics.CalculatePeakSmoothedTps(points, 1));
     }
 
+    [Fact]
+    public void ChartMetrics_CanFilterSuccessfulThroughputWithoutChangingAllRequestMetrics()
+    {
+        PressureTestPoint[] points =
+        [
+            new(1, 100, 100, 1, 10, 10, 10, 100, SuccessfulRequests: 10),
+            new(2, 200, 150, 1, 10, 10, 10, 300, SuccessfulRequests: 30),
+            new(3, 150, 150, 1, 10, 10, 10, 450, SuccessfulRequests: 30),
+            new(6, 150, 150, 1, 10, 10, 10, 900, SuccessfulRequests: 90)
+        ];
+
+        Assert.Equal(150, PressureTestChartMetrics.CalculateSmoothedTps(points, 2, 1));
+        Assert.Equal(0, PressureTestChartMetrics.CalculateSmoothedTps(points, 2, 1, successfulOnly: true));
+        Assert.Equal(16, PressureTestChartMetrics.CalculateSmoothedTps(points, 3, 5, successfulOnly: true));
+        Assert.Equal(20, PressureTestChartMetrics.CalculatePeakSmoothedTps(points, 1, successfulOnly: true));
+        Assert.Equal(200, PressureTestChartMetrics.CalculatePeakSmoothedTps(points, 1));
+    }
+
+    [Fact]
+    public void ChartMetrics_ReturnsZeroSuccessfulThroughputWhenAllRequestsFail()
+    {
+        PressureTestPoint[] points = [new(1, 100, 100, 1, 10, 10, 10, 100)];
+
+        Assert.Equal(0, PressureTestChartMetrics.CalculateSmoothedTps(points, 0, 5, successfulOnly: true));
+        Assert.Equal(0, PressureTestChartMetrics.CalculatePeakSmoothedTps(points, 5, successfulOnly: true));
+        Assert.Equal(0, PressureTestChartMetrics.CalculatePeakSmoothedTps([], 5, successfulOnly: true));
+    }
+
+    [Fact]
+    public void ChartMetrics_UsesSuccessfulInstantTpsWhenSampleTimesAreEqual()
+    {
+        PressureTestPoint[] points = [new(0, 100, 100, 1, 10, 10, 10, SuccessfulInstantTps: 25)];
+
+        Assert.Equal(25, PressureTestChartMetrics.CalculateSmoothedTps(points, 0, 5, successfulOnly: true));
+        Assert.Equal(100, PressureTestChartMetrics.CalculateSmoothedTps(points, 0, 5));
+    }
+
     [Theory]
     [InlineData(0, 1)]
     [InlineData(0.07, 0.08)]
@@ -243,6 +280,139 @@ public sealed class DubboPressureTestRunnerTests
         Assert.Equal(30, second.AverageMilliseconds);
         Assert.Equal(40, second.P95Milliseconds);
         Assert.Equal(40, second.P99Milliseconds);
+    }
+
+    [Fact]
+    public void LatencyWindow_TracksSuccessfulLatencyAndExpiresSuccessfulSamples()
+    {
+        var window = new PressureTestLatencyWindow(5);
+        window.Add(0, 10, success: true);
+        window.Add(1, 1_000, success: false);
+        window.Add(4, 30, success: true);
+
+        PressureTestLatencyStatistics first = window.GetStatistics(5);
+        Assert.Equal(2, first.SuccessfulRequests);
+        Assert.Equal(20, first.SuccessfulAverageMilliseconds);
+        Assert.Equal(30, first.SuccessfulP95Milliseconds);
+        Assert.Equal(30, first.SuccessfulP99Milliseconds);
+        Assert.Equal(1_040d / 3, first.AverageMilliseconds);
+
+        PressureTestLatencyStatistics second = window.GetStatistics(5.1);
+        Assert.Equal(1, second.SuccessfulRequests);
+        Assert.Equal(30, second.SuccessfulAverageMilliseconds);
+        Assert.Equal(30, second.SuccessfulP95Milliseconds);
+        Assert.Equal(30, second.SuccessfulP99Milliseconds);
+        Assert.Equal(515, second.AverageMilliseconds);
+
+        window.Add(9, 500, success: false);
+        PressureTestLatencyStatistics noSuccess = window.GetStatistics(9.1);
+        Assert.Equal(0, noSuccess.SuccessfulRequests);
+        Assert.Equal(0, noSuccess.SuccessfulAverageMilliseconds);
+        Assert.Equal(0, noSuccess.SuccessfulP95Milliseconds);
+        Assert.Equal(0, noSuccess.SuccessfulP99Milliseconds);
+        Assert.Equal(500, noSuccess.AverageMilliseconds);
+
+        PressureTestLatencyStatistics empty = window.GetStatistics(15);
+        Assert.Equal(0, empty.SuccessfulRequests);
+        Assert.Equal(0, empty.SuccessfulAverageMilliseconds);
+    }
+
+    [Fact]
+    public void LatencyWindow_SamplesSuccessfulPercentilesIndependentlyOfFailedRequests()
+    {
+        var window = new PressureTestLatencyWindow(5, maximumPercentileSamples: 2);
+        for (int index = 0; index < 10; index++) window.Add(1, 1_000, success: false);
+        window.Add(1, 30, success: true);
+        window.Add(1, 70, success: true);
+
+        PressureTestLatencyStatistics statistics = window.GetStatistics(2);
+        Assert.Equal(2, statistics.SuccessfulRequests);
+        Assert.Equal(50, statistics.SuccessfulAverageMilliseconds);
+        Assert.Equal(70, statistics.SuccessfulP95Milliseconds);
+        Assert.Equal(70, statistics.SuccessfulP99Milliseconds);
+        Assert.Equal(1_000, statistics.P95Milliseconds);
+    }
+
+    [Fact]
+    public void RunState_KeepsFullSuccessfulMetricsWhenLiveResultsAreTruncated()
+    {
+        var state = new DubboPressureTestRunner.RunState(300, 0, false, 500);
+        state.Start();
+        for (int index = 1; index <= 300; index++)
+        {
+            bool success = index % 2 == 1;
+            state.Record(1, index, success ? 10 : 100, success, success ? null : "failed", null, null);
+        }
+        state.Stop();
+
+        PressureTestSnapshot live = state.CreateSnapshot(isRunning: true, isCancelled: false, addPoint: true);
+        Assert.Equal(200, live.RequestResults.Count);
+        Assert.Equal(300, live.CompletedRequests);
+        Assert.Equal(150, live.SuccessCount);
+        Assert.Equal(55, live.AverageMilliseconds);
+        Assert.Equal(10, live.SuccessfulAverageMilliseconds);
+        Assert.Equal(150 / live.ElapsedSeconds, live.SuccessfulTps);
+        Assert.Equal(150, live.Timeline[^1].SuccessfulRequests);
+        Assert.Equal(150, live.Timeline[^1].RecentSuccessfulRequests);
+        Assert.Equal(10, live.Timeline[^1].RecentSuccessfulAverageMilliseconds);
+        Assert.Equal(10, live.Timeline[^1].SuccessfulAverageMilliseconds);
+        Assert.Equal(10, live.Timeline[^1].SuccessfulP95Milliseconds);
+        Assert.Equal(10, live.Timeline[^1].SuccessfulP99Milliseconds);
+        Assert.Equal(10, live.Timeline[^1].RecentSuccessfulP95Milliseconds);
+        Assert.Equal(10, live.Timeline[^1].RecentSuccessfulP99Milliseconds);
+        Assert.Equal(100, live.Timeline[^1].P95Milliseconds);
+        Assert.Equal(live.SuccessfulTps, live.Timeline[^1].SuccessfulInstantTps);
+
+        PressureTestSnapshot final = state.CreateSnapshot(isRunning: false, isCancelled: false, addPoint: true);
+        Assert.Equal(300, final.RequestResults.Count);
+        Assert.Equal(live.SuccessfulAverageMilliseconds, final.SuccessfulAverageMilliseconds);
+        Assert.Equal(live.SuccessfulTps, final.SuccessfulTps);
+    }
+
+    [Fact]
+    public void RunState_ReturnsZeroSuccessfulMetricsForEmptyAndAllFailedRuns()
+    {
+        var state = new DubboPressureTestRunner.RunState(1, 0, false, 500);
+        PressureTestSnapshot empty = state.CreateSnapshot(isRunning: true, isCancelled: false, addPoint: true);
+        Assert.Equal(0, empty.SuccessfulTps);
+        Assert.Equal(0, empty.SuccessfulAverageMilliseconds);
+
+        state.Start();
+        state.Record(1, 1, 100, false, "failed", null, null);
+        state.Stop();
+        PressureTestSnapshot failed = state.CreateSnapshot(isRunning: false, isCancelled: false, addPoint: true);
+        Assert.Equal(1, failed.FailureCount);
+        Assert.Equal(100, failed.AverageMilliseconds);
+        Assert.Equal(0, failed.SuccessfulAverageMilliseconds);
+        Assert.Equal(0, failed.SuccessfulTps);
+        Assert.Equal(0, failed.Timeline[^1].SuccessfulRequests);
+        Assert.Equal(0, failed.Timeline[^1].RecentSuccessfulRequests);
+        Assert.Equal(0, failed.Timeline[^1].SuccessfulP95Milliseconds);
+        Assert.Equal(0, failed.Timeline[^1].SuccessfulP99Milliseconds);
+    }
+
+    [Fact]
+    public void RunState_FinalSuccessfulPercentilesUseFullDataBeyondLiveSampleLimit()
+    {
+        var state = new DubboPressureTestRunner.RunState(21_001, 0, false, 500);
+        state.Start();
+        for (int index = 1; index <= 21_000; index++)
+        {
+            state.Record(1, index, index, true, null, null, null);
+        }
+
+        PressureTestSnapshot live = state.CreateSnapshot(isRunning: true, isCancelled: false, addPoint: true);
+        Assert.True(live.PercentilesAreSampled);
+        Assert.Equal(live.P95Milliseconds, live.Timeline[^1].SuccessfulP95Milliseconds);
+        Assert.Equal(live.P99Milliseconds, live.Timeline[^1].SuccessfulP99Milliseconds);
+
+        state.Record(1, 21_001, 1_000_000, false, "failed", null, null);
+        state.Stop();
+        PressureTestSnapshot final = state.CreateSnapshot(isRunning: false, isCancelled: false, addPoint: true);
+        Assert.False(final.PercentilesAreSampled);
+        Assert.Equal(19_950, final.Timeline[^1].SuccessfulP95Milliseconds);
+        Assert.Equal(20_790, final.Timeline[^1].SuccessfulP99Milliseconds);
+        Assert.NotEqual(final.P95Milliseconds, final.Timeline[^1].SuccessfulP95Milliseconds);
     }
 
     [Fact]
