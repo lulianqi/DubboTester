@@ -16,13 +16,13 @@
         <button class="back-button" disabled="@IsRunning" @onclick="BackToHome">← 返回主页</button>
         <div class="pressure-brand">
             <span class="pressure-mark">D</span>
-            <div><h1>Dubbo 压力测试</h1><p>可配置 TCP 复用 · 结果仅保存在当前页面</p></div>
+            <div><h1>Dubbo 压力测试</h1><p>运行中请勿刷新页面，结果仅保存在当前页面</p></div>
         </div>
         <div class="run-state @(NoticeIsError ? "error" : null)"><span></span>@Notice</div>
     </header>
 
     <main class="pressure-content">
-        <section class="pressure-card setup-card">
+        <section class="pressure-card setup-card configuration-card">
             <div class="card-heading">
                 <div><h2>目标请求</h2><p>从请求页带入，可在开始前继续调整</p></div>
                 <span class="route-badge">@(Input.Route == InvocationRoute.Registry ? $"{Settings.RegistryDisplayName} 注册中心" : "直连 Provider")</span>
@@ -63,20 +63,32 @@
                 <label>Java 参数类型
                     <input @bind="Input.JavaParameterTypes" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="java.lang.String, java.lang.Integer" />
                 </label>
-                <label>服务版本
+                <label>服务版本（选填）
                     <input @bind="Input.Version" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="可选" />
                 </label>
-                <label>服务分组
+                <label>服务分组（选填）
                     <input @bind="Input.Group" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder="可选" />
                 </label>
-                <label class="span-three">
+                <label>负载均衡模式
+                    <select @bind="Settings.LoadBalanceMode" @bind:after="PersistPressureDraftAsync" disabled="@(IsRunning || Input.Route != InvocationRoute.Registry)">
+                        @foreach (DubboClient.LoadBalanceMode mode in Enum.GetValues<DubboClient.LoadBalanceMode>())
+                        {
+                            <option value="@mode">@mode</option>
+                        }
+                    </select>
+                    @if (Input.Route != InvocationRoute.Registry)
+                    {
+                        <small>直连 Provider 不使用负载均衡</small>
+                    }
+                </label>
+                <label class="span-two">
                     <span>Attachments JSON <small>可选，随 RPC 请求传递，类似请求 Header</small></span>
                     <input @bind="Input.AttachmentsJson" @bind:after="PersistPressureDraftAsync" disabled="@IsRunning" placeholder='{"traceId":"..."}' />
                 </label>
             </div>
         </section>
 
-        <section class="pressure-card load-card">
+        <section class="pressure-card load-card configuration-card">
             <div class="card-heading">
                 <div><h2>负载配置</h2><p>@LoadDescription</p></div>
                 <strong>@LoadHeadingSummary</strong>
@@ -99,7 +111,8 @@
                                     <small>控制并发用户如何共享 Dubbo client；独立 client 会建立独立的 Provider 连接。</small>
                                     <select aria-label="TCP 复用模式"
                                             @bind="TcpReuseMode"
-                                            @bind:after="HandleTcpReuseModeChangedAsync">
+                                            @bind:after="HandleTcpReuseModeChangedAsync"
+                                            disabled="@IsRunning">
                                         <option value="@PressureTestTcpReuseMode.FullyShared">完全复用（全部用户共用）</option>
                                         <option value="@PressureTestTcpReuseMode.PerUser">不复用（每用户一个 client）</option>
                                         <option value="@PressureTestTcpReuseMode.SharedBy10Users">每 10 个用户复用一个 client</option>
@@ -151,7 +164,7 @@
             </div>
         </section>
 
-        <section class="pressure-card template-card">
+        <section class="pressure-card template-card configuration-card">
             <div class="card-heading template-heading">
                 <div><h2>请求参数模板</h2><p>保持合法 JSON；变量会在每次请求前替换</p></div>
                 <button class="text-button" disabled="@IsRunning" @onclick="FormatTemplate">格式化</button>
@@ -173,7 +186,7 @@
                         <button type="button"
                                 class="assertion-debug-link"
                                 title="输入模拟响应内容，使用当前业务断言进行校验"
-                                disabled="@(BusinessAssertion.Conditions.Count == 0)"
+                                disabled="@(IsRunning || BusinessAssertion.Conditions.Count == 0)"
                                 @onclick="OpenAssertionDebugDialog">调试断言</button>
                         @if (BusinessAssertion.Conditions.Count > 1)
                         {
@@ -266,17 +279,27 @@
 
         <section class="metric-grid">
             <article>
-                <span>响应时间</span>
-                <div class="metric-pair">
-                    <div><small>全程平均</small><b>@FormatMilliseconds(Snapshot.AverageMilliseconds)</b></div>
-                    <div><small>当前（近 5 秒）</small><b>@FormatMilliseconds(CurrentAverageMilliseconds)</b></div>
+                <div class="metric-heading">
+                    <span>响应时间</span>
+                    <label class="metric-success-toggle" title="仅统计成功请求，仅影响此卡片">
+                        <input type="checkbox" role="switch" aria-label="响应时间仅统计成功请求" @bind="SuccessfulLatencyOnly" />仅成功
+                    </label>
                 </div>
-                <small>所有已完成请求</small>
+                <div class="metric-pair">
+                    <div><small>全程平均</small><b>@CardAverageLatency</b></div>
+                    <div><small>当前（近 5 秒）</small><b>@CardCurrentLatency</b></div>
+                </div>
+                <small>@(SuccessfulLatencyOnly ? Snapshot.SuccessCount == 0 ? "暂无成功请求" : "仅统计成功请求" : "所有已完成请求")</small>
             </article>
             <article>
-                <span>TPS</span>
+                <div class="metric-heading">
+                    <span>TPS</span>
+                    <label class="metric-success-toggle" title="仅统计成功请求，仅影响此卡片">
+                        <input type="checkbox" role="switch" aria-label="TPS 仅统计成功请求" @bind="SuccessfulTpsOnly" />仅成功
+                    </label>
+                </div>
                 <div class="metric-pair">
-                    <div><small>全程平均</small><b>@Snapshot.Tps.ToString("F2")</b></div>
+                    <div><small>全程平均</small><b>@((SuccessfulTpsOnly ? Snapshot.SuccessfulTps : Snapshot.Tps).ToString("F2"))</b></div>
                     <div><small>当前（@ThroughputSmoothingSeconds 秒）</small><b>@CurrentTps.ToString("F2")</b></div>
                 </div>
                 <small>最高 TPS @SelectedPeakTps.ToString("F2")（@ThroughputSmoothingSeconds 秒滑动平均峰值）</small>
@@ -316,6 +339,9 @@
                                 <option value="30">30 秒平滑</option>
                             </select>
                             <i class="legend users"></i><span>活跃用户</span>
+                            <label class="metric-success-toggle chart-success-toggle">
+                                <input type="checkbox" role="switch" aria-label="吞吐趋势仅统计成功请求" @bind="SuccessfulThroughputChartOnly" @bind:after="RefreshThroughputChart" />仅统计成功请求
+                            </label>
                             <span class="chart-zoom-controls" title="横轴缩放">
                                 <button type="button" disabled="@(ThroughputZoom <= MinimumChartZoom)" aria-label="缩小吞吐趋势横轴" @onclick="() => ChangeChartZoom(ChartKind.Throughput, -ChartZoomStep)" @onclick:stopPropagation="true">−</button>
                                 <b>@ThroughputZoom.ToString("0.#")×</b>
@@ -407,7 +433,7 @@
                                 <div class="chart-tooltip @TooltipAlignmentClass(throughputTooltipIndex, ThroughputZoom)" style="@TooltipStyle(throughputTooltipIndex, ThroughputZoom)">
                                     <b>@FormatClockTime(point.ElapsedSeconds) · @point.ElapsedSeconds.ToString("F2") s</b>
                                     <span>@ThroughputSmoothingSeconds 秒平滑 TPS <strong>@SmoothedTpsAt(throughputTooltipIndex).ToString("F2")</strong></span>
-                                    <span>原始 TPS <strong>@point.InstantTps.ToString("F2")</strong></span>
+                                    <span>原始 TPS <strong>@((SuccessfulThroughputChartOnly ? point.SuccessfulInstantTps : point.InstantTps).ToString("F2"))</strong></span>
                                     <span><i class="legend users"></i>活跃用户 <strong>@point.ActiveUsers</strong></span>
                                 </div>
                             }
@@ -428,6 +454,9 @@
                             <i class="legend p95"></i><span>P95</span>
                             <i class="legend p99"></i><span>P99</span>
                             <i class="legend users"></i><span>活跃用户</span>
+                            <label class="metric-success-toggle chart-success-toggle">
+                                <input type="checkbox" role="switch" aria-label="响应时间趋势仅统计成功请求" @bind="SuccessfulLatencyChartOnly" @bind:after="RefreshLatencyChart" />仅统计成功请求
+                            </label>
                             <span class="chart-zoom-controls" title="横轴缩放">
                                 <button type="button" disabled="@(LatencyZoom <= MinimumChartZoom)" aria-label="缩小响应时间趋势横轴" @onclick="() => ChangeChartZoom(ChartKind.Latency, -ChartZoomStep)" @onclick:stopPropagation="true">−</button>
                                 <b>@LatencyZoom.ToString("0.#")×</b>
@@ -444,6 +473,10 @@
                 @if (Snapshot.Timeline.Count < 2)
                 {
                     <div class="chart-empty">开始压测后显示趋势</div>
+                }
+                else if (SuccessfulLatencyChartOnly && Snapshot.SuccessCount == 0)
+                {
+                    <div class="chart-empty">暂无成功请求</div>
                 }
                 else
                 {
@@ -522,9 +555,9 @@
                                 PressureTestPoint point = Snapshot.Timeline[latencyTooltipIndex];
                                 <div class="chart-tooltip latency-tooltip @TooltipAlignmentClass(latencyTooltipIndex, LatencyZoom)" style="@TooltipStyle(latencyTooltipIndex, LatencyZoom)">
                                     <b>@FormatClockTime(point.ElapsedSeconds) · @point.ElapsedSeconds.ToString("F2") s · @LatencyModeLabel</b>
-                                    <span><i class="legend average"></i>平均 <strong>@FormatMilliseconds(LatencyAverage(point))</strong></span>
-                                    <span><i class="legend p95"></i>P95 <strong>@FormatMilliseconds(LatencyP95(point))</strong></span>
-                                    <span><i class="legend p99"></i>P99 <strong>@FormatMilliseconds(LatencyP99(point))</strong></span>
+                                    <span><i class="legend average"></i>平均 <strong>@FormatLatencyTooltip(point, LatencyAverage(point))</strong></span>
+                                    <span><i class="legend p95"></i>P95 <strong>@FormatLatencyTooltip(point, LatencyP95(point))</strong></span>
+                                    <span><i class="legend p99"></i>P99 <strong>@FormatLatencyTooltip(point, LatencyP99(point))</strong></span>
                                     <span><i class="legend users"></i>活跃用户 <strong>@point.ActiveUsers</strong></span>
                                 </div>
                             }
@@ -1073,6 +1106,10 @@
     private TesterSettings Settings { get; set; } = new();
     private InvocationInput Input { get; set; } = new();
     private PressureTestSnapshot Snapshot { get; set; } = new();
+    private bool SuccessfulLatencyOnly { get; set; }
+    private bool SuccessfulTpsOnly { get; set; }
+    private bool SuccessfulThroughputChartOnly { get; set; }
+    private bool SuccessfulLatencyChartOnly { get; set; }
     private int UserCount { get; set; } = 10;
     private PressureTestTcpReuseMode TcpReuseMode { get; set; } = PressureTestTcpReuseMode.FullyShared;
     private PressureTestLimitMode LimitMode { get; set; } = PressureTestLimitMode.RequestCount;
@@ -1206,7 +1243,19 @@
         : Snapshot.Timeline[^1];
     private double CurrentTps => Snapshot.Timeline.Count == 0
         ? 0
-        : SmoothedTpsAt(Snapshot.Timeline.Count - 1);
+        : PressureTestChartMetrics.CalculateSmoothedTps(
+            Snapshot.Timeline,
+            Snapshot.Timeline.Count - 1,
+            ThroughputSmoothingSeconds,
+            successfulOnly: SuccessfulTpsOnly);
+    private string CardAverageLatency => SuccessfulLatencyOnly && Snapshot.SuccessCount == 0
+        ? "—"
+        : FormatMilliseconds(SuccessfulLatencyOnly ? Snapshot.SuccessfulAverageMilliseconds : Snapshot.AverageMilliseconds);
+    private string CardCurrentLatency => SuccessfulLatencyOnly
+        ? CurrentTimelinePoint is { RecentSuccessfulRequests: > 0 } point
+            ? FormatMilliseconds(point.RecentSuccessfulAverageMilliseconds)
+            : "—"
+        : FormatMilliseconds(CurrentAverageMilliseconds);
     private double CurrentAverageMilliseconds => CurrentTimelinePoint?.RecentAverageMilliseconds ?? 0;
     private double CurrentP95Milliseconds => CurrentTimelinePoint?.RecentP95Milliseconds ?? 0;
     private double CurrentP99Milliseconds => CurrentTimelinePoint?.RecentP99Milliseconds ?? 0;
@@ -1225,7 +1274,7 @@
 
     protected override void OnInitialized()
     {
-        _hasDraft = DraftStore.TryGet(out TesterSettings settings, out InvocationInput invocation);
+        _hasDraft = DraftStore.TryTake(out TesterSettings settings, out InvocationInput invocation);
         if (_hasDraft)
         {
             Settings = settings;
@@ -1257,10 +1306,10 @@
 
             if (!_hasDraft)
             {
-                Settings = string.IsNullOrWhiteSpace(settingsJson)
+                Settings = persistedDraft?.Settings ?? (string.IsNullOrWhiteSpace(settingsJson)
                         ? new TesterSettings()
                         : JsonSerializer.Deserialize<TesterSettings>(settingsJson, StorageJsonOptions)
-                            ?? new TesterSettings();
+                            ?? new TesterSettings());
                 if (persistedDraft is not null)
                 {
                     Input = persistedDraft.Invocation;
@@ -1287,6 +1336,7 @@
 
             DraftStorageReady = true;
             DraftStorageLoadAttempts = 0;
+            await PersistPressureDraftAsync();
             StateHasChanged();
         }
         catch (Exception exception)
@@ -1784,7 +1834,7 @@
 
     private void OpenAssertionDebugDialog()
     {
-        if (BusinessAssertion.Conditions.Count == 0) return;
+        if (IsRunning || BusinessAssertion.Conditions.Count == 0) return;
         AssertionDebugConfiguration = BusinessAssertion.Clone();
         ClearAssertionDebugResult();
         ShowAssertionDebugDialog = true;
@@ -1830,7 +1880,6 @@
     private async Task BackToHome()
     {
         await PersistPressureDraftAsync();
-        DraftStore.Capture(Settings, Input);
         Navigation.NavigateTo("/");
     }
 
@@ -1887,6 +1936,7 @@
 
         var draft = new PressureTestPageDraft
         {
+            Settings = Settings.Clone(),
             Invocation = Input.Clone(),
             UserCount = UserCount,
             TcpReuseMode = TcpReuseMode,
@@ -1907,10 +1957,6 @@
             await JS.InvokeVoidAsync(
                 "dubboTester.indexedDb.savePressureDraft",
                 JsonSerializer.Serialize(draft, StorageJsonOptions));
-            await JS.InvokeVoidAsync(
-                "dubboTester.save",
-                SettingsStorageKey,
-                JsonSerializer.Serialize(Settings, StorageJsonOptions));
         }
         catch (JSException exception)
         {
@@ -2000,12 +2046,14 @@
 
     private double SelectedPeakTps => PressureTestChartMetrics.CalculatePeakSmoothedTps(
         Snapshot.Timeline,
-        ThroughputSmoothingSeconds);
+        ThroughputSmoothingSeconds,
+        successfulOnly: SuccessfulTpsOnly);
 
     private double SmoothedTpsAt(int index) => PressureTestChartMetrics.CalculateSmoothedTps(
         Snapshot.Timeline,
         index,
-        ThroughputSmoothingSeconds);
+        ThroughputSmoothingSeconds,
+        successfulOnly: SuccessfulThroughputChartOnly);
 
     private double ThroughputScaleMaximum => Math.Max(
         1,
@@ -2020,16 +2068,21 @@
                 Math.Max(LatencyP95(point), LatencyP99(point)))));
 
     private double LatencyAverage(PressureTestPoint point) => LatencyMode == LatencyTrendMode.Recent
-        ? point.RecentAverageMilliseconds
-        : point.AverageMilliseconds;
+        ? SuccessfulLatencyChartOnly ? point.RecentSuccessfulAverageMilliseconds : point.RecentAverageMilliseconds
+        : SuccessfulLatencyChartOnly ? point.SuccessfulAverageMilliseconds : point.AverageMilliseconds;
 
     private double LatencyP95(PressureTestPoint point) => LatencyMode == LatencyTrendMode.Recent
-        ? point.RecentP95Milliseconds
-        : point.P95Milliseconds;
+        ? SuccessfulLatencyChartOnly ? point.RecentSuccessfulP95Milliseconds : point.RecentP95Milliseconds
+        : SuccessfulLatencyChartOnly ? point.SuccessfulP95Milliseconds : point.P95Milliseconds;
 
     private double LatencyP99(PressureTestPoint point) => LatencyMode == LatencyTrendMode.Recent
-        ? point.RecentP99Milliseconds
-        : point.P99Milliseconds;
+        ? SuccessfulLatencyChartOnly ? point.RecentSuccessfulP99Milliseconds : point.RecentP99Milliseconds
+        : SuccessfulLatencyChartOnly ? point.SuccessfulP99Milliseconds : point.P99Milliseconds;
+
+    private string FormatLatencyTooltip(PressureTestPoint point, double value) => SuccessfulLatencyChartOnly
+        && (LatencyMode == LatencyTrendMode.Recent ? point.RecentSuccessfulRequests : point.SuccessfulRequests) == 0
+            ? "—"
+            : FormatMilliseconds(value);
 
     private string LatencyModeLabel => LatencyMode == LatencyTrendMode.Recent
         ? "最近 5 秒"

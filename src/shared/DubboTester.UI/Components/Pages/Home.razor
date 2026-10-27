@@ -5,13 +5,18 @@
 @using System.Text.Json
 @implements IDisposable
 @inject DubboSession Session
+@inject DubboCatalogCache CatalogCache
 @inject DubboCatalogPreloadService CatalogPreloader
 @inject PressureTestDraftStore PressureDraft
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@inject IClipboardService ClipboardService
+@inject ClientEnvironment ClientEnvironment
+@inject GlobalRuntimeSettings RuntimeSettings
 @inject IConfiguration Configuration
 
 <PageTitle>Dubbo Tester</PageTitle>
+<NavigationLock OnBeforeInternalNavigation="_ => PersistHomeRequestDraftAsync()" />
 
 <div class="tester-shell">
     <header class="topbar">
@@ -76,7 +81,8 @@
     </header>
 
     <main class="workspace @(HistoryCollapsed ? "history-collapsed" : null)">
-        <aside class="catalog-panel panel">
+        <aside class="catalog-panel panel" aria-busy="@IsCatalogBusy">
+            <div class="catalog-panel-body" inert="@IsCatalogBusy">
             <div class="panel-heading">
                 <div>
                     <h2>服务目录</h2>
@@ -186,6 +192,16 @@
                     }
                 </div>
             }
+            </div>
+            @if (IsCatalogBusy)
+            {
+                <div class="catalog-loading-overlay" role="status">
+                    <span class="spinner" aria-hidden="true"></span>
+                    <strong>正在加载服务目录</strong>
+                    <span>正在连接 @CatalogLoadingRegistryName，已等待 @CatalogLoadElapsedSeconds 秒</span>
+                    <small>可在设置中修改地址，保存后立即重新加载</small>
+                </div>
+            }
         </aside>
 
         <div class="catalog-resizer"
@@ -206,11 +222,11 @@
                     <span>主机地址</span>
                     <input placeholder="@(IsDirectProviderRoute ? "选择 Provider" : "根据注册中心自动选择")"
                            disabled="@(!IsDirectProviderRoute || IsProviderTesting)"
-                           @bind="Input.Host" />
+                           @bind="Input.Host" @bind:event="oninput" />
                 </div>
                 <input class="port-field" type="number" min="1" max="65535"
                        disabled="@(!IsDirectProviderRoute || IsProviderTesting)"
-                       @bind="Input.Port" />
+                       @bind="Input.Port" @bind:event="oninput" />
                 <button class="connect-button @ProviderTestClass"
                         title="连接主机"
                         aria-label="连接主机"
@@ -232,12 +248,12 @@
             <div class="endpoint-row">
                 <div class="endpoint-input service-endpoint">
                     <span>服务</span>
-                    <input placeholder="com.foo.DemoService" @bind="Input.ServiceName" />
+                    <input placeholder="com.foo.DemoService" @bind="Input.ServiceName" @bind:event="oninput" />
                 </div>
                 <div class="endpoint-separator">#</div>
                 <div class="endpoint-input method-endpoint">
                     <span>方法</span>
-                    <input placeholder="methodName" @bind="Input.MethodName" @bind:after="OnMethodInputChanged" />
+                    <input placeholder="methodName" @bind="Input.MethodName" @bind:event="oninput" @bind:after="OnMethodInputChanged" />
                 </div>
                 <button class="subtle-button signature-load" disabled="@(IsSignatureBusy || string.IsNullOrWhiteSpace(Input.MethodName))" @onclick="() => LoadSignaturesAsync(true)">
                     @(IsSignatureBusy ? "加载中…" : "读取签名")
@@ -321,11 +337,11 @@
                 <details class="advanced-options" data-dismiss-on-outside>
                     <summary>高级选项</summary>
                     <div class="advanced-popover">
-                        <label>服务版本<input @bind="Input.Version" placeholder="可选" /></label>
-                        <label>服务分组<input @bind="Input.Group" placeholder="可选" /></label>
+                        <label>服务版本<input @bind="Input.Version" @bind:event="oninput" placeholder="可选" /></label>
+                        <label>服务分组<input @bind="Input.Group" @bind:event="oninput" placeholder="可选" /></label>
                         <label class="wide">
                             <span>Attachments JSON <small>可选，随 RPC 请求传递，类似请求 Header</small></span>
-                            <textarea @bind="Input.AttachmentsJson" placeholder='{"traceId":"..."}'></textarea>
+                            <textarea @bind="Input.AttachmentsJson" @bind:event="oninput" placeholder='{"traceId":"..."}'></textarea>
                         </label>
                         @if (Signatures.Count > 0)
                         {
@@ -718,7 +734,7 @@
     <div class="modal-backdrop">
         <section class="settings-modal" @onclick:stopPropagation="true">
             <header>
-                <div><h2>连接与页面设置</h2><p>设置会保存在当前浏览器中</p></div>
+                <div><h2 class="settings-title-trigger" @onclick="SettingsTitleClicked">连接与页面设置</h2><p>@ClientEnvironment.SettingsStorageDescription</p></div>
                 <button class="modal-close" @onclick="CloseSettings">×</button>
             </header>
             <div class="settings-content">
@@ -780,7 +796,7 @@
                                min="@HistoryRetentionPolicy.MinimumLimit"
                                max="@HistoryRetentionPolicy.MaximumLimit"
                                @bind="SettingsDraft.HistoryLimit" />
-                        <small>默认 5000，最高 5000；自动清理时优先保留收藏记录</small>
+                        <small>默认 @HistoryRetentionPolicy.DefaultLimit，最高 @HistoryRetentionPolicy.MaximumLimit；自动清理时优先保留收藏记录</small>
                     </label>
                 </div>
                 <div class="setting-checks">
@@ -801,8 +817,37 @@
     </div>
 }
 
+@if (RuntimeSettingsVisible)
+{
+    <div class="modal-backdrop runtime-settings-backdrop" @onclick="CloseRuntimeSettings">
+        <section class="settings-modal runtime-settings-modal" role="dialog" aria-modal="true" aria-labelledby="runtime-settings-title" @onclick:stopPropagation="true">
+            <header>
+                <div><h2 id="runtime-settings-title">全局运行设置</h2><p>仅当前应用进程有效，不保存到本地；重启后恢复关闭。</p></div>
+                <button type="button" class="modal-close" aria-label="关闭全局运行设置" @onclick="CloseRuntimeSettings">×</button>
+            </header>
+            <div class="runtime-settings-content">
+                <label class="runtime-consumer-toggle">
+                    <input type="checkbox" role="switch" checked="@RuntimeSettings.ConsumerRegistrationEnabled" @onchange="ConsumerRegistrationChanged" />
+                    <span>启用消费者注册</span>
+                </label>
+                <p>开启后，使用注册中心调用过的接口会在后台注册消费者信息，应用名为 <code>@GlobalRuntimeSettings.ConsumerApplicationName</code>。关闭后后台注销，不影响 RPC 调用。</p>
+                <p>对主页、压测、MCP 和 HTTP 服务的注册中心调用统一生效。直连 Provider 不注册；注册与注销在后台同步，可能不会立即出现在注册中心。</p>
+                @if (!string.IsNullOrWhiteSpace(RuntimeSettingsError))
+                {
+                    <div class="runtime-settings-error" role="alert">@RuntimeSettingsError</div>
+                }
+            </div>
+            <footer><button type="button" class="primary" @onclick="CloseRuntimeSettings">关闭</button></footer>
+        </section>
+    </div>
+}
+
 @code {
-    private const string DubboNetVersion = "3.2.1";
+    private const string DubboNetVersion = "3.6.0";
+    private bool RuntimeSettingsVisible;
+    private string? RuntimeSettingsError;
+    private int SettingsTitleClickCount;
+    private DateTimeOffset LastSettingsTitleClick;
     private const string RequestJsonPlaceholder =
         "请输入 JSON 参数数组，例如：[\"text\", 123]\n"
         + "Class 对象直接按字段填写，例如：{\"name\": \"张三\", \"age\": 18}\n"
@@ -825,6 +870,9 @@
     private TesterSettings Settings { get; set; } = new();
     private TesterSettings SettingsDraft { get; set; } = new();
     private InvocationInput Input { get; set; } = new();
+    private readonly SemaphoreSlim HomeDraftSaveGate = new(1, 1);
+    private string? LastSavedHomeDraftJson;
+    private bool HomeDraftSaveFailed;
     private List<DubboServiceItem> Services { get; set; } = [];
     private List<MethodSignatureItem> Signatures { get; set; } = [];
     private IReadOnlyList<MethodParameterStructure> ParameterStructures { get; set; } = [];
@@ -858,6 +906,11 @@
     private AnchoredPopoverPlacement? HistoryDetailPlacement { get; set; }
     private bool IsCatalogBusy { get; set; }
     private CancellationTokenSource? CatalogLoadCancellation { get; set; }
+    private TesterSettings? DisplayedCatalogSettings { get; set; }
+    private DateTimeOffset CatalogLoadStartedAt { get; set; }
+    private string CatalogLoadingRegistryName { get; set; } = string.Empty;
+    private string CatalogLoadingMessage { get; set; } = string.Empty;
+    private int CatalogLoadElapsedSeconds => Math.Max(0, (int)(DateTimeOffset.UtcNow - CatalogLoadStartedAt).TotalSeconds);
     private CancellationTokenSource? CatalogPreloadTrackingCancellation { get; set; }
     private CatalogPreloadStatus? PreloadStatus { get; set; }
     private bool CatalogStopRequested { get; set; }
@@ -885,7 +938,9 @@
     private bool IsCatalogPreloading =>
         PreloadStatus?.State == CatalogPreloadState.Running;
     private bool IsCatalogActive => IsCatalogBusy || IsCatalogPreloading;
-    private string CatalogNotice => IsCatalogPreloading
+    private string CatalogNotice => IsCatalogBusy
+        ? $"{CatalogLoadingMessage}（已等待 {CatalogLoadElapsedSeconds} 秒）"
+        : IsCatalogPreloading
         ? CatalogStopRequested
             ? "正在结束后台方法预取，已完成的数据会保留…"
             : $"正在后台预取服务方法：{PreloadStatus!.LoadedServiceCount}/{PreloadStatus.TotalServiceCount}，"
@@ -948,7 +1003,13 @@
             // Client storage initialization below will retry on a later render.
         }
 
-        if (ClientStorageReady || ClientStorageLoading)
+        if (ClientStorageReady)
+        {
+            await PersistHomeRequestDraftAsync();
+            return;
+        }
+
+        if (ClientStorageLoading)
         {
             return;
         }
@@ -964,30 +1025,19 @@
         {
             string? settingsJson = await JS.InvokeAsync<string?>("dubboTester.load", SettingsStorageKey);
             string? historyCollapsed = await JS.InvokeAsync<string?>("dubboTester.load", HistoryCollapsedStorageKey);
-            bool hasPressureDraft = PressureDraft.TryGet(
-                out TesterSettings pressureSettings,
-                out InvocationInput pressureInvocation);
             bool settingsWereInvalid = false;
-            if (hasPressureDraft)
+            try
             {
-                Settings = pressureSettings;
+                Settings = string.IsNullOrWhiteSpace(settingsJson)
+                    ? new TesterSettings()
+                    : JsonSerializer.Deserialize<TesterSettings>(settingsJson, StorageJsonOptions)
+                        ?? new TesterSettings();
             }
-            else
+            catch (JsonException)
             {
-                try
-                {
-                    Settings = string.IsNullOrWhiteSpace(settingsJson)
-                        ? new TesterSettings()
-                        : JsonSerializer.Deserialize<TesterSettings>(settingsJson, StorageJsonOptions)
-                            ?? new TesterSettings();
-                }
-                catch (JsonException)
-                {
-                    Settings = new TesterSettings();
-                    settingsWereInvalid = true;
-                }
+                Settings = new TesterSettings();
+                settingsWereInvalid = true;
             }
-            if (hasPressureDraft) Input = pressureInvocation;
             HistoryCollapsed = bool.TryParse(historyCollapsed, out bool collapsed) && collapsed;
 
             Settings.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(Settings.HistoryLimit);
@@ -1058,21 +1108,22 @@
                 HistoryTotalCount = 0;
                 historyWasInvalid = true;
             }
+            await RestoreHomeRequestDraftAsync();
             SettingsDraft = Settings.Clone();
             ClientStorageReady = true;
             ClientStorageLoadAttempts = 0;
 
             if (settingsWereInvalid)
             {
-                SetWarning("浏览器中的连接设置无法解析，当前已使用默认值；只有主动保存时才会覆盖原数据");
+                SetWarning($"{ClientEnvironment.StorageLocation}的连接设置无法解析，当前已使用默认值；只有主动保存时才会覆盖原数据");
             }
             else if (historyWasInvalid)
             {
-                SetWarning("浏览器中的调用历史无法解析，原数据尚未被自动覆盖");
+                SetWarning($"{ClientEnvironment.StorageLocation}的调用历史无法解析，原数据尚未被自动覆盖");
             }
             else if (indexedDbError is not null)
             {
-                SetWarning($"IndexedDB 暂时不可用，调用历史和请求草稿仅在当前页面保留：{GetErrorMessage(indexedDbError)}");
+                SetWarning($"本地数据库暂时不可用，调用历史和请求草稿仅在当前界面保留：{GetErrorMessage(indexedDbError)}");
             }
 
             StateHasChanged();
@@ -1086,7 +1137,7 @@
             exception is JSDisconnectedException or OperationCanceledException)
         {
             ClientStorageLoadFailed = true;
-            SetWarning("页面连接已中断，本地设置和历史记录将在连接恢复后重新读取");
+            SetWarning("界面连接已中断，本地设置和历史记录将在连接恢复后重新读取");
         }
         catch (Exception exception)
         {
@@ -1119,55 +1170,75 @@
 
     private async Task RefreshCatalogAsync(bool forceRefresh = false)
     {
-        if (IsCatalogBusy) return;
+        CancelCatalogLoad();
         if (forceRefresh) CollapsedRegistryRootKeys.Clear();
         CancelCatalogPreloadTracking();
         PreloadStatus = null;
+        TesterSettings settings = Settings.Clone();
         var cancellation = new CancellationTokenSource();
+        CancellationToken token = cancellation.Token;
         CatalogLoadCancellation = cancellation;
         CatalogStopRequested = false;
         IsCatalogBusy = true;
-        SetNotice(forceRefresh
-            ? $"正在忽略缓存并重新读取 {Settings.RegistryDisplayName} 服务目录…"
-            : "正在加载服务目录（优先使用全局缓存）…");
+        CatalogLoadStartedAt = DateTimeOffset.UtcNow;
+        CatalogLoadingRegistryName = settings.RegistryDisplayName;
+        CatalogLoadingMessage = forceRefresh
+            ? $"正在连接 {settings.RegistryDisplayName} 并重新读取服务目录…"
+            : $"正在连接 {settings.RegistryDisplayName} 并加载服务目录（优先使用全局缓存）…";
+        SetNotice(CatalogLoadingMessage);
+        if (DisplayedCatalogSettings is not null && !IsSameCatalog(DisplayedCatalogSettings, settings))
+        {
+            Services = [];
+            SelectedService = null;
+            SelectedProvider = null;
+            CollapsedRegistryRootKeys.Clear();
+            ExpandedServiceKeys.Clear();
+            LoadingServiceKeys.Clear();
+        }
+        _ = TrackCatalogLoadElapsedAsync(cancellation, token);
         try
         {
-            DubboCatalogLoadResult result = await Session.LoadServicesAsync(
-                Settings,
-                forceRefresh,
-                cancellation.Token);
+            await InvokeAsync(StateHasChanged);
+            // 注册中心构造函数可能同步等待连接。每次加载使用独立会话并在后台运行，
+            // 确保改地址后不必等待旧连接释放，也不会阻塞 Blazor 的渲染与交互。
+            DubboCatalogLoadResult result = await Task.Run(async () =>
+            {
+                using var catalogSession = new DubboSession(CatalogCache);
+                return await catalogSession.LoadServicesAsync(settings, forceRefresh, token);
+            }, token).WaitAsync(token);
+            if (!IsCurrentCatalogLoad(cancellation)) return;
             Services = result.Services.ToList();
+            DisplayedCatalogSettings = settings;
             SelectedService = null;
             ExpandedServiceKeys.Clear();
             LoadingServiceKeys.Clear();
-            await InvokeAsync(StateHasChanged);
 
-            if (!Settings.OnlyRefreshServiceNames
+            if (!settings.OnlyRefreshServiceNames
                 && !result.HasAllServiceDetails
                 && !result.PreloadAttempted)
             {
-                PreloadStatus = CatalogPreloader.StartOrGet(Settings, result.Services);
-                StartCatalogPreloadTracking(Settings.Clone());
+                PreloadStatus = CatalogPreloader.StartOrGet(settings, result.Services);
+                StartCatalogPreloadTracking(settings);
             }
 
-            string source = result.FromCache ? "全局缓存" : Settings.RegistryDisplayName;
+            string source = result.FromCache ? "全局缓存" : settings.RegistryDisplayName;
             if (IsCatalogPreloading)
             {
                 SetNotice(
                     $"已从{source}加载 {Services.Count} 个服务，Provider 与方法正在后台预取");
             }
-            else if (!Settings.OnlyRefreshServiceNames && !result.HasAllServiceDetails)
+            else if (!settings.OnlyRefreshServiceNames && !result.HasAllServiceDetails)
             {
                 SetNotice(
-                    $"已从{source}加载 {Services.Count} 个服务；因 {Settings.RegistryDisplayName} 超时或连接波动，"
+                    $"已从{source}加载 {Services.Count} 个服务；因 {settings.RegistryDisplayName} 超时或连接波动，"
                     + $"仍有 {result.PendingServiceDetailCount} 个服务未预取，可展开服务重试或强制刷新");
             }
             else
             {
                 if (Services.Count == 0
-                    && RegistryRootPaths.Parse(Settings.RegistryRootPath).AutoDiscover)
+                    && RegistryRootPaths.Parse(settings.RegistryRootPath).AutoDiscover)
                 {
-                    SetNotice(Settings.RegistryType == RegistryCenterType.Nacos
+                    SetNotice(settings.RegistryType == RegistryCenterType.Nacos
                         ? "已扫描 Nacos 全部分组，但未发现可用的 Dubbo Provider"
                         : "已扫描 ZooKeeper 一级节点，但未发现包含可用 Provider 的 Dubbo 注册目录", true);
                     return;
@@ -1179,42 +1250,59 @@
                 SetNotice($"已就绪：从{source}加载 {Services.Count} 个 Dubbo 服务{roots}{details}");
             }
         }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            if (Services.Count > 0)
-            {
-                try
-                {
-                    DubboCatalogLoadResult cached = await Session.LoadServicesAsync(Settings);
-                    Services = cached.Services.ToList();
-                }
-                catch
-                {
-                    // 保留当前已经显示的目录；结束操作不应再触发新的错误提示。
-                }
-            }
-            SetNotice(Services.Count == 0
-                ? "已手动结束服务目录加载"
-                : $"已手动结束加载，已保留当前 {Services.Count} 个服务及成功预取的方法");
+            // 停止或被新请求取代时不再加载缓存，也不更新新请求的提示与目录。
         }
-        catch (Exception exception) { SetNotice($"加载注册中心失败：{GetErrorMessage(exception)}", true); }
+        catch (Exception exception)
+        {
+            if (IsCurrentCatalogLoad(cancellation))
+                SetNotice($"加载注册中心失败：{GetErrorMessage(exception)}", true);
+        }
         finally
         {
-            IsCatalogBusy = false;
-            if (ReferenceEquals(CatalogLoadCancellation, cancellation))
+            bool isCurrent = IsCurrentCatalogLoad(cancellation);
+            if (isCurrent)
             {
+                IsCatalogBusy = false;
                 CatalogLoadCancellation = null;
             }
+            cancellation.Cancel();
             cancellation.Dispose();
-
-            // 首次目录加载由 OnAfterRenderAsync 发起。该生命周期方法完成后 Blazor
-            // 不会自动再次渲染，因此必须在提示文案和忙碌状态都提交后显式刷新，
-            // 否则页面会一直停留在“正在加载”，直到下一次用户交互。
-            if (!IsDisposed)
+            if (isCurrent)
             {
                 await InvokeAsync(StateHasChanged);
             }
         }
+    }
+
+    private bool IsCurrentCatalogLoad(CancellationTokenSource cancellation) =>
+        !IsDisposed && ReferenceEquals(CatalogLoadCancellation, cancellation);
+
+    private void CancelCatalogLoad()
+    {
+        CancellationTokenSource? previous = CatalogLoadCancellation;
+        CatalogLoadCancellation = null;
+        IsCatalogBusy = false;
+        previous?.Cancel();
+    }
+
+    private async Task TrackCatalogLoadElapsedAsync(
+        CancellationTokenSource cancellation,
+        CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), token);
+                await InvokeAsync(() =>
+                {
+                    if (IsCurrentCatalogLoad(cancellation)) StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
 
     private void StopCatalogLoad()
@@ -1222,8 +1310,10 @@
         CatalogStopRequested = true;
         if (IsCatalogBusy && CatalogLoadCancellation is not null)
         {
-            SetNotice("正在结束服务目录加载，已完成的数据会保留…");
-            CatalogLoadCancellation.Cancel();
+            CancelCatalogLoad();
+            SetNotice(Services.Count == 0
+                ? "已手动结束服务目录加载"
+                : $"已手动结束加载，已保留当前 {Services.Count} 个服务及成功预取的方法");
             return;
         }
 
@@ -1258,7 +1348,9 @@
 
                 await InvokeAsync(() =>
                 {
-                    if (IsDisposed) return;
+                    if (IsDisposed || cancellation.IsCancellationRequested
+                        || !ReferenceEquals(CatalogPreloadTrackingCancellation, cancellation)
+                        || !IsSameCatalog(settings, Settings)) return;
                     PreloadStatus = status;
                     StateHasChanged();
                 });
@@ -1271,7 +1363,8 @@
                         cancellation.Token);
                     await InvokeAsync(() =>
                     {
-                        if (IsDisposed) return;
+                        if (IsDisposed || cancellation.IsCancellationRequested
+                            || !ReferenceEquals(CatalogPreloadTrackingCancellation, cancellation)) return;
                         if (IsSameCatalog(settings, Settings))
                         {
                             Services = cached.Services.ToList();
@@ -1307,7 +1400,9 @@
 
     private void CancelCatalogPreloadTracking()
     {
-        CatalogPreloadTrackingCancellation?.Cancel();
+        CancellationTokenSource? previous = CatalogPreloadTrackingCancellation;
+        CatalogPreloadTrackingCancellation = null;
+        previous?.Cancel();
     }
 
     private static bool IsSameCatalog(TesterSettings left, TesterSettings right) =>
@@ -1650,6 +1745,7 @@
     {
         if (IsInvoking) return;
         await PersistCurrentRequestDraftAsync();
+        await PersistHomeRequestDraftAsync();
         PressureDraft.Capture(Settings, Input);
         Navigation.NavigateTo("/pressure-test");
     }
@@ -2012,6 +2108,81 @@
         Input.RequestJson = args.Value?.ToString() ?? string.Empty;
     }
 
+    private async Task RestoreHomeRequestDraftAsync()
+    {
+        if (!IndexedDbAvailable) return;
+        try
+        {
+            string? json = await JS.InvokeAsync<string?>("dubboTester.indexedDb.loadHomeRequestDraft");
+            if (string.IsNullOrWhiteSpace(json)) return;
+
+            HomeRequestDraft? draft = JsonSerializer.Deserialize<HomeRequestDraft>(json, StorageJsonOptions);
+            InvocationInput input = draft?.Invocation ?? throw new JsonException("请求配置为空");
+            if (!Enum.IsDefined(input.Route) || input.Port is < 1 or > 65535
+                || input.ServiceName is null || input.MethodName is null || input.RegistryRootPath is null
+                || input.Host is null || input.RequestJson is null || input.JavaParameterTypes is null
+                || input.Version is null || input.Group is null || input.AttachmentsJson is null)
+            {
+                throw new JsonException("请求配置格式无效");
+            }
+
+            MethodSignatureItem? selected = draft.Signatures?.ElementAtOrDefault(draft.SelectedSignatureIndex);
+            Signatures = draft.Signatures?.Where(signature => signature is not null
+                && signature.ParameterTypes is not null && signature.ParameterTypes.All(type => type is not null)
+                && signature.ServiceName == input.ServiceName.Trim()
+                && signature.MethodName == input.MethodName.Trim()).ToList() ?? [];
+            SelectedSignatureIndex = selected is null ? 0 : Math.Max(0, Signatures.IndexOf(selected));
+            Input = input;
+            SignatureReadFailed = draft.SignatureReadFailed;
+            ParameterStructures = SelectedSignature is null ? [] : DubboTypeStructureBuilder.Build(SelectedSignature);
+            LastSavedHomeDraftJson = CaptureHomeRequestDraftJson();
+        }
+        catch (Exception exception) when (exception is JSException or JsonException or ArgumentException or NotSupportedException)
+        {
+            Input = new InvocationInput();
+            Signatures = [];
+            ParameterStructures = [];
+            SelectedSignatureIndex = 0;
+            SignatureReadFailed = false;
+            SetWarning($"读取上次请求配置失败，当前显示空白请求：{GetErrorMessage(exception)}");
+        }
+    }
+
+    private string CaptureHomeRequestDraftJson() => JsonSerializer.Serialize(new HomeRequestDraft
+    {
+        Invocation = Input.Clone(),
+        Signatures = Signatures.ToList(),
+        SelectedSignatureIndex = SelectedSignatureIndex,
+        SignatureReadFailed = SignatureReadFailed
+    }, StorageJsonOptions);
+
+    private async Task PersistHomeRequestDraftAsync()
+    {
+        if (!ClientStorageReady || !IndexedDbAvailable || IsDisposed) return;
+        await HomeDraftSaveGate.WaitAsync();
+        try
+        {
+            if (IsDisposed) return;
+            string json = CaptureHomeRequestDraftJson();
+            if (json == LastSavedHomeDraftJson) return;
+            await JS.InvokeVoidAsync("dubboTester.indexedDb.saveHomeRequestDraft", json);
+            LastSavedHomeDraftJson = json;
+            HomeDraftSaveFailed = false;
+        }
+        catch (Exception exception) when (exception is JSException or JsonException or OperationCanceledException)
+        {
+            if (!HomeDraftSaveFailed && !IsDisposed)
+            {
+                SetWarning($"保存当前请求配置失败，刷新后可能无法恢复：{GetErrorMessage(exception)}");
+            }
+            HomeDraftSaveFailed = true;
+        }
+        finally
+        {
+            HomeDraftSaveGate.Release();
+        }
+    }
+
     private async Task PersistCurrentRequestDraftAsync()
     {
         string? key = CurrentRequestDraftKey();
@@ -2030,7 +2201,7 @@
         {
             IndexedDbAvailable = false;
             ClientStorageLoadFailed = true;
-            SetWarning($"请求参数草稿未能写入 IndexedDB，已保留在当前页面内存中：{GetErrorMessage(exception)}");
+            SetWarning($"请求参数草稿未能写入本地数据库，已保留在当前界面内存中：{GetErrorMessage(exception)}");
         }
     }
 
@@ -2151,8 +2322,48 @@
         SettingsDraft.MetadataRootPath = string.Empty;
     }
 
-    private void OpenSettings() { SettingsDraft = Settings.Clone(); SettingsVisible = true; }
-    private void CloseSettings() => SettingsVisible = false;
+    private void OpenSettings()
+    {
+        SettingsDraft = Settings.Clone();
+        SettingsTitleClickCount = 0;
+        SettingsVisible = true;
+    }
+
+    private void CloseSettings()
+    {
+        SettingsTitleClickCount = 0;
+        SettingsVisible = false;
+    }
+
+    private void SettingsTitleClicked()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (now - LastSettingsTitleClick > TimeSpan.FromSeconds(2)) SettingsTitleClickCount = 0;
+        LastSettingsTitleClick = now;
+        if (++SettingsTitleClickCount < 5) return;
+        SettingsTitleClickCount = 0;
+        RuntimeSettingsError = null;
+        RuntimeSettingsVisible = true;
+    }
+
+    private void CloseRuntimeSettings()
+    {
+        RuntimeSettingsVisible = false;
+        SettingsTitleClickCount = 0;
+    }
+
+    private void ConsumerRegistrationChanged(ChangeEventArgs args)
+    {
+        try
+        {
+            RuntimeSettings.SetConsumerRegistration(args.Value is true);
+            RuntimeSettingsError = null;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            RuntimeSettingsError = $"消费者注册设置未生效：{GetErrorMessage(exception)}";
+        }
+    }
     private void OpenAbout() => AboutVisible = true;
     private void CloseAbout() => AboutVisible = false;
 
@@ -2170,6 +2381,7 @@
         SettingsDraft.HistoryLimit = HistoryRetentionPolicy.NormalizeLimit(SettingsDraft.HistoryLimit);
         Settings = SettingsDraft.Clone();
         SettingsVisible = false;
+        Task catalogLoad = RefreshCatalogAsync(false);
         await PersistSettingsAsync();
         if (IndexedDbAvailable)
         {
@@ -2186,7 +2398,7 @@
                 await FallBackFromIndexedDbAsync(exception);
             }
         }
-        await RefreshCatalogAsync(false);
+        await catalogLoad;
     }
 
     private async Task PersistSettingsAsync()
@@ -2286,7 +2498,7 @@
     {
         IndexedDbAvailable = false;
         ClientStorageLoadFailed = true;
-        SetWarning($"IndexedDB 写入失败，已回退到浏览器兼容存储：{GetErrorMessage(exception)}");
+        SetWarning($"本地数据库写入失败，已回退到本地兼容存储：{GetErrorMessage(exception)}");
         await PersistLegacyHistoryAsync();
     }
 
@@ -2305,7 +2517,18 @@
         }
     }
 
-    private async Task CopyResultAsync() { await JS.InvokeVoidAsync("dubboTester.copy", ResultText); SetNotice("响应已复制到剪贴板"); }
+    private async Task CopyResultAsync()
+    {
+        try
+        {
+            await ClipboardService.SetTextAsync(ResultText);
+            SetNotice("响应已复制到剪贴板");
+        }
+        catch (Exception)
+        {
+            SetNotice("复制失败，请手动选择并复制响应内容。", true);
+        }
+    }
     private async Task DownloadResultAsync() =>
         await JS.InvokeVoidAsync("dubboTester.download", $"dubbo-response-{DateTime.Now:yyyyMMdd-HHmmss}.json", ResultText);
 
@@ -2348,8 +2571,8 @@
     public void Dispose()
     {
         IsDisposed = true;
-        CatalogLoadCancellation?.Cancel();
-        CatalogPreloadTrackingCancellation?.Cancel();
+        CancelCatalogLoad();
+        CancelCatalogPreloadTracking();
     }
 
     private sealed class AnchoredPopoverPlacement

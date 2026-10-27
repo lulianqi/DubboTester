@@ -5,7 +5,8 @@
 @inject HttpGatewayService Gateway
 @inject IMcpEndpointAddressProvider EndpointAddress
 @inject NavigationManager Navigation
-@inject IJSRuntime JS
+@inject IClipboardService ClipboardService
+@inject LocalGatewayListenerStatus ListenerStatus
 
 <PageTitle>Dubbo HTTP 服务</PageTitle>
 
@@ -13,9 +14,10 @@
     <header class="http-header">
         <a class="back" href="/">← 返回主页</a>
         <div class="http-brand"><span>D</span><div><h1>Dubbo HTTP 服务</h1><p>全局后台服务 · HTTP JSON API</p></div></div>
-        <div class="http-state @(Active.Enabled ? "enabled" : "")"><i></i><strong>@(Active.Enabled ? "服务已启用" : "服务未启用")</strong><span>@EnabledCount 个接口已开启</span></div>
+        <div class="http-state @(ListenerStatus.IsUnavailable ? "unavailable" : Active.Enabled ? "enabled" : "")" role="@(ListenerStatus.IsUnavailable ? "alert" : null)"><i></i><strong>@(ListenerStatus.IsUnavailable ? ListenerStatus.Headline : Active.Enabled ? "服务已启用" : "服务未启用")</strong><span>@(ListenerStatus.IsUnavailable ? "MCP 与 HTTP 服务无法提供" : $"{EnabledCount} 个接口已开启")</span></div>
     </header>
-    <main class="http-content">
+    <LocalGatewayUnavailableOverlay Status="ListenerStatus" />
+    <main class="http-content" inert="@(Busy || Usage is not null || Record is not null || ListenerStatus.IsUnavailable)">
         <section class="http-card">
             <div class="card-heading settings-heading">
                 <button class="heading-toggle" @onclick="() => SettingsOpen = !SettingsOpen" aria-expanded="@SettingsOpen">@(SettingsOpen ? "▾" : "▸") <h2>全局配置</h2></button>
@@ -27,7 +29,7 @@
                     @if (!string.IsNullOrEmpty(EndpointCopyNotice)) { <span class="copy-feedback" role="status">@EndpointCopyNotice</span> }
                     @if (NoticeError && NoticeInSettings) { <span class="settings-error" role="alert" title="@Notice">@Notice</span> }
                 </div>
-                <label class="switch"><input type="checkbox" checked="@Active.Enabled" disabled="@Busy" @onchange="ToggleGlobalAsync" /><span></span>全局开关</label>
+                <label class="switch"><input type="checkbox" checked="@Active.Enabled" disabled="@(Busy || (!Active.Enabled && !HasValidAccessToken))" @onchange="ToggleGlobalAsync" /><span></span>全局开关</label>
             </div>
             @if (SettingsOpen)
             {
@@ -59,7 +61,14 @@
                     </div>
                     @if (Draft.AuthenticationEnabled)
                     {
-                        <label class="wide">访问令牌<div class="token-field"><input type="@(ShowToken ? "text" : "password")" readonly value="@Draft.AccessToken" /><button class="link" @onclick="() => ShowToken = !ShowToken">@(ShowToken ? "隐藏" : "显示")</button><button class="link" disabled="@SettingsLocked" @onclick="RegenerateTokenAsync">重新生成</button></div></label>
+                        <label class="wide">访问令牌
+                            <div class="token-field"><input id="http-access-token" aria-label="访问令牌" type="@(ShowToken ? "text" : "password")" disabled="@SettingsLocked" @bind="Draft.AccessToken" @bind:event="oninput" @onblur="SaveAccessTokenAsync" aria-invalid="@(!string.IsNullOrEmpty(TokenValidationError) ? "true" : null)" aria-describedby="@(string.IsNullOrEmpty(TokenValidationError) ? "http-token-help" : "http-token-help http-token-error")" autocomplete="new-password" spellcheck="false" /><button class="link" @onclick="() => ShowToken = !ShowToken">@(ShowToken ? "隐藏" : "显示")</button><button class="link" disabled="@SettingsLocked" @onclick="RegenerateTokenAsync">重新生成</button></div>
+                            <small id="http-token-help">全局开关关闭时可手动修改；开启鉴权时令牌不能为空。</small>
+                            @if (!string.IsNullOrEmpty(TokenValidationError))
+                            {
+                                <small id="http-token-error" class="field-validation-error" role="alert">@TokenValidationError</small>
+                            }
+                        </label>
                     }
                 </div>
             }
@@ -128,11 +137,11 @@
     </main>
 </div>
 
-@if (Busy)
+@if (Busy && !ListenerStatus.IsUnavailable)
 {
     <div class="http-backdrop loading"><section class="loading-card" role="status"><span class="spinner"></span><div class="loading-content"><strong>@LoadingStage</strong><p>@LoadingDescription</p>@if (DiscoveryProgress.TotalServices > 0) { <progress max="@DiscoveryProgress.TotalServices" value="@DiscoveryProgress.CompletedServices"></progress> }</div></section></div>
 }
-@if (Usage is not null)
+@if (Usage is not null && !ListenerStatus.IsUnavailable)
 {
     <div class="http-backdrop" @onclick="() => Usage = null"><section class="http-dialog" role="dialog" aria-modal="true" aria-labelledby="usage-title" @onclick:stopPropagation="true">
         <header><h2 id="usage-title">HTTP 调用方式</h2><button class="link" aria-label="关闭" @onclick="() => Usage = null">✕</button></header>
@@ -150,7 +159,7 @@
         </div>
     </section></div>
 }
-@if (Record is not null)
+@if (Record is not null && !ListenerStatus.IsUnavailable)
 {
     <div class="http-backdrop" @onclick="() => Record = null"><section class="http-dialog" role="dialog" aria-modal="true" aria-labelledby="record-title" @onclick:stopPropagation="true"><header><h2 id="record-title">HTTP 调用详情</h2><button class="link" aria-label="关闭" @onclick="() => Record = null">✕</button></header><div class="dialog-content"><strong>@FormatRecordTarget(Record)</strong><p>@Record.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss.fff") · HTTP @Record.StatusCode · @Record.ElapsedMs ms · 来源：@DisplayRemoteAddress(Record.RemoteAddress)</p><code class="url">@Record.Path</code><h3>请求</h3><pre>@FormatRecordBody(Record.Request, "（请求正文为空）")</pre><h3>响应</h3><pre>@FormatRecordBody(Record.Response, "（响应正文为空）")</pre></div></section></div>
 }
@@ -165,10 +174,12 @@
     private bool Busy, ShowToken, NoticeError, NoticeInSettings, SettingsOpen = true;
     private string Notice = "", Search = "", HistoryMethod = "", HistoryRequest = "", HistoryResponse = "", CopyNotice = "";
     private string EndpointCopyNotice = "";
+    private string TokenValidationError = "";
     private int HistoryPage = 1;
     private readonly CancellationTokenSource Lifetime = new();
     private bool IsNacos => Draft.Settings.RegistryType == RegistryCenterType.Nacos;
     private bool SettingsLocked => Active.Enabled || Busy;
+    private bool HasValidAccessToken => !Draft.AuthenticationEnabled || !string.IsNullOrWhiteSpace(Draft.AccessToken);
     private string Origin => new Uri(EndpointAddress.EndpointOverride ?? Navigation.BaseUri).GetLeftPart(UriPartial.Authority);
     private string ApiBase => Origin + "/api/dubbo/";
     private int EnabledCount => Methods.Count(IsMethodEnabled);
@@ -226,13 +237,15 @@
 
     protected override void OnInitialized()
     {
+        ListenerStatus.Changed += ListenerStatusChanged;
         Reload();
         Draft = Active.Clone();
         SettingsOpen = !Active.Enabled;
     }
+    private void ListenerStatusChanged() => _ = InvokeAsync(StateHasChanged);
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender) return;
+        if (!firstRender || ListenerStatus.IsUnavailable) return;
         await RunAsync(() => Gateway.InitializeAsync(Lifetime.Token), "HTTP 服务配置已加载。", noticeInSettings: true);
         _ = PollAsync();
     }
@@ -282,6 +295,7 @@
     private Task ToggleGlobalAsync(ChangeEventArgs args)
     {
         bool enabled = args.Value is true;
+        if (enabled && !ValidateAccessToken()) return Task.CompletedTask;
         var config = enabled ? SettingsCandidate(true) : Gateway.GetConfiguration();
         config.Enabled = enabled;
         return RunAsync(() => Gateway.SaveConfigurationAsync(config, cancellationToken: Lifetime.Token), enabled ? "HTTP 服务已启用。" : "HTTP 服务已关闭。", reloadDraft: true, noticeInSettings: true);
@@ -308,13 +322,25 @@
     private async Task RegenerateTokenAsync()
     {
         Draft.AccessToken = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+        TokenValidationError = "";
         await AutoSaveConfigurationAsync();
     }
+    private bool ValidateAccessToken()
+    {
+        TokenValidationError = HasValidAccessToken
+            ? ""
+            : "访问令牌不能为空，请手动填写，或点击“重新生成”。";
+        return HasValidAccessToken;
+    }
+    private Task SaveAccessTokenAsync() => SettingsLocked
+        ? Task.CompletedTask
+        : AutoSaveConfigurationAsync();
     private async Task AutoSaveConfigurationAsync()
     {
         if (Active.Enabled || Busy) return;
         Notice = "";
         NoticeInSettings = true;
+        if (!ValidateAccessToken()) return;
         try
         {
             await Gateway.SaveConfigurationAsync(SettingsCandidate(false), cancellationToken: Lifetime.Token);
@@ -343,13 +369,13 @@
     private static string ShellQuote(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
     private async Task CopyEndpointAsync()
     {
-        try { await JS.InvokeVoidAsync("dubboTester.copy", ApiBase); EndpointCopyNotice = "HTTP Endpoint 已复制。"; }
-        catch (JSException) { EndpointCopyNotice = "浏览器未允许复制，请手动选择并复制 Endpoint。"; }
+        try { await ClipboardService.SetTextAsync(ApiBase); EndpointCopyNotice = "HTTP Endpoint 已复制。"; }
+        catch (Exception) { EndpointCopyNotice = "复制失败，请手动选择并复制 Endpoint。"; }
     }
     private async Task CopyAsync(string value)
     {
-        try { await JS.InvokeVoidAsync("dubboTester.copy", value); CopyNotice = "已复制，可直接粘贴到终端执行。"; }
-        catch (JSException) { CopyNotice = "浏览器未允许复制，请手动选择并复制命令。"; }
+        try { await ClipboardService.SetTextAsync(value); CopyNotice = "已复制，可直接粘贴到终端执行。"; }
+        catch (Exception) { CopyNotice = "复制失败，请手动选择并复制命令。"; }
     }
-    public void Dispose() { Lifetime.Cancel(); Lifetime.Dispose(); }
+    public void Dispose() { ListenerStatus.Changed -= ListenerStatusChanged; Lifetime.Cancel(); Lifetime.Dispose(); }
 }

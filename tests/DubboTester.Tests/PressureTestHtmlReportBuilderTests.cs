@@ -1,3 +1,4 @@
+using DubboNet.Clients;
 using DubboTester.Models;
 using DubboTester.Services;
 using System.Text;
@@ -20,7 +21,11 @@ public sealed class PressureTestHtmlReportBuilderTests
             StepUserCount = 2,
             RequestIntervalMs = 50,
             RecordRequestResponse = true,
-            Settings = new TesterSettings { ZooKeeperAddress = "127.0.0.1:2181" },
+            Settings = new TesterSettings
+            {
+                ZooKeeperAddress = "127.0.0.1:2181",
+                LoadBalanceMode = DubboClient.LoadBalanceMode.RoundRobin
+            },
             Invocation = new InvocationInput
             {
                 ServiceName = "com.foo.<script>alert(1)</script>",
@@ -80,6 +85,8 @@ public sealed class PressureTestHtmlReportBuilderTests
         Assert.Contains("125 ms", html);
         Assert.Contains("3 s", html);
         Assert.Contains("阶梯用户数", html);
+        Assert.Contains("负载均衡模式", html);
+        Assert.Contains("RoundRobin", html);
         Assert.Contains("最高 TPS", html);
         Assert.Contains("10 秒滑动平均", html);
         Assert.Contains("即时（最近 5 秒）", html);

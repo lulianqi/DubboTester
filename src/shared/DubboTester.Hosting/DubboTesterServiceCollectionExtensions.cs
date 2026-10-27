@@ -11,6 +11,7 @@ public static class DubboTesterServiceCollectionExtensions
     public static IServiceCollection AddDubboTesterApplication(
         this IServiceCollection services)
     {
+        services.AddSingleton<GlobalRuntimeSettings>();
         services.AddSingleton<DubboCatalogCache>();
         services.AddSingleton<DubboCatalogPreloadService>();
         services.AddSingleton<McpGatewayService>();

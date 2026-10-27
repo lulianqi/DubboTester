@@ -1,0 +1,15 @@
+@if (Status.IsUnavailable)
+{
+    <div class="gateway-port-backdrop" role="alertdialog" aria-modal="true" aria-labelledby="gateway-port-title" aria-describedby="gateway-port-description">
+        <div class="gateway-port-card">
+            <span class="gateway-port-icon" aria-hidden="true">!</span>
+            <h2 id="gateway-port-title">无法提供 MCP / HTTP 服务</h2>
+            <p id="gateway-port-description">@Status.Headline。@Status.Guidance</p>
+            <small>重启前，本页的配置和调用功能不可用。</small>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public LocalGatewayListenerStatus Status { get; set; } = default!;
+}

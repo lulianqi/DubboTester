@@ -359,7 +359,7 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         return current.Message;
     }
 
-    private sealed class RunState(
+    internal sealed class RunState(
         int totalRequests,
         int durationLimitSeconds,
         bool recordsRequestResponse,
@@ -372,10 +372,12 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         private readonly Stopwatch _stopwatch = new();
         private readonly List<double> _elapsed = [];
         private readonly List<double> _percentileSample = [];
+        private readonly List<double> _successfulPercentileSample = [];
         private readonly List<PressureTestPoint> _timeline = [];
         private readonly List<PressureTestRequestResult> _requestResults = [];
         private readonly PressureTestPayloadRetention _payloadRetention = new(MaximumRetainedPayloadBytes);
         private readonly PressureTestThroughputWindow _throughputWindow = new(5);
+        private readonly PressureTestThroughputWindow _successfulThroughputWindow = new(5);
         private readonly PressureTestLatencyWindow _recentLatencyWindow = new(5);
         private readonly PressureTestDistributionAccumulator _distribution =
             new(slowRequestThresholdMilliseconds);
@@ -384,6 +386,7 @@ public sealed class DubboPressureTestRunner(DubboSession session)
         private int _activeUsers;
         private DateTimeOffset _startedAt;
         private double _elapsedTotal;
+        private double _successfulElapsedTotal;
         private double _minimum = double.MaxValue;
         private double _maximum;
 
@@ -421,7 +424,7 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                 double completedAtSeconds = _stopwatch.Elapsed.TotalSeconds;
                 _elapsed.Add(elapsed);
                 _elapsedTotal += elapsed;
-                _recentLatencyWindow.Add(completedAtSeconds, elapsed);
+                _recentLatencyWindow.Add(completedAtSeconds, elapsed, success);
                 _minimum = Math.Min(_minimum, elapsed);
                 _maximum = Math.Max(_maximum, elapsed);
                 if (_percentileSample.Count < MaximumLivePercentileSamples)
@@ -439,6 +442,19 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                 if (success)
                 {
                     _successCount++;
+                    _successfulElapsedTotal += elapsed;
+                    if (_successfulPercentileSample.Count < MaximumLivePercentileSamples)
+                    {
+                        _successfulPercentileSample.Add(elapsed);
+                    }
+                    else
+                    {
+                        long replacementIndex = Random.Shared.NextInt64(_successCount);
+                        if (replacementIndex < MaximumLivePercentileSamples)
+                        {
+                            _successfulPercentileSample[(int)replacementIndex] = elapsed;
+                        }
+                    }
                 }
                 else
                 {
@@ -480,6 +496,15 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                 double average = completed == 0 ? 0 : _elapsedTotal / completed;
                 double p95 = Percentile(sorted, .95);
                 double p99 = Percentile(sorted, .99);
+                IEnumerable<double> successfulPercentileSource = isRunning
+                    ? _successfulPercentileSample
+                    : _requestResults.Where(result => result.Success).Select(result => result.ElapsedMilliseconds);
+                double[] successfulSorted = _successCount == completed
+                    ? sorted
+                    : successfulPercentileSource.Order().ToArray();
+                double successfulAverage = _successCount == 0 ? 0 : _successfulElapsedTotal / _successCount;
+                double successfulP95 = Percentile(successfulSorted, .95);
+                double successfulP99 = Percentile(successfulSorted, .99);
                 PressureTestLatencyStatistics recentLatency =
                     _recentLatencyWindow.GetStatistics(elapsedSeconds);
                 double tps = elapsedSeconds <= 0 ? 0 : completed / elapsedSeconds;
@@ -499,6 +524,8 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                 {
                     PressureTestThroughputSample throughput =
                         _throughputWindow.AddSample(elapsedSeconds, completed);
+                    PressureTestThroughputSample successfulThroughput =
+                        _successfulThroughputWindow.AddSample(elapsedSeconds, _successCount);
                     _timeline.Add(new PressureTestPoint(
                         elapsedSeconds,
                         throughput.RawTps,
@@ -510,7 +537,16 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                         completed,
                         recentLatency.AverageMilliseconds,
                         recentLatency.P95Milliseconds,
-                        recentLatency.P99Milliseconds));
+                        recentLatency.P99Milliseconds,
+                        _successCount,
+                        successfulThroughput.RawTps,
+                        recentLatency.SuccessfulAverageMilliseconds,
+                        recentLatency.SuccessfulRequests,
+                        successfulAverage,
+                        successfulP95,
+                        successfulP99,
+                        recentLatency.SuccessfulP95Milliseconds,
+                        recentLatency.SuccessfulP99Milliseconds));
                     if (_timeline.Count > MaximumTimelinePoints) _timeline.RemoveAt(0);
                 }
 
@@ -525,6 +561,7 @@ public sealed class DubboPressureTestRunner(DubboSession session)
                     ActiveUsers = _activeUsers,
                     ElapsedSeconds = elapsedSeconds,
                     AverageMilliseconds = average,
+                    SuccessfulAverageMilliseconds = successfulAverage,
                     Tps = tps,
                     PeakTps = _throughputWindow.PeakSmoothedTps,
                     SuccessRate = completed == 0 ? 0 : _successCount * 100d / completed,

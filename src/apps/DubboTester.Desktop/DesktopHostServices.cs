@@ -36,6 +36,7 @@ internal sealed class DesktopMcpEndpointAddressProvider : IMcpEndpointAddressPro
 
 internal static class DesktopMcpEndpoint
 {
+    public const int Port = 5154;
     public const string Address = "http://localhost:5154/mcp";
     public static readonly string[] ListenerAddresses =
     [

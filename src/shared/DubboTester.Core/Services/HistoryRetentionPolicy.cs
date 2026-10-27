@@ -5,7 +5,7 @@ namespace DubboTester.Services;
 public static class HistoryRetentionPolicy
 {
     public const int DefaultLimit = 5_000;
-    public const int MaximumLimit = 5_000;
+    public const int MaximumLimit = 50_000;
     public const int MinimumLimit = 1;
 
     public static int NormalizeLimit(int configuredLimit) =>

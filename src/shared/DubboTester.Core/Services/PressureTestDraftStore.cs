@@ -15,10 +15,13 @@ public sealed class PressureTestDraftStore
         _invocation = invocation.Clone();
     }
 
-    public bool TryGet(out TesterSettings settings, out InvocationInput invocation)
+    public bool TryTake(out TesterSettings settings, out InvocationInput invocation)
     {
         settings = _settings?.Clone() ?? new TesterSettings();
         invocation = _invocation?.Clone() ?? new InvocationInput();
-        return _settings is not null && _invocation is not null;
+        bool available = _settings is not null && _invocation is not null;
+        _settings = null;
+        _invocation = null;
+        return available;
     }
 }

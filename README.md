@@ -22,14 +22,14 @@
 ## 技术与调用方式
 
 - .NET 10 / Blazor Interactive Server
-- NuGet `DubboNet` **3.2.1**
+- NuGet `DubboNet` **3.6.0**
 - 支持 ZooKeeper 和 Nacos 注册中心，用于服务发现和元数据读取
 - 业务请求通过 Dubbo2 TCP + Hessian2 `$invoke` 泛化调用发送，不使用 Telnet `invoke`
 - 可选注册中心负载均衡调用，或指定 Provider 直连调用
 
 `DubboNet` 在元数据中心不可用时可能在包内部用 Provider Telnet `ls -l` 读取一次方法签名；这只用于签名发现，不用于业务调用。使用界面中的精确 Java 参数类型即可跳过签名自动发现。
 
-DubboNet 3.2.1 可读取元数据中心 `FullServiceDefinition.types`。当方法包含 POJO、集合、数组、枚举等结构型参数时，可以在“Java 签名”区域查看参数结构，并按该结构生成可编辑的请求 JSON 示例。类型结构仅由元数据中心提供；Telnet 签名来源不包含这部分信息。
+DubboNet 可读取元数据中心 `FullServiceDefinition.types`。当方法包含 POJO、集合、数组、枚举等结构型参数时，可以在“Java 签名”区域查看参数结构，并按该结构生成可编辑的请求 JSON 示例。类型结构仅由元数据中心提供；Telnet 签名来源不包含这部分信息。
 
 Dubbo 2.7.x 可能把 `String`、`Long`、`Integer` 等 JDK 类型的内部实现字段也写入 `properties`，例如 `String.value`、`String.hash`。DubboTester 会按字段声明类型识别这些标量/包装类型，不会将其内部字段当作业务请求字段；业务 POJO 自身声明的同名字段仍会正常保留。
 
@@ -41,6 +41,14 @@ dotnet run --project src/apps/DubboTester.Web/DubboTester.csproj
 ```
 
 默认开发地址见 `Properties/launchSettings.json`。首次打开后，在设置里选择 ZooKeeper 或 Nacos、填写连接地址并刷新服务目录。
+
+### 临时全局运行设置
+
+在“连接与页面设置”弹窗中，连续点击标题 5 次（相邻点击间隔不超过 2 秒），可打开隐藏的全局运行设置，启用或关闭消费者注册。
+
+消费者注册默认关闭，仅在当前应用进程中生效，不写入本地配置；刷新页面不重置，重启桌面应用或 Web/Docker 服务后恢复关闭。开关统一作用于主页、压测、MCP 和 HTTP 服务使用的注册中心客户端，应用名为 `DubboTester`，直连 Provider 不注册。Web 版同一服务进程中的所有用户共享此设置。
+
+启用后，仍存活客户端调用过的接口会在后台注册；仅加载服务目录不会注册。关闭后在后台注销，不影响 RPC 调用。注册中心需要允许写入消费者信息，网络注册与注销可能有延迟。
 
 ### 浏览器本地存储
 
@@ -94,8 +102,7 @@ Windows 使用同一个项目，目标框架会自动切换为
 `net10.0-windows10.0.19041.0`，构建机安装 `maui-windows` workload 即可。桌面配置
 保存在操作系统应用数据目录，和 Web/Docker 的 `App_Data` 相互独立。
 
-仓库中的 `Build desktop apps` GitHub Actions 工作流会在 `release1.3` 分支更新、
-相关 Pull Request 或手动触发时分别构建：
+仓库中的 `Build desktop apps` GitHub Actions 工作流会在 GitHub Release 发布或手动触发时分别构建：
 
 - 同时支持 Intel 与 Apple Silicon、经过架构校验和 ad-hoc 签名的 macOS `.app` 压缩包。
 - 包含 .NET 与 Windows App SDK 运行组件的 Windows x64 免安装压缩包。
@@ -105,14 +112,15 @@ macOS 的 ad-hoc 签名产物用于开发验证。面向普通用户正式发布
 MSIX 打包。
 
 普通提交和手动运行产生的平台 ZIP 会作为单层 Actions artifact 保留 14 天，可以直接
-下载和解压。推送与桌面项目
-`ApplicationDisplayVersion` 基础版本一致的标签（例如 `v2.1.0`）后，工作流会自动汇总
-两个平台的压缩包、生成 `SHA256SUMS.txt`，并创建对应的 GitHub Release。带连字符的标签
-（例如 `v2.1.0-beta.1`）会发布为预发行版本，其他 `v*` 标签会标记为最新版。
+下载和解压。在 GitHub 创建并发布 Release（标签基础版本须与桌面项目
+`ApplicationDisplayVersion` 一致，例如 `2.1.1` 或 `v2.1.1`）后，工作流会自动汇总
+两个平台的压缩包、生成 `SHA256SUMS.txt`，并上传到该 Release。Docker 发布工作流也会同时触发。
+手动构建时可填写已有的 `release_tag` 上传到指定 Release；留空则仅生成 Actions artifact。
 
 ```bash
-git tag -a v2.1.0 -m "DubboTester v2.1.0"
-git push origin v2.1.0
+git tag -a 2.1.1 -m "DubboTester 2.1.1"
+git push origin 2.1.1
+gh release create 2.1.1 --verify-tag --title "DubboTester 2.1.1" --generate-notes
 ```
 
 ### Docker
@@ -193,4 +201,4 @@ MCP 使用官方 .NET SDK 的 Streamable HTTP 传输。鉴权默认启用，客�
 
 `arguments` 必须按 Java 参数顺序填写；无参数方法使用 `[]`，单个数组参数使用 `[[1, 2]]`。`attachments` 可省略，仅支持字符串键值对，不能覆盖服务、版本或分组等路由参数。请求正文上限为 1 MB。响应包含 `success`、`data`、`error` 和 `elapsedMs`；成功为 HTTP 200，参数错误 400、鉴权失败 401、接口未开启或不存在 404、不支持的 HTTP 方法 405、路由有歧义 409、正文过大 413、内容类型不支持 415、Dubbo 调用失败 502、全局服务关闭 503。
 
-全局开关默认关闭，Bearer Token 鉴权默认开启；请在对外访问时保留鉴权并使用 HTTPS，仅将调用路径暴露给可信客户端，不要公开管理页面。网页端使用当前站点地址；桌面端共用本机 5154 监听端口，仍仅允许本机访问。配置持久化到 `App_Data/http-config.json`，调用记录仅在内存中保存，可按服务/方法、请求和响应筛选，每页 50 条；过长记录会截断并标注，不影响实际 HTTP 响应。
+全局开关默认关闭，新建 HTTP 配置的 Bearer Token 鉴权默认关闭，已有配置保持原值；对外访问时建议启用鉴权并使用 HTTPS，仅将调用路径暴露给可信客户端，不要公开管理页面。网页端使用当前站点地址；桌面端共用本机 5154 监听端口，仍仅允许本机访问。配置持久化到 `App_Data/http-config.json`，调用记录仅在内存中保存，可按服务/方法、请求和响应筛选，每页 50 条；过长记录会截断并标注，不影响实际 HTTP 响应。

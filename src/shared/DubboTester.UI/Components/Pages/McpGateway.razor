@@ -5,11 +5,13 @@
 @inject IMcpEndpointAddressProvider EndpointAddressProvider
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@inject IClipboardService ClipboardService
+@inject LocalGatewayListenerStatus ListenerStatus
 
 <PageTitle>Dubbo MCP 服务</PageTitle>
 
 <div class="mcp-shell" @onclick="CloseConfiguredToolFilter">
-    @if (IsEnablingGateway)
+    @if (IsEnablingGateway && !ListenerStatus.IsUnavailable)
     {
         <div class="mcp-connection-loading-backdrop"
              role="alertdialog"
@@ -30,14 +32,15 @@
     <header class="mcp-header">
         <button class="mcp-back" @onclick='() => Navigation.NavigateTo("/")'>← 返回主页</button>
         <div class="mcp-brand"><span>D</span><div><h1>Dubbo MCP 服务</h1><p>全局后台服务 · Streamable HTTP</p></div></div>
-        <div class="mcp-state @(IsGatewayEnabled ? "enabled" : null)">
+        <div class="mcp-state @(ListenerStatus.IsUnavailable ? "unavailable" : IsGatewayEnabled ? "enabled" : null)" role="@(ListenerStatus.IsUnavailable ? "alert" : null)">
             <i></i>
-            <strong>@(IsGatewayEnabled ? "服务已启用" : "服务未启用")</strong>
-            <span>@AvailableMethodCount 个可用工具</span>
+            <strong>@(ListenerStatus.IsUnavailable ? ListenerStatus.Headline : IsGatewayEnabled ? "服务已启用" : "服务未启用")</strong>
+            <span>@(ListenerStatus.IsUnavailable ? "MCP 与 HTTP 服务无法提供" : $"{AvailableMethodCount} 个可用工具")</span>
         </div>
     </header>
 
-    <main class="mcp-content">
+    <LocalGatewayUnavailableOverlay Status="ListenerStatus" />
+    <main class="mcp-content" inert="@ListenerStatus.IsUnavailable">
         <section class="mcp-card settings-card">
             <div class="mcp-card-heading settings-heading expandable-heading" @onclick="ToggleGlobalSettings">
                 <button type="button" class="settings-collapse-button" aria-expanded="@GlobalSettingsExpanded" @onclick="ToggleGlobalSettings" @onclick:stopPropagation="true">
@@ -66,30 +69,30 @@
                     <div class="span-two registry-connection-field">
                         <div class="registry-connection-heading">
                             <div class="registry-type-switch" role="group" aria-label="注册中心类型">
-                                <button type="button" class="@(Config.RegistryType == RegistryCenterType.ZooKeeper ? "active" : null)" aria-pressed="@(Config.RegistryType == RegistryCenterType.ZooKeeper)" disabled="@(Config.Enabled || IsSaving)" @onclick="() => RegistryTypeChangedAsync(RegistryCenterType.ZooKeeper)">ZooKeeper</button>
-                                <button type="button" class="@(Config.RegistryType == RegistryCenterType.Nacos ? "active" : null)" aria-pressed="@(Config.RegistryType == RegistryCenterType.Nacos)" disabled="@(Config.Enabled || IsSaving)" @onclick="() => RegistryTypeChangedAsync(RegistryCenterType.Nacos)">Nacos</button>
+                                <button type="button" class="@(Config.RegistryType == RegistryCenterType.ZooKeeper ? "active" : null)" aria-pressed="@(Config.RegistryType == RegistryCenterType.ZooKeeper)" disabled="@AreGlobalSettingsLocked" @onclick="() => RegistryTypeChangedAsync(RegistryCenterType.ZooKeeper)">ZooKeeper</button>
+                                <button type="button" class="@(Config.RegistryType == RegistryCenterType.Nacos ? "active" : null)" aria-pressed="@(Config.RegistryType == RegistryCenterType.Nacos)" disabled="@AreGlobalSettingsLocked" @onclick="() => RegistryTypeChangedAsync(RegistryCenterType.Nacos)">Nacos</button>
                             </div>
                             <label for="mcp-registry-address">@Config.RegistryDisplayName 连接地址<b>*</b></label>
                         </div>
-                        <input id="mcp-registry-address" disabled="@(Config.Enabled || IsSaving)" @bind="Config.RegistryAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="@RegistryAddressPlaceholder" />
+                        <input id="mcp-registry-address" disabled="@AreGlobalSettingsLocked" @bind="Config.RegistryAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="@RegistryAddressPlaceholder" />
                         <small>@(Config.RegistryType == RegistryCenterType.Nacos ? "支持 namespace、username、password、accessKey、secretKey 参数；可省略 nacos:// 前缀" : "支持 ZooKeeper 集群地址及 digest 认证。")</small>
                     </div>
-                    <label>注册目录<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.RegistryRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="@RegistryRootPlaceholder" /><small>@RegistryRootHelp</small></label>
-                    <label>元数据中心地址（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataCenterAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="@MetadataAddressPlaceholder" /></label>
-                    <label>元数据目录（选填）<input disabled="@(Config.Enabled || IsSaving)" @bind="Config.MetadataRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="@MetadataRootPlaceholder" /></label>
-                    <label>调用超时（ms）<input disabled="@(Config.Enabled || IsSaving)" type="number" min="100" max="600000" @bind="Config.RequestTimeoutMs" @bind:after="AutoSaveConfigurationAsync" /></label>
-                    <label>内存记录上限<input disabled="@(Config.Enabled || IsSaving)" type="number" min="10" max="5000" @bind="Config.HistoryLimit" @bind:after="AutoSaveConfigurationAsync" /></label>
+                    <label>注册目录<input disabled="@AreGlobalSettingsLocked" @bind="Config.RegistryRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="@RegistryRootPlaceholder" /><small>@RegistryRootHelp</small></label>
+                    <label>元数据中心地址（选填）<input disabled="@AreGlobalSettingsLocked" @bind="Config.MetadataCenterAddress" @bind:after="AutoSaveConfigurationAsync" placeholder="@MetadataAddressPlaceholder" /></label>
+                    <label>元数据目录（选填）<input disabled="@AreGlobalSettingsLocked" @bind="Config.MetadataRootPath" @bind:after="AutoSaveConfigurationAsync" placeholder="@MetadataRootPlaceholder" /></label>
+                    <label>调用超时（ms）<input disabled="@AreGlobalSettingsLocked" type="number" min="100" max="600000" @bind="Config.RequestTimeoutMs" @bind:after="AutoSaveConfigurationAsync" /></label>
+                    <label>内存记录上限<input disabled="@AreGlobalSettingsLocked" type="number" min="10" max="5000" @bind="Config.HistoryLimit" @bind:after="AutoSaveConfigurationAsync" /></label>
                     <label class="span-two endpoint-setting">MCP Endpoint
                         <div class="copy-field"><input readonly value="@Endpoint" /><button @onclick="() => CopyAsync(Endpoint)">复制</button></div>
                     </label>
-                    <div class="auth-setting span-two @((Config.Enabled || IsSaving) ? "disabled-setting" : null)">
-                        <label class="mcp-switch"><input type="checkbox" disabled="@(Config.Enabled || IsSaving)" @bind="Config.AuthenticationEnabled" @bind:after="AutoSaveConfigurationAsync" /><span></span>启用鉴权</label>
+                    <div class="auth-setting span-two @(AreGlobalSettingsLocked ? "disabled-setting" : null)">
+                        <label class="mcp-switch"><input type="checkbox" disabled="@AreGlobalSettingsLocked" @bind="Config.AuthenticationEnabled" @bind:after="AutoSaveConfigurationAsync" /><span></span>启用鉴权</label>
                         <small>@(Config.AuthenticationEnabled ? "启用后，远程 Agent 必须携带 Bearer 访问令牌。" : "鉴权已关闭，任何能访问 MCP Endpoint 的客户端都可以直接调用已启用工具。")</small>
                     </div>
                     @if (Config.AuthenticationEnabled)
                     {
                         <label class="span-two">Bearer 访问令牌
-                            <div class="copy-field"><input type="@(ShowToken ? "text" : "password")" readonly value="@Config.AccessToken" /><button @onclick="() => ShowToken = !ShowToken">@(ShowToken ? "隐藏" : "显示")</button><button @onclick="() => CopyAsync(Config.AccessToken)">复制</button><button disabled="@(Config.Enabled || IsSaving)" class="danger-link" @onclick="RegenerateTokenAsync">重新生成</button></div>
+                            <div class="copy-field"><input type="@(ShowToken ? "text" : "password")" readonly value="@Config.AccessToken" /><button @onclick="() => ShowToken = !ShowToken">@(ShowToken ? "隐藏" : "显示")</button><button @onclick="() => CopyAsync(Config.AccessToken)">复制</button><button disabled="@AreGlobalSettingsLocked" class="danger-link" @onclick="RegenerateTokenAsync">重新生成</button></div>
                             <small>远程 Agent 连接时设置请求头：Authorization: Bearer &lt;令牌&gt;</small>
                         </label>
                     }
@@ -677,6 +680,9 @@
     private const int McpHistoryPageSize = 100;
     private const int ConfiguredToolsPageSize = 20;
     private readonly SemaphoreSlim _configurationSaveGate = new(1, 1);
+    private long ConfigurationEditVersion { get; set; }
+    private int PendingConfigurationSaves { get; set; }
+    private bool HasUnsavedConfigurationChanges { get; set; }
     private McpGatewayConfiguration Config { get; set; } = new();
     private List<DubboServiceItem> Services { get; set; } = [];
     private HashSet<string> ExpandedRegistryRoots { get; } = new(StringComparer.Ordinal);
@@ -704,6 +710,7 @@
     private bool NoticeIsWarning { get; set; }
     private bool IsScanning { get; set; }
     private bool IsSaving { get; set; }
+    private bool AreGlobalSettingsLocked => Config.Enabled || IsTogglingGateway;
     private bool IsEnablingGateway { get; set; }
     private bool IsTogglingGateway { get; set; }
     private bool IsValidatingTools { get; set; }
@@ -843,7 +850,7 @@
 
     private async Task RegistryTypeChangedAsync(RegistryCenterType type)
     {
-        if (Config.Enabled || IsSaving || Config.RegistryType == type) return;
+        if (AreGlobalSettingsLocked || Config.RegistryType == type) return;
         Config.RegistryType = type;
         // A ZooKeeper endpoint is not a valid Nacos endpoint (and vice versa).
         // Clear protocol-specific values before autosaving so the old address is
@@ -874,14 +881,17 @@
 
     protected override async Task OnInitializedAsync()
     {
+        ListenerStatus.Changed += ListenerStatusChanged;
         Config = Gateway.GetConfiguration();
         RefreshMcpHistoryPage();
         Gateway.Changed += GatewayChanged;
-        if (!string.IsNullOrWhiteSpace(Config.RegistryAddress))
+        if (!ListenerStatus.IsUnavailable && !string.IsNullOrWhiteSpace(Config.RegistryAddress))
         {
             await LoadServiceListAsync(forceRefresh: false, refreshDetails: false);
         }
     }
+
+    private void ListenerStatusChanged() => _ = InvokeAsync(StateHasChanged);
 
     private async void GatewayChanged()
     {
@@ -889,7 +899,11 @@
         {
             await InvokeAsync(() =>
             {
-                Config = Gateway.GetConfiguration();
+                McpGatewayConfiguration saved = Gateway.GetConfiguration();
+                if (PendingConfigurationSaves > 0 || HasUnsavedConfigurationChanges)
+                    Config.Methods = saved.Methods;
+                else
+                    Config = saved;
                 RefreshMcpHistoryPage();
                 StateHasChanged();
             });
@@ -1107,30 +1121,48 @@
 
     private async Task AutoSaveConfigurationAsync()
     {
+        long editVersion = ++ConfigurationEditVersion;
+        HasUnsavedConfigurationChanges = true;
+        PendingConfigurationSaves++;
         McpGatewayConfiguration requestedConfiguration = Config.Clone();
         await _configurationSaveGate.WaitAsync();
         bool isEnablingGateway = false;
         try
         {
+            if (editVersion != ConfigurationEditVersion) return;
             McpGatewayConfiguration previous = Gateway.GetConfiguration();
             isEnablingGateway = requestedConfiguration.Enabled && !Gateway.IsEnabled;
             bool connectionContextChanged = !McpGatewayService.IsConnectionContextEquivalent(previous, requestedConfiguration);
+            bool shouldValidateConnection = requestedConfiguration.Enabled
+                && (isEnablingGateway || connectionContextChanged);
             IsSaving = true;
             SetNotice(
-                isEnablingGateway || connectionContextChanged
+                shouldValidateConnection
                     ? "正在检测新的连接环境…"
                     : "正在自动保存配置…",
                 false);
 
-            if ((isEnablingGateway || connectionContextChanged)
+            if (isEnablingGateway)
+            {
+                // 先保存关闭状态的草稿。连接失败只回退全局开关，不丢弃用户填写的配置。
+                McpGatewayConfiguration draft = requestedConfiguration.Clone();
+                draft.Enabled = false;
+                await Gateway.SaveConfigurationAsync(draft);
+                requestedConfiguration = Gateway.GetConfiguration();
+                requestedConfiguration.Enabled = true;
+            }
+
+            if (shouldValidateConnection
                 && !string.IsNullOrWhiteSpace(requestedConfiguration.RegistryAddress))
             {
                 await DubboSession.TestRegistryAsync(requestedConfiguration.ToTesterSettings());
             }
 
             await Gateway.SaveConfigurationAsync(requestedConfiguration);
+            if (editVersion != ConfigurationEditVersion) return;
             Config = Gateway.GetConfiguration();
-            if ((isEnablingGateway || connectionContextChanged) && Config.Methods.Count > 0)
+            HasUnsavedConfigurationChanges = false;
+            if (shouldValidateConnection && Config.Methods.Count > 0)
             {
                 SetNotice("连接配置已保存，正在校验现有 MCP 工具…", false);
                 McpToolValidationSummary summary = await Gateway.RevalidateConfiguredToolsAsync();
@@ -1148,8 +1180,11 @@
         }
         catch (Exception exception)
         {
-            // 自动保存失败时必须恢复到后台真实状态，避免页面再次显示尚未生效的开关值。
-            Config = Gateway.GetConfiguration();
+            if (editVersion != ConfigurationEditVersion) return;
+            // 保留编辑草稿，仅让开关反映实际运行状态，供用户继续修正后重试。
+            Config = requestedConfiguration.Clone();
+            Config.Enabled = Gateway.IsEnabled;
+            HasUnsavedConfigurationChanges = true;
             SetNotice(
                 isEnablingGateway
                     ? $"无法启用 MCP：{exception.Message}"
@@ -1158,6 +1193,7 @@
         }
         finally
         {
+            PendingConfigurationSaves--;
             IsSaving = false;
             _configurationSaveGate.Release();
         }
@@ -1883,8 +1919,15 @@
 
     private async Task CopyAsync(string value)
     {
-        await JS.InvokeVoidAsync("dubboTester.copy", value);
-        SetNotice("已复制到剪贴板。", false);
+        try
+        {
+            await ClipboardService.SetTextAsync(value);
+            SetNotice("已复制到剪贴板。", false);
+        }
+        catch (Exception)
+        {
+            SetNotice("复制失败，请手动选择并复制。", true);
+        }
     }
 
     private void SetNotice(string message, bool isError, bool warning = false)
@@ -1903,6 +1946,7 @@
 
     public void Dispose()
     {
+        ListenerStatus.Changed -= ListenerStatusChanged;
         Gateway.Changed -= GatewayChanged;
     }
 

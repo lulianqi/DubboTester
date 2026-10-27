@@ -69,6 +69,9 @@ public static class PressureTestHtmlReportBuilder
             .Append(configuration.Invocation.Route == InvocationRoute.Registry
                 ? Item("注册中心类型", configuration.Settings.RegistryDisplayName)
                 : string.Empty)
+            .Append(configuration.Invocation.Route == InvocationRoute.Registry
+                ? Item("负载均衡模式", configuration.Settings.LoadBalanceMode.ToString())
+                : string.Empty)
             .Append(Item("连接地址", configuration.Invocation.Route == InvocationRoute.Registry
                 ? configuration.Settings.RegistryAddress
                 : $"{configuration.Invocation.Host}:{configuration.Invocation.Port}"))
