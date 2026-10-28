@@ -80,10 +80,11 @@ body.resizing-catalog { cursor: col-resize; user-select: none; }
 .panel-heading span { color: var(--muted); font-size: 11px; }
 .catalog-heading-actions { display: flex; align-items: center; gap: 2px; }
 .catalog-refresh-settings { position: relative; }
-.catalog-refresh-settings-button { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; color: #607086; background: transparent; cursor: pointer; font-size: 14px; }
+.catalog-refresh-settings-button { width: 14px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px; color: #607086; background: transparent; cursor: pointer; font-size: 14px; line-height: 1; }
 .catalog-refresh-settings-button { list-style: none; user-select: none; }
 .catalog-refresh-settings-button::-webkit-details-marker { display: none; }
-.catalog-refresh-settings-button:hover { color: var(--blue-strong); background: #f5f9ff; }
+.catalog-refresh-settings-button:hover, .catalog-refresh-settings[open] > .catalog-refresh-settings-button { color: var(--blue-strong); background: #f5f9ff; }
+.catalog-refresh-settings-button:focus-visible { outline: 2px solid #1677ff; outline-offset: 2px; }
 .catalog-refresh-settings-popover { width: 230px; position: absolute; z-index: 50; top: calc(100% + 7px); right: 0; display: grid; gap: 6px; padding: 11px 12px; border: 1px solid #dce4ef; border-radius: 8px; background: #fff; box-shadow: 0 10px 28px rgba(26,47,76,.16); }
 .catalog-refresh-settings-popover label { display: flex; align-items: center; gap: 7px; color: #33445a; cursor: pointer; font-size: 11px; font-weight: 650; }
 .catalog-refresh-settings-popover small { color: #8792a2; font-size: 10px; }

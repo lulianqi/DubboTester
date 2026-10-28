@@ -4,7 +4,12 @@
 
 DubboTester 面向开发、测试和 AI 工具接入场景，无需安装 Java 环境、导入业务 JAR 或修改服务端代码，即可连接现有 Dubbo 服务。通过可视化服务目录选择方法、自动生成请求参数并发送调用，开箱即用，降低 Dubbo 接口调试的学习成本。
 
-当前应用版本：**2.1.2**。
+当前应用版本：**2.1.3**。
+
+本次更新：
+
+- 修复 Mac / Windows 桌面版字体偏小的问题：默认以 125% 显示文字和控件，并适配缩放后的全屏页面、弹窗和小窗口布局；Web / Docker 显示比例保持不变。
+- 主页服务目录、MCP 服务列表旁的刷新设置入口统一为紧凑的小号竖向三点 `⋮`，原有设置功能不变。
 
 ## 核心功能
 
@@ -53,22 +58,22 @@ DubboTester 同时支持 **Docker 镜像部署为 Web 服务**，以及 **Window
 - [Docker Hub：`lulianqi/dubbo-tester`](https://hub.docker.com/r/lulianqi/dubbo-tester)
 - [GitHub Container Registry：`ghcr.io/lulianqi/dubbo-tester`](https://github.com/lulianqi/DubboTester/pkgs/container/dubbo-tester)
 
-拉取镜像并启动（以下固定使用 `2.1.2`，也可将标签替换为 `latest`）：
+拉取镜像并启动（以下固定使用 `2.1.3`，也可将标签替换为 `latest`）：
 
 ```bash
-docker pull lulianqi/dubbo-tester:2.1.2
+docker pull lulianqi/dubbo-tester:2.1.3
 
 docker run -d \
   --name dubbo-tester \
   --restart unless-stopped \
   -p 5154:8080 \
   -v dubbo-tester-data:/app/App_Data \
-  lulianqi/dubbo-tester:2.1.2
+  lulianqi/dubbo-tester:2.1.3
 ```
 
 启动后访问 `http://localhost:5154`；部署在服务器上时，使用 `http://<服务器地址>:5154`。首次打开后，在“连接与页面设置”中选择 ZooKeeper 或 Nacos，填写地址并点击“保存并刷新”，即可浏览服务并开始调试。
 
-如需从 GHCR 获取，将上述命令中的镜像名替换为 `ghcr.io/lulianqi/dubbo-tester:2.1.2` 即可。
+如需从 GHCR 获取，将上述命令中的镜像名替换为 `ghcr.io/lulianqi/dubbo-tester:2.1.3` 即可。
 
 - 宿主机 `5154` 端口映射到容器内 `8080`；如端口已占用，可将 `-p 5154:8080` 改为其他空闲宿主机端口，例如 `-p 5155:8080`。
 - 命名卷 `dubbo-tester-data` 用于持久化 MCP 和 HTTP 服务配置；连接与页面设置、调用历史及请求草稿保存在使用端的本地存储中。
@@ -190,14 +195,14 @@ MSIX 打包。
 
 普通提交和手动运行产生的平台 ZIP 会作为单层 Actions artifact 保留 14 天，可以直接
 下载和解压。在 GitHub 创建并发布 Release（标签基础版本须与桌面项目
-`ApplicationDisplayVersion` 一致，例如 `2.1.2` 或 `v2.1.2`）后，工作流会自动汇总
+`ApplicationDisplayVersion` 一致，例如 `2.1.3` 或 `v2.1.3`）后，工作流会自动汇总
 两个平台的压缩包、生成 `SHA256SUMS.txt`，并上传到该 Release。Docker 发布工作流也会同时触发。
 手动构建时可填写已有的 `release_tag` 上传到指定 Release；留空则仅生成 Actions artifact。
 
 ```bash
-git tag -a 2.1.2 -m "DubboTester 2.1.2"
-git push origin 2.1.2
-gh release create 2.1.2 --verify-tag --title "DubboTester 2.1.2" --generate-notes
+git tag -a 2.1.3 -m "DubboTester 2.1.3"
+git push origin 2.1.3
+gh release create 2.1.3 --verify-tag --title "DubboTester 2.1.3" --generate-notes
 ```
 
 ### 从源码构建 Docker 镜像

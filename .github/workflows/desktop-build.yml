@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing Release tag to build and attach assets to (for example, 2.1.2); leave empty to build artifacts only
+        description: Existing Release tag to build and attach assets to (for example, 2.1.3); leave empty to build artifacts only
         required: false
         type: string
   release:

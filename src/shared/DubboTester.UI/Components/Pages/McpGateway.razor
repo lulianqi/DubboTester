@@ -114,7 +114,7 @@
                 <div class="settings-heading-actions" @onclick:stopPropagation="true">
                     <button class="link-button" disabled="@IsBusy" @onclick="RefreshListAsync">@(IsScanning ? "刷新中…" : "刷新列表")</button>
                     <details class="refresh-settings" data-dismiss-on-outside>
-                        <summary class="refresh-settings-button" title="刷新设置" aria-label="刷新设置">⚙</summary>
+                        <summary class="refresh-settings-button" title="刷新设置" aria-label="刷新设置">⋮</summary>
                         <div class="refresh-settings-popover">
                             <label><input type="checkbox" @bind="Config.OnlyRefreshServiceNames" @bind:after="AutoSaveConfigurationAsync" />仅刷新服务名称</label>
                             <small>关闭时同时刷新 Provider 与方法信息</small>
