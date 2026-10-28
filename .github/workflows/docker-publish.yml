@@ -116,5 +116,7 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: mode=max
-          sbom: true
+          # Alibaba Cloud personal ACR rejects the OCI empty manifests used by
+          # BuildKit attestations, so keep the multi-arch image index portable.
+          provenance: false
+          sbom: false
