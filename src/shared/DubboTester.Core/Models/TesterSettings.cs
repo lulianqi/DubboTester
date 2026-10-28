@@ -48,7 +48,7 @@ public sealed class TesterSettings
     public bool SearchMethodsOnly { get; set; }
     public bool CaseSensitiveSearch { get; set; }
     public bool OnlyRefreshServiceNames { get; set; }
-    public bool AutoFillRequestExample { get; set; }
+    public bool AutoFillRequestExample { get; set; } = true;
 
     public TesterSettings Clone() => (TesterSettings)MemberwiseClone();
 }

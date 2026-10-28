@@ -17,8 +17,9 @@
 .request-editor { overflow: visible; }
 .request-editor .editor-toolbar { border-radius: 7px 7px 0 0; }
 .request-editor textarea { border-radius: 0 0 7px 7px; }
+.request-example-generate { padding-right: 1px; }
 .request-example-settings { position: relative; }
-.request-example-settings > summary { display: grid; place-items: center; width: 24px; height: 27px; border-radius: 5px; color: #0958d9; cursor: pointer; list-style: none; font-size: 20px; line-height: 1; }
+.request-example-settings > summary { display: grid; place-items: center; width: 14px; height: 24px; border-radius: 5px; color: #0958d9; cursor: pointer; list-style: none; font-size: 14px; line-height: 1; }
 .request-example-settings > summary::-webkit-details-marker { display: none; }
 .request-example-settings > summary:hover, .request-example-settings[open] > summary { background: #eaf3ff; }
 .request-example-settings > summary:focus-visible { outline: 2px solid #1677ff; outline-offset: 2px; }
