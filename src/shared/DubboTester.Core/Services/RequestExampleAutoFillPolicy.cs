@@ -15,7 +15,9 @@ public static class RequestExampleAutoFillPolicy
             || !string.Equals(signature.Source, "MetadataCenter", StringComparison.Ordinal)
             || !string.Equals(signature.ServiceName, input.ServiceName.Trim(), StringComparison.Ordinal)
             || !string.Equals(signature.MethodName, input.MethodName.Trim(), StringComparison.Ordinal)
-            || !signature.ParameterTypes.SequenceEqual(
+            // Compare JVM invocation types on both sides; keep the full generic
+            // metadata below when building collection elements and object fields.
+            || !JsonArgumentParser.ParseJavaTypes(string.Join(",", signature.ParameterTypes)).SequenceEqual(
                 JsonArgumentParser.ParseJavaTypes(input.JavaParameterTypes), StringComparer.Ordinal))
             return false;
 
