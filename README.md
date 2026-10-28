@@ -2,6 +2,8 @@
 
 从 `testengineer/independent-pages/dubbo` 独立出来的 .NET 10 Blazor Server Dubbo 调试工具。
 
+当前应用版本：**2.1.2**。
+
 ## 获取与安装
 
 [前往 GitHub Releases 下载最新版本](https://github.com/lulianqi/DubboTester/releases/latest)
@@ -22,7 +24,7 @@
 ## 技术与调用方式
 
 - .NET 10 / Blazor Interactive Server
-- NuGet `DubboNet` **3.6.0**
+- NuGet `DubboNet` **3.6.2**
 - 支持 ZooKeeper 和 Nacos 注册中心，用于服务发现和元数据读取
 - 业务请求通过 Dubbo2 TCP + Hessian2 `$invoke` 泛化调用发送，不使用 Telnet `invoke`
 - 可选注册中心负载均衡调用，或指定 Provider 直连调用
@@ -30,6 +32,8 @@
 `DubboNet` 在元数据中心不可用时可能在包内部用 Provider Telnet `ls -l` 读取一次方法签名；这只用于签名发现，不用于业务调用。使用界面中的精确 Java 参数类型即可跳过签名自动发现。
 
 DubboNet 可读取元数据中心 `FullServiceDefinition.types`。当方法包含 POJO、集合、数组、枚举等结构型参数时，可以在“Java 签名”区域查看参数结构，并按该结构生成可编辑的请求 JSON 示例。类型结构仅由元数据中心提供；Telnet 签名来源不包含这部分信息。
+
+“按结构生成示例”右侧的 `⋮` 可设置“如果用户数据为空，自动填充示例”，默认关闭并保存在本地。开启后会优先恢复当前方法/重载的已有参数草稿，仅在参数框为空、元数据中心签名可用且方法有参数时自动填充，不覆盖用户输入或已有草稿；无参数方法、仅 Telnet 签名或元数据读取失败时不会自动填充。
 
 Dubbo 2.7.x 可能把 `String`、`Long`、`Integer` 等 JDK 类型的内部实现字段也写入 `properties`，例如 `String.value`、`String.hash`。DubboTester 会按字段声明类型识别这些标量/包装类型，不会将其内部字段当作业务请求字段；业务 POJO 自身声明的同名字段仍会正常保留。
 
@@ -113,14 +117,14 @@ MSIX 打包。
 
 普通提交和手动运行产生的平台 ZIP 会作为单层 Actions artifact 保留 14 天，可以直接
 下载和解压。在 GitHub 创建并发布 Release（标签基础版本须与桌面项目
-`ApplicationDisplayVersion` 一致，例如 `2.1.1` 或 `v2.1.1`）后，工作流会自动汇总
+`ApplicationDisplayVersion` 一致，例如 `2.1.2` 或 `v2.1.2`）后，工作流会自动汇总
 两个平台的压缩包、生成 `SHA256SUMS.txt`，并上传到该 Release。Docker 发布工作流也会同时触发。
 手动构建时可填写已有的 `release_tag` 上传到指定 Release；留空则仅生成 Actions artifact。
 
 ```bash
-git tag -a 2.1.1 -m "DubboTester 2.1.1"
-git push origin 2.1.1
-gh release create 2.1.1 --verify-tag --title "DubboTester 2.1.1" --generate-notes
+git tag -a 2.1.2 -m "DubboTester 2.1.2"
+git push origin 2.1.2
+gh release create 2.1.2 --verify-tag --title "DubboTester 2.1.2" --generate-notes
 ```
 
 ### Docker
@@ -176,7 +180,9 @@ docker run --rm \
 
 从主页顶部进入“MCP 服务”独立页面，选择并配置 ZooKeeper 或 Nacos 后扫描服务和方法。每个 Java 方法签名会映射为一个独立 MCP 工具；启用前必须填写工具描述、适用/触发条件和参数要求，输入 Schema 会根据元数据中的 Java 参数结构生成。全局开关与方法开关都启用后，远程 Agent 才能在 `POST /mcp` 的 `tools/list` 中看到并调用该工具。
 
-MCP 使用官方 .NET SDK 的 Streamable HTTP 传输。鉴权默认启用，客户端连接时需要设置 `Authorization: Bearer <访问令牌>`，令牌可在管理页复制或重新生成；也可以在全局配置中关闭鉴权，让可访问该 Endpoint 的客户端直接调用。配置持久化到 `App_Data/mcp-config.json`（已从 Git 忽略），应用重启时自动恢复。调用记录只保存在进程内存中，可在页面设置保留 10–2000 条，默认 200 条。
+MCP 使用官方 .NET SDK 的 Streamable HTTP 传输。新建配置的鉴权默认关闭，已有配置保持原值；启用鉴权后，客户端连接时需要设置 `Authorization: Bearer <访问令牌>`，令牌可在管理页复制或重新生成。对外访问时建议启用鉴权并使用 HTTPS。配置持久化到 `App_Data/mcp-config.json`（已从 Git 忽略），应用重启时自动恢复。调用记录只保存在进程内存中，可在页面设置保留 10–5000 条，默认 5000 条。
+
+工具可用性校验不强制依赖元数据中心。已确认当前注册中心存在匹配的 Provider 和方法、但元数据缺失或签名读取失败时，会显示“元数据告警（可用）”，继续使用工具中已保存的 Java 参数类型、版本和分组进行显式调用；请确认这些配置正确。服务或方法不存在、没有可用 Provider，以及已读取到的精确签名不匹配，仍属于不可用状态。已有的校验失败状态可点击“可用性校验”重新检查。
 
 远程访问时还需要让应用监听可达网卡并通过 HTTPS/反向代理暴露 `/mcp`；不要把管理页面或 Bearer 令牌公开给不受信任的网络。
 

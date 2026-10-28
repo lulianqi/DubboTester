@@ -213,12 +213,10 @@ public sealed class McpGatewayService : IDisposable
                         validatedAt);
                     continue;
                 }
-                if (!service.Methods.Contains(method.MethodName, StringComparer.Ordinal))
+                ToolValidationResult? serviceFailure = GetServiceValidationFailure(method, service, validatedAt);
+                if (serviceFailure is not null)
                 {
-                    results[method.Id] = new ToolValidationResult(
-                        McpToolValidationStatus.MethodMissing,
-                        $"当前服务 {method.ServiceName} 中未找到方法 {method.MethodName}。",
-                        validatedAt);
+                    results[method.Id] = serviceFailure;
                     continue;
                 }
 
@@ -256,30 +254,8 @@ public sealed class McpGatewayService : IDisposable
                     signatureResults[signatureKey] = loaded;
                 }
 
-                if (!string.IsNullOrWhiteSpace(loaded.Error))
-                {
-                    results[method.Id] = new ToolValidationResult(
-                        McpToolValidationStatus.ValidationFailed,
-                        $"读取方法签名失败：{loaded.Error}",
-                        validatedAt);
-                    continue;
-                }
-
-                bool signatureMatches = loaded.Signatures.Any(signature =>
-                    signature.ParameterTypes.SequenceEqual(method.ParameterTypes, StringComparer.Ordinal)
-                    && string.Equals(signature.Version?.Trim() ?? string.Empty, method.Version, StringComparison.Ordinal)
-                    && string.Equals(signature.Group?.Trim() ?? string.Empty, method.Group, StringComparison.Ordinal));
-                results[method.Id] = signatureMatches
-                    ? new ToolValidationResult(
-                        McpToolValidationStatus.Available,
-                        "已在当前注册中心匹配到服务、方法和精确签名。",
-                        validatedAt)
-                    : new ToolValidationResult(
-                        McpToolValidationStatus.SignatureMismatch,
-                        loaded.Signatures.Count == 0
-                            ? "已找到服务和方法，但未读取到可校验的方法签名。"
-                            : $"方法 {method.MethodName} 存在，但当前签名与已保存配置不一致。",
-                        validatedAt);
+                results[method.Id] = GetSignatureValidationResult(
+                    method, loaded.Signatures, loaded.Error, validatedAt);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -310,11 +286,76 @@ public sealed class McpGatewayService : IDisposable
         await SaveConfigurationAsync(latest, cancellationToken);
 
         int availableCount = results.Values.Count(result =>
-            result.Status == McpToolValidationStatus.Available);
+            result.Status is McpToolValidationStatus.Available or McpToolValidationStatus.MetadataWarning);
         return new McpToolValidationSummary(
             results.Count,
             availableCount,
-            results.Count - availableCount);
+            results.Count - availableCount)
+        {
+            WarningCount = results.Values.Count(result => result.Status == McpToolValidationStatus.MetadataWarning)
+        };
+    }
+
+    internal static ToolValidationResult? GetServiceValidationFailure(
+        McpDubboMethodConfiguration method,
+        DubboServiceItem service,
+        DateTimeOffset validatedAt)
+    {
+        if (!service.Providers.Any(provider => !provider.Disabled))
+            return new ToolValidationResult(
+                McpToolValidationStatus.ValidationFailed,
+                $"当前服务 {method.ServiceName} 没有可用的 Provider。",
+                validatedAt);
+        if (!service.Methods.Contains(method.MethodName, StringComparer.Ordinal))
+            return new ToolValidationResult(
+                McpToolValidationStatus.MethodMissing,
+                $"当前服务 {method.ServiceName} 中未找到方法 {method.MethodName}。",
+                validatedAt);
+        if (!service.Providers.Any(provider => !provider.Disabled
+            && provider.Methods.Contains(method.MethodName, StringComparer.Ordinal)
+            && (string.IsNullOrWhiteSpace(method.Version)
+                || string.Equals(provider.Version?.Trim(), method.Version.Trim(), StringComparison.Ordinal))
+            && (string.IsNullOrWhiteSpace(method.Group)
+                || string.Equals(provider.Group?.Trim(), method.Group.Trim(), StringComparison.Ordinal))))
+            return new ToolValidationResult(
+                McpToolValidationStatus.SignatureMismatch,
+                $"方法 {method.MethodName} 存在，但没有匹配当前版本、分组和方法的可用 Provider。",
+                validatedAt);
+        return null;
+    }
+
+    internal static ToolValidationResult GetSignatureValidationResult(
+        McpDubboMethodConfiguration method,
+        IReadOnlyList<MethodSignatureItem> signatures,
+        string? error,
+        DateTimeOffset validatedAt)
+    {
+        // The registry has already confirmed the provider and method. Metadata is
+        // optional when invoking with the exact Java parameter types saved in the tool.
+        if (!string.IsNullOrWhiteSpace(error) || signatures.Count == 0)
+        {
+            string reason = string.IsNullOrWhiteSpace(error)
+                ? "未读取到方法签名，服务可能未注册元数据。"
+                : $"读取方法签名失败：{error}";
+            return new ToolValidationResult(
+                McpToolValidationStatus.MetadataWarning,
+                $"已确认服务、Provider 和方法存在；{reason} 将使用已保存的 Java 参数类型继续提供 MCP 调用，请确认参数配置正确。",
+                validatedAt);
+        }
+
+        bool signatureMatches = signatures.Any(signature =>
+            signature.ParameterTypes.SequenceEqual(method.ParameterTypes, StringComparer.Ordinal)
+            && string.Equals(signature.Version?.Trim() ?? string.Empty, method.Version, StringComparison.Ordinal)
+            && string.Equals(signature.Group?.Trim() ?? string.Empty, method.Group, StringComparison.Ordinal));
+        return signatureMatches
+            ? new ToolValidationResult(
+                McpToolValidationStatus.Available,
+                "已在当前注册中心匹配到服务、方法和精确签名。",
+                validatedAt)
+            : new ToolValidationResult(
+                McpToolValidationStatus.SignatureMismatch,
+                $"方法 {method.MethodName} 存在，但当前签名与已保存配置不一致。",
+                validatedAt);
     }
 
     public Task<InvocationOutput> DebugInvokeAsync(
@@ -474,7 +515,7 @@ public sealed class McpGatewayService : IDisposable
             item.Enabled && string.Equals(item.ToolName, request.Name, StringComparison.Ordinal));
         if (method is null)
             return ErrorResult($"工具 {request.Name} 不存在或未启用。");
-        if (method.ValidationStatus != McpToolValidationStatus.Available)
+        if (!method.IsValidationUsable)
         {
             string reason = string.IsNullOrWhiteSpace(method.ValidationMessage)
                 ? "尚未在当前连接环境中校验通过。"
@@ -766,7 +807,7 @@ public sealed class McpGatewayService : IDisposable
     private static string GenerateAccessToken() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
 
-    private sealed record ToolValidationResult(
+    internal sealed record ToolValidationResult(
         McpToolValidationStatus Status,
         string Message,
         DateTimeOffset ValidatedAt);

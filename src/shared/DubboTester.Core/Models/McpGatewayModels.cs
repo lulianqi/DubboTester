@@ -10,7 +10,8 @@ public enum McpToolValidationStatus
     ServiceMissing = 2,
     MethodMissing = 3,
     SignatureMismatch = 4,
-    ValidationFailed = 5
+    ValidationFailed = 5,
+    MetadataWarning = 6
 }
 
 public sealed class McpGatewayConfiguration
@@ -91,8 +92,11 @@ public sealed class McpDubboMethodConfiguration
     public string ValidationMessage { get; set; } = string.Empty;
     public DateTimeOffset? ValidatedAt { get; set; }
 
-    public bool IsAvailableForMcp =>
-        Enabled && ValidationStatus == McpToolValidationStatus.Available;
+    [JsonIgnore]
+    public bool IsValidationUsable => ValidationStatus is
+        McpToolValidationStatus.Available or McpToolValidationStatus.MetadataWarning;
+
+    public bool IsAvailableForMcp => Enabled && IsValidationUsable;
 
     public string ConfigurationKey => BuildConfigurationKey(
         RegistryRootPath,
@@ -147,7 +151,10 @@ public sealed class McpDubboMethodConfiguration
 public sealed record McpToolValidationSummary(
     int TotalCount,
     int AvailableCount,
-    int UnavailableCount);
+    int UnavailableCount)
+{
+    public int WarningCount { get; init; }
+}
 
 public sealed class McpCallRecord
 {
