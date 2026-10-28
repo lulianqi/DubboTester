@@ -14,6 +14,18 @@
 .catalog-loading-overlay strong { color: #294866; font-size: 14px; }
 .catalog-loading-overlay > span:not(.spinner) { font-size: 12px; }
 .catalog-loading-overlay small { color: #8792a2; font-size: 11px; line-height: 1.6; }
+.request-editor { overflow: visible; }
+.request-editor .editor-toolbar { border-radius: 7px 7px 0 0; }
+.request-editor textarea { border-radius: 0 0 7px 7px; }
+.request-example-settings { position: relative; }
+.request-example-settings > summary { display: grid; place-items: center; width: 24px; height: 27px; border-radius: 5px; color: #0958d9; cursor: pointer; list-style: none; font-size: 20px; line-height: 1; }
+.request-example-settings > summary::-webkit-details-marker { display: none; }
+.request-example-settings > summary:hover, .request-example-settings[open] > summary { background: #eaf3ff; }
+.request-example-settings > summary:focus-visible { outline: 2px solid #1677ff; outline-offset: 2px; }
+.request-example-settings-popover { position: absolute; z-index: 60; top: calc(100% + 6px); right: 0; width: 310px; max-width: calc(100vw - 48px); display: grid; gap: 7px; padding: 12px; border: 1px solid #dce4ef; border-radius: 8px; background: #fff; box-shadow: 0 10px 28px rgba(26,47,76,.16); }
+.request-example-settings-popover label { display: flex; align-items: center; gap: 7px; color: #344054; cursor: pointer; font-size: 11px; }
+.request-example-settings-popover input { flex: 0 0 auto; margin: 0; accent-color: #1677ff; }
+.request-example-settings-popover small { color: #8792a2; font-size: 10px; line-height: 1.6; }
 .settings-title-trigger { user-select: none; }
 .runtime-settings-backdrop { z-index: 120; }
 .runtime-settings-modal { width: min(560px, 96vw); }

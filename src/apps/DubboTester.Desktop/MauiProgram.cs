@@ -23,7 +23,7 @@ public static class MauiProgram
 		builder.Services.AddSingleton<LocalGatewayListenerStatus>();
 		builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
 		{
-			["DubboTester:Version"] = "2.1.1"
+			["DubboTester:Version"] = "2.1.2"
 		});
 
 		builder.Services.AddSingleton<IAppDataDirectoryProvider, DesktopAppDataDirectoryProvider>();

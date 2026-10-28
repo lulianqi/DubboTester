@@ -129,6 +129,7 @@
 .method-config-inline > code { color: #315b8c; }
 .method-config-inline em { padding: 2px 7px; border-radius: 999px; color: #738094; background: #edf1f6; font-style: normal; white-space: nowrap; }
 .method-config-inline em.enabled { color: #087f58; background: #dcf8ed; }
+.method-config-inline em.warning { color: #a65308; background: #fff1d7; }
 .method-config-actions { display: flex; align-items: center; justify-content: flex-end; gap: 1px; }
 .mcp-empty, .mcp-loading { min-height: 160px; display: grid; place-items: center; padding: 18px; color: #969faa; font-size: 11px; text-align: center; }
 .mcp-empty.small { min-height: 70px; }
@@ -185,6 +186,7 @@
 .configured-description { display: block; color: #657184; }
 .validation-status { width: max-content; max-width: 100%; padding: 3px 7px; border-radius: 999px; overflow: hidden; color: #a65308; background: #fff1d7; text-overflow: ellipsis; white-space: nowrap; }
 .validation-status.available { color: #087f58; background: #dcf8ed; }
+.validation-status.warning { color: #a65308; background: #fff1d7; }
 .validation-status.unavailable { color: #b42f43; background: #ffe8ec; }
 .configured-actions { display: flex; align-items: center; justify-content: center; gap: 2px; }
 .configured-pagination { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 24px; border-top: 1px solid #e8edf3; color: #7b8798; background: #fafbfd; font-size: 9px; }

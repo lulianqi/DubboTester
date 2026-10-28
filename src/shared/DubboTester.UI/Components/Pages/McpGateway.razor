@@ -182,7 +182,7 @@
                                                                                 <div class="method-config-inline" @key="configuredMethod.Id">
                                                                                     <code title="@configuredMethod.Signature">@configuredMethod.ToolName</code>
                                                                                     <span title="@configuredMethod.Description">@configuredMethod.Description</span>
-                                                                                    <em class="@(configuredMethod.IsAvailableForMcp ? "enabled" : null)" title="@GetValidationTitle(configuredMethod)">@GetRuntimeStateText(configuredMethod)</em>
+                                                                                    <em class="@(configuredMethod.IsAvailableForMcp ? configuredMethod.ValidationStatus == McpToolValidationStatus.MetadataWarning ? "warning" : "enabled" : null)" title="@GetValidationTitle(configuredMethod)">@GetRuntimeStateText(configuredMethod)</em>
                                                                                     <span class="method-config-actions">
                                                                                         <button class="link-button" @onclick="() => OpenDetailsDialog(configuredMethod)">查看配置</button>
                                                                                         <button class="link-button" @onclick="() => OpenEditDialogAsync(configuredMethod)">编辑配置</button>
@@ -214,7 +214,7 @@
 
         <section class="mcp-card enabled-card">
             <div class="mcp-card-heading compact">
-                <div><h2>已配置工具</h2><p>配置会保留；只有在当前连接环境校验通过的工具才会对 MCP 暴露</p></div>
+                <div><h2>已配置工具</h2><p>配置会保留；启用且当前环境可用的工具才会对 MCP 暴露，元数据告警不阻断调用</p></div>
                 <div class="configured-heading-actions">
                     <strong>@AvailableConfigurationCount / @Config.Methods.Count 可用</strong>
                     @if (HasAnyConfiguredToolFilter)
@@ -340,6 +340,7 @@
                                     <select @bind="ConfiguredValidationStatusFilter">
                                         <option value="@ConfiguredValidationFilter.All">全部</option>
                                         <option value="@ConfiguredValidationFilter.Available">校验通过</option>
+                                        <option value="@ConfiguredValidationFilter.MetadataWarning">元数据告警（可用）</option>
                                         <option value="@ConfiguredValidationFilter.PendingValidation">等待校验</option>
                                         <option value="@ConfiguredValidationFilter.ServiceMissing">服务不存在</option>
                                         <option value="@ConfiguredValidationFilter.MethodMissing">方法不存在</option>
@@ -745,8 +746,7 @@
     private string Endpoint => EndpointAddressProvider.EndpointOverride
         ?? Navigation.ToAbsoluteUri("mcp").ToString();
     private int AvailableMethodCount => Config.Methods.Count(method => method.IsAvailableForMcp);
-    private int AvailableConfigurationCount => Config.Methods.Count(method =>
-        method.ValidationStatus == McpToolValidationStatus.Available);
+    private int AvailableConfigurationCount => Config.Methods.Count(method => method.IsValidationUsable);
     private IEnumerable<McpDubboMethodConfiguration> FilteredConfiguredMethods => Config.Methods
         .Where(MatchesConfiguredToolFilters)
         .OrderBy(method => method.ToolName, StringComparer.Ordinal);
@@ -1066,6 +1066,7 @@
         {
             ConfiguredValidationFilter.All => true,
             ConfiguredValidationFilter.Available => status == McpToolValidationStatus.Available,
+            ConfiguredValidationFilter.MetadataWarning => status == McpToolValidationStatus.MetadataWarning,
             ConfiguredValidationFilter.PendingValidation => status == McpToolValidationStatus.PendingValidation,
             ConfiguredValidationFilter.ServiceMissing => status == McpToolValidationStatus.ServiceMissing,
             ConfiguredValidationFilter.MethodMissing => status == McpToolValidationStatus.MethodMissing,
@@ -1169,9 +1170,9 @@
                 Config = Gateway.GetConfiguration();
                 await LoadServiceListAsync(forceRefresh: false, refreshDetails: false);
                 SetNotice(
-                    $"连接环境已更新：{summary.AvailableCount}/{summary.TotalCount} 个工具配置校验通过，未通过的配置已保留但不会对 MCP 暴露。",
+                    $"连接环境已更新：{summary.AvailableCount}/{summary.TotalCount} 个工具配置可用，其中 {summary.WarningCount} 个元数据告警；{summary.UnavailableCount} 个不可用配置已保留但不会对 MCP 暴露。",
                     false,
-                    warning: summary.UnavailableCount > 0);
+                    warning: summary.UnavailableCount > 0 || summary.WarningCount > 0);
             }
             else
             {
@@ -1211,9 +1212,9 @@
             Config = Gateway.GetConfiguration();
             await LoadServiceListAsync(forceRefresh: false, refreshDetails: false);
             SetNotice(
-                $"校验完成：{summary.AvailableCount}/{summary.TotalCount} 个工具配置可用；其余配置已保留但不会对 MCP 暴露。",
+                $"校验完成：{summary.AvailableCount}/{summary.TotalCount} 个工具配置可用，其中 {summary.WarningCount} 个元数据告警；{summary.UnavailableCount} 个不可用配置已保留但不会对 MCP 暴露。",
                 false,
-                warning: summary.UnavailableCount > 0);
+                warning: summary.UnavailableCount > 0 || summary.WarningCount > 0);
         }
         catch (Exception exception)
         {
@@ -1355,7 +1356,7 @@
         {
             await Gateway.SaveConfigurationAsync(Config);
             Config = Gateway.GetConfiguration();
-            if (method.Enabled && method.ValidationStatus != McpToolValidationStatus.Available)
+            if (method.Enabled && !method.IsValidationUsable)
             {
                 SetNotice(
                     $"已保留 {method.ToolName} 的启用意图；当前环境校验通过前不会对 MCP 暴露。",
@@ -1619,8 +1620,8 @@
             ParameterTypesManuallyConfigured = true,
             InputSchemaJson = McpToolSchemaBuilder.BuildInputSchema([], string.Empty),
             ExampleRequestJson = "[]",
-            ValidationStatus = McpToolValidationStatus.Available,
-            ValidationMessage = "已确认服务与方法存在；Java 参数类型使用手动配置。",
+            ValidationStatus = McpToolValidationStatus.MetadataWarning,
+            ValidationMessage = "元数据未能提供方法签名；Java 参数类型使用手动配置，可继续调用，请确认参数配置正确。",
             ValidatedAt = DateTimeOffset.Now
         };
         ApplyManualSignature();
@@ -1883,6 +1884,7 @@
         {
             McpToolValidationStatus.Available when method.ValidatedAt is null => "兼容可用",
             McpToolValidationStatus.Available => "校验通过",
+            McpToolValidationStatus.MetadataWarning => "元数据告警（可用）",
             McpToolValidationStatus.PendingValidation => "等待校验",
             McpToolValidationStatus.ServiceMissing => "服务不存在",
             McpToolValidationStatus.MethodMissing => "方法不存在",
@@ -1895,6 +1897,7 @@
         method.ValidationStatus switch
         {
             McpToolValidationStatus.Available => "available",
+            McpToolValidationStatus.MetadataWarning => "warning",
             McpToolValidationStatus.PendingValidation => "pending",
             _ => "unavailable"
         };
@@ -1912,9 +1915,12 @@
     private static string GetRuntimeStateText(McpDubboMethodConfiguration method)
     {
         if (!method.Enabled) return "未启用";
-        return method.ValidationStatus == McpToolValidationStatus.Available
-            ? "可用"
-            : "已启用 · 不可用";
+        return method.ValidationStatus switch
+        {
+            McpToolValidationStatus.MetadataWarning => "可用 · 元数据告警",
+            McpToolValidationStatus.Available => "可用",
+            _ => "已启用 · 不可用"
+        };
     }
 
     private async Task CopyAsync(string value)
@@ -1980,7 +1986,8 @@
         ServiceMissing,
         MethodMissing,
         SignatureMismatch,
-        ValidationFailed
+        ValidationFailed,
+        MetadataWarning
     }
 
     private enum ConfiguredEnabledFilter

@@ -323,6 +323,16 @@
                         {
                             <button class="text-button" title="根据 Java 参数类型和元数据结构生成示例并替换当前请求内容" @onclick="GenerateRequestExample">按结构生成示例</button>
                         }
+                        <details class="request-example-settings" data-dismiss-on-outside>
+                            <summary aria-label="示例自动填充设置" title="示例自动填充设置">⋮</summary>
+                            <div class="request-example-settings-popover">
+                                <label>
+                                    <input type="checkbox" disabled="@(!ClientStorageReady)" @bind="Settings.AutoFillRequestExample" @bind:after="AutoFillRequestExampleChangedAsync" />
+                                    如果用户数据为空，自动填充示例
+                                </label>
+                                <small>保留已有输入和历史草稿；仅在元数据可用且方法有参数时填充。</small>
+                            </div>
+                        </details>
                         <button class="text-button" @onclick="FormatRequest">格式化</button>
                     </div>
                 </div>
@@ -619,6 +629,10 @@
                     <a href="https://hub.docker.com/r/lulianqi/dubbo-tester" target="_blank" rel="noopener noreferrer">https://hub.docker.com/r/lulianqi/dubbo-tester</a>
                 </section>
                 <section class="about-feedback">
+                    <h3>桌面应用</h3>
+                    <a href="https://github.com/lulianqi/DubboTester/releases/latest" target="_blank" rel="noopener noreferrer">https://github.com/lulianqi/DubboTester/releases/latest</a>
+                </section>
+                <section class="about-feedback">
                     <h3>问题反馈</h3>
                     <a href="https://github.com/lulianqi/DubboTester/issues" target="_blank" rel="noopener noreferrer">https://github.com/lulianqi/DubboTester/issues</a>
                 </section>
@@ -843,7 +857,7 @@
 }
 
 @code {
-    private const string DubboNetVersion = "3.6.0";
+    private const string DubboNetVersion = "3.6.2";
     private bool RuntimeSettingsVisible;
     private string? RuntimeSettingsError;
     private int SettingsTitleClickCount;
@@ -1112,6 +1126,11 @@
             SettingsDraft = Settings.Clone();
             ClientStorageReady = true;
             ClientStorageLoadAttempts = 0;
+            if (Settings.AutoFillRequestExample)
+            {
+                await RestoreCurrentRequestDraftAsync();
+                await TryAutoFillRequestExampleAsync();
+            }
 
             if (settingsWereInvalid)
             {
@@ -1505,6 +1524,7 @@
         Input.ServiceName = service.Name;
         Input.MethodName = method;
         Input.JavaParameterTypes = string.Empty;
+        Input.RequestJson = string.Empty;
         Input.Version = string.Empty;
         Input.Group = string.Empty;
         SelectedProvider = null;
@@ -1612,6 +1632,7 @@
         if (!int.TryParse(args.Value?.ToString(), out int index) || index < 0 || index >= Signatures.Count) return;
         await PersistCurrentRequestDraftAsync();
         SelectedSignatureIndex = index;
+        Input.RequestJson = string.Empty;
         await ApplySignatureAsync(Signatures[index]);
     }
 
@@ -1624,6 +1645,7 @@
         ParameterStructures = DubboTypeStructureBuilder.Build(signature);
         if (!HasParameterStructure) TypeStructureVisible = false;
         await RestoreCurrentRequestDraftAsync();
+        await TryAutoFillRequestExampleAsync();
     }
 
     private void MarkSignatureReadFailed()
@@ -1662,6 +1684,25 @@
         SetNotice(ParameterStructures.Count == 0
             ? "该方法无需请求参数，已清空请求参数框"
             : "已根据 Java 参数类型和元数据结构生成请求 JSON 示例，请按实际业务含义修改字段值");
+    }
+
+    private async Task AutoFillRequestExampleChangedAsync()
+    {
+        SettingsDraft.AutoFillRequestExample = Settings.AutoFillRequestExample;
+        await PersistSettingsAsync();
+        if (Settings.AutoFillRequestExample && !IsSignatureBusy)
+        {
+            await RestoreCurrentRequestDraftAsync();
+            await TryAutoFillRequestExampleAsync();
+        }
+    }
+
+    private async Task TryAutoFillRequestExampleAsync()
+    {
+        if (!RequestExampleAutoFillPolicy.TryFill(
+            Input, SelectedSignature, Settings.AutoFillRequestExample, SignatureReadFailed)) return;
+        await PersistCurrentRequestDraftAsync();
+        await PersistHomeRequestDraftAsync();
     }
 
     private async Task TestProviderAsync()
@@ -2207,12 +2248,10 @@
 
     private async Task RestoreCurrentRequestDraftAsync()
     {
+        // A signature refresh must not overwrite text already entered by the user.
+        if (!string.IsNullOrWhiteSpace(Input.RequestJson)) return;
         string? key = CurrentRequestDraftKey();
-        if (key is null)
-        {
-            Input.RequestJson = string.Empty;
-            return;
-        }
+        if (key is null) return;
 
         if (RequestDrafts.TryGetValue(key, out string? requestJson))
         {
@@ -2227,6 +2266,8 @@
                 requestJson = await JS.InvokeAsync<string?>(
                     "dubboTester.indexedDb.getRequestDraft",
                     key);
+                // The user can type or switch methods while storage is loading.
+                if (key != CurrentRequestDraftKey() || !string.IsNullOrWhiteSpace(Input.RequestJson)) return;
                 if (requestJson is not null)
                 {
                     RequestDrafts[key] = requestJson;
@@ -2241,9 +2282,6 @@
                 SetWarning($"读取请求参数草稿失败：{GetErrorMessage(exception)}");
             }
         }
-
-        // Do not carry another method/overload's arguments into a newly selected method.
-        Input.RequestJson = string.Empty;
     }
 
     private string? CurrentRequestDraftKey()
