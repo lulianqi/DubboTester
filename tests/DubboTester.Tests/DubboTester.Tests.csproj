@@ -21,4 +21,12 @@
     <ProjectReference Include="../../src/shared/DubboTester.Core/DubboTester.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="../../src/apps/DubboTester.Desktop/DesktopPressureTestReportExportService.cs" Link="DesktopPressureTestReportExportService.cs" />
+    <EmbeddedResource Include="../../src/apps/DubboTester.Desktop/Platforms/MacCatalyst/Info.plist" LogicalName="DesktopLayout.Info.plist" />
+    <EmbeddedResource Include="../../src/apps/DubboTester.Desktop/Platforms/MacCatalyst/Entitlements.plist" LogicalName="DesktopLayout.Entitlements.plist" />
+    <EmbeddedResource Include="../../src/apps/DubboTester.Desktop/wwwroot/index.html" LogicalName="DesktopLayout.index.html" />
+    <EmbeddedResource Include="../../src/apps/DubboTester.Desktop/wwwroot/app.css" LogicalName="DesktopLayout.app.css" />
+  </ItemGroup>
+
 </Project>

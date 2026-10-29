@@ -17,7 +17,8 @@
     <string>public.app-category.developer-tools</string>
     <key>UIDeviceFamily</key>
     <array>
-        <integer>2</integer>
+        <!-- Native Mac sizing; the iPad compatibility UI scales content down. -->
+        <integer>6</integer>
     </array>
     <key>UIRequiredDeviceCapabilities</key>
     <array>

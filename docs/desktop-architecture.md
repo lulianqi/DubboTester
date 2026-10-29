@@ -43,7 +43,17 @@ src/apps/DubboTester.Desktop (MAUI)
 
 ### 桌面显示比例
 
-桌面宿主使用独立的 `wwwroot/app.css`，默认以 125% 显示共享 UI，统一放大文字、输入框、按钮和图标；Web/Docker 不加载该样式，显示比例保持不变。桌面样式在共享与组件隔离样式之后加载，并修正全屏页面、弹窗高度及窄窗口布局，避免缩放后底部内容被裁切。此配置不依赖浏览器用户配置或显示器 DPI，不写入用户连接设置。
+Mac Catalyst 的 `UIDeviceFamily` 使用 `6`（原生 Mac UI idiom），避免默认 iPad 兼容模式将整个界面缩小。应用仅使用原生窗口与 `BlazorWebView`，不使用此模式下不支持的 MAUI Picker、Stepper、RefreshView。
+
+Mac 与 Windows 都以正常的 100% 页面比例加载同一套共享样式；Windows 继续使用 WebView2 的系统 DPI 适配。桌面宿主仅补齐 `html → body → #app` 的全高链路，并关闭移动端文字自动放大，不再使用 CSS `zoom`、按缩放系数除算 `vh/dvh` 或复制修改响应式断点。主页、压测、MCP 和 HTTP 页继续使用共享布局，避免原生 WebView 与浏览器解析差异导致局部字号不一致和底部留白。
+
+参考：[指定 Mac Catalyst UI idiom](https://learn.microsoft.com/en-us/dotnet/maui/mac-catalyst/user-interface-idiom?view=net-maui-10.0)。发布前必须检查真实桌面窗口（含侧栏、历史、弹窗以及四个功能页）；浏览器静态预览和核心单元测试不能代替这一步。
+
+### 桌面压测报告导出
+
+报告先流式生成到应用数据目录的 `App_Data/Exports`，完整生成后优先移入当前用户的 `Downloads`。若下载目录不存在、无写权限或暂时不可用，完整报告留在 `Exports`，页面提示实际保存路径；不覆盖已有同名报告。临时文件清理失败不能掩盖原始导出错误。
+
+Mac 继续启用 App Sandbox，签名时必须包含 `com.apple.security.files.downloads.read-write`，与自动保存到下载目录的行为一致；Debug 和 Release 分发签名都使用仓库中的 `Entitlements.plist`。参考：[Apple 下载目录读写权限](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.files.downloads.read-write)。
 
 ## 当前改造阶段
 

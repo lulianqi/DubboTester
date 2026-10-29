@@ -1,109 +1,19 @@
-/* Desktop-only page zoom: keep text, controls and icons at the same scale on
-   both WKWebView and WinUI WebView2 without changing Web/Docker styling. */
-html.desktop-host {
-    --desktop-ui-zoom: 1.25;
-    --desktop-viewport-height: calc(100dvh / var(--desktop-ui-zoom));
-    --desktop-viewport-width: calc(100vw / var(--desktop-ui-zoom));
-    zoom: var(--desktop-ui-zoom);
-}
-
-#app {
+/* The native host owns display scaling. Do not combine CSS zoom with viewport
+   compensation: WKWebView and Chromium do not resolve zoomed vh units alike. */
+html, body, #app {
+    width: 100%;
     height: 100%;
+    min-height: 0;
+    margin: 0;
 }
 
-/* CSS zoom does not shrink vh/dvh units. Use the zoomed viewport explicitly so
-   full-height pages and modal footers remain inside the visible window. */
+html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+
 #app .tester-shell,
 #app .pressure-shell {
-    height: var(--desktop-viewport-height);
-}
-
-#app .settings-modal,
-#app .type-structure-modal,
-#app .http-dialog {
-    max-width: calc(var(--desktop-viewport-width) - 40px);
-    max-height: calc(var(--desktop-viewport-height) - 40px);
-}
-
-#app .signature-info-modal,
-#app .mcp-modal,
-#app .assertion-debug-modal {
-    max-width: calc(var(--desktop-viewport-width) - 40px);
-    max-height: calc(var(--desktop-viewport-height) - 48px);
-}
-
-#app .service-config-workspace {
-    height: min(680px, calc(var(--desktop-viewport-height) - 210px));
-}
-
-#app .mcp-content,
-#app .http-content,
-#app .pressure-content {
-    padding-inline: max(18px, calc((var(--desktop-viewport-width) - 1500px) / 2));
-}
-
-/* Match the shared home layout's 1100 CSS-pixel breakpoint at 125% zoom.
-   Otherwise the history column is clipped in a normal-sized desktop window. */
-@media (max-width: 1375px) {
-    #app .workspace,
-    #app .workspace.history-collapsed {
-        grid-template-columns: var(--catalog-width) minmax(500px, 1fr);
-        grid-template-rows: minmax(560px, 1fr) auto;
-        overflow-y: auto;
-    }
-
-    #app .history-panel { grid-column: 1 / -1; max-height: 270px; }
-    #app .history-panel.collapsed { max-height: 44px; }
-    #app .history-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 7px; }
-    #app .history-card { margin: 0; }
-}
-
-@media (max-width: 1225px) {
-    #app .pressure-header { grid-template-columns: auto 1fr; }
-    #app .run-state { grid-column: 1 / -1; }
-    #app .pressure-content { grid-template-columns: 1fr; }
-    #app .setup-card, #app .load-card { grid-column: 1; }
-    #app .metric-grid { grid-template-columns: repeat(3, 1fr); }
-}
-
-@media (max-width: 1125px) {
-    #app .mcp-header { grid-template-columns: auto 1fr; }
-    #app .mcp-state { grid-column: 1 / -1; }
-    #app .mcp-content { grid-template-columns: 1fr; }
-    #app .mcp-content > section { grid-column: 1; }
-    #app .mcp-shell .settings-heading { grid-template-columns: auto 1fr; }
-    #app .mcp-shell .settings-summary { grid-column: 1 / -1; padding: 0 8px 6px 30px; }
-    #app .mcp-shell .settings-heading-actions { grid-column: 2; grid-row: 1; justify-self: end; }
-    #app .mcp-history-heading { grid-template-columns: minmax(0, 1fr) auto; }
-    #app .mcp-history-filters { grid-column: 1 / -1; grid-row: 2; width: 100%; }
-}
-
-@media (max-width: 1062.5px) {
-    #app .http-header { flex-wrap: wrap; gap: 12px; }
-    #app .http-state { flex-basis: 100%; }
-    #app .http-shell .settings-grid { grid-template-columns: 1fr; }
-    #app .http-shell .card-heading { flex-wrap: wrap; }
-    #app .http-shell .settings-summary { grid-column: 1 / -1; grid-row: 2; }
-    #app .http-shell .settings-heading > .switch { grid-column: 3; grid-row: 1; }
-    #app .http-shell .settings-summary .endpoint-summary { max-width: 100%; }
-    #app .http-shell .auth-field { align-items: flex-start; flex-direction: column; gap: 8px; }
-    #app .http-shell .history-filters { flex-direction: column; align-items: stretch; }
-    #app .http-shell .method-row { gap: 10px; flex-wrap: wrap; }
-    #app .http-shell .method-info { flex-basis: 100%; }
-}
-
-.status-bar-safe-area {
-    display: none;
-}
-
-@supports (-webkit-touch-callout: none) {
-    .status-bar-safe-area {
-        display: flex;
-        position: sticky;
-        top: 0;
-        height: env(safe-area-inset-top);
-        background: #f6f8fc;
-        width: 100%;
-        z-index: 1001;
-    }
+    height: 100%;
 }

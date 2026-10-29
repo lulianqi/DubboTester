@@ -11,5 +11,8 @@
         <true/>
         <key>com.apple.security.network.server</key>
         <true/>
+        <!-- Pressure-test reports are saved to the user's Downloads folder. -->
+        <key>com.apple.security.files.downloads.read-write</key>
+        <true/>
     </dict>
 </plist>
