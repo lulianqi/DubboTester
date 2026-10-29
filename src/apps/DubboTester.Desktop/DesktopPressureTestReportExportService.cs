@@ -5,18 +5,36 @@ namespace DubboTester.Desktop;
 
 internal sealed class DesktopPressureTestReportExportService : IPressureTestReportExportService
 {
+    private readonly string _downloadsDirectory;
+    private readonly string _fallbackDirectory;
+
+    public DesktopPressureTestReportExportService(IAppDataDirectoryProvider appDataDirectoryProvider)
+        : this(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"),
+            Path.Combine(appDataDirectoryProvider.DirectoryPath, "Exports"))
+    {
+    }
+
+    internal DesktopPressureTestReportExportService(string downloadsDirectory, string fallbackDirectory)
+    {
+        _downloadsDirectory = downloadsDirectory;
+        _fallbackDirectory = fallbackDirectory;
+    }
+
     public async Task<PressureTestReportExportResult> ExportAsync(
         PressureTestReportExportRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        string directoryPath = GetExportDirectoryPath();
-        Directory.CreateDirectory(directoryPath);
+        // Generate inside the application sandbox first. Merely checking whether
+        // Downloads exists does not mean a sandboxed app has permission to write it.
+        Directory.CreateDirectory(_fallbackDirectory);
         string fileName = Path.GetFileName(request.FileName);
         if (string.IsNullOrWhiteSpace(fileName)) fileName = $"dubbo-pressure-{DateTime.Now:yyyyMMdd-HHmmss}.html";
-        string filePath = GetAvailableFilePath(directoryPath, fileName);
-        string temporaryPath = $"{filePath}.{Guid.NewGuid():N}.partial";
+        string filePath = GetAvailableFilePath(_fallbackDirectory, fileName);
+        string temporaryPath = Path.Combine(_fallbackDirectory, $"{Guid.NewGuid():N}.partial");
 
         try
         {
@@ -43,24 +61,32 @@ internal sealed class DesktopPressureTestReportExportService : IPressureTestRepo
                     await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporaryPath, filePath);
         }
         catch
         {
-            File.Delete(temporaryPath);
+            TryDelete(temporaryPath);
             throw;
         }
 
-        return new PressureTestReportExportResult(fileName, SavedPath: filePath);
-    }
+        if (Directory.Exists(_downloadsDirectory))
+        {
+            try
+            {
+                string downloadsPath = GetAvailableFilePath(_downloadsDirectory, fileName);
+                File.Move(filePath, downloadsPath);
+                filePath = downloadsPath;
+            }
+            catch (Exception exception) when (
+                (exception is IOException or UnauthorizedAccessException) && File.Exists(filePath))
+            {
+                // The complete report remains in Exports if Downloads is denied,
+                // unavailable or full. The UI displays the actual saved path.
+            }
+        }
 
-    private static string GetExportDirectoryPath()
-    {
-        string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        string downloadsPath = Path.Combine(userProfile, "Downloads");
-        return Directory.Exists(downloadsPath)
-            ? downloadsPath
-            : Path.Combine(FileSystem.AppDataDirectory, "Exports");
+        return new PressureTestReportExportResult(Path.GetFileName(filePath), SavedPath: filePath);
     }
 
     private static string GetAvailableFilePath(string directoryPath, string fileName)
@@ -74,6 +100,18 @@ internal sealed class DesktopPressureTestReportExportService : IPressureTestRepo
         {
             candidate = Path.Combine(directoryPath, $"{baseName}-{suffix}{extension}");
             if (!File.Exists(candidate)) return candidate;
+        }
+    }
+
+    private static void TryDelete(string filePath)
+    {
+        try
+        {
+            File.Delete(filePath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Cleanup must not hide the original generation/cancellation error.
         }
     }
 }
