@@ -57,6 +57,7 @@ DubboTester 同时支持 **Docker 镜像部署为 Web 服务**，以及 **Window
 
 - [Docker Hub：`lulianqi/dubbo-tester`](https://hub.docker.com/r/lulianqi/dubbo-tester)
 - [GitHub Container Registry：`ghcr.io/lulianqi/dubbo-tester`](https://github.com/lulianqi/DubboTester/pkgs/container/dubbo-tester)
+- 阿里云 ACR（中国大陆）：`crpi-ct3m45rpep0xlnep.cn-hangzhou.personal.cr.aliyuncs.com/lulianqi/dubbo-tester`
 
 拉取镜像并启动（以下固定使用 `2.1.3`，也可将标签替换为 `latest`）：
 
