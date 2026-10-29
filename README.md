@@ -60,6 +60,7 @@ DubboTester 同时支持 **Docker 镜像部署为 Web 服务**，以及 **Window
 - 阿里云 ACR（中国大陆）：`crpi-ct3m45rpep0xlnep.cn-hangzhou.personal.cr.aliyuncs.com/lulianqi/dubbo-tester`
 
 拉取镜像并启动（以下固定使用 `2.1.3`，也可将标签替换为 `latest`）：
+如果国内环境网络过慢可以使用上面阿里云ACR的镜像 docker pull crpi-ct3m45rpep0xlnep.cn-hangzhou.personal.cr.aliyuncs.com/lulianqi/dubbo-tester:2.1.3
 
 ```bash
 docker pull lulianqi/dubbo-tester:2.1.3
